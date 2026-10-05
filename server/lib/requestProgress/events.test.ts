@@ -266,6 +266,35 @@ const search = (
 });
 
 describe('handleCommand', () => {
+  it('shows the messages of the running search as searching detail', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    const id = commandId++;
+    await handleCommand(
+      radarr,
+      search('started', { id, message: 'Searching indexers' }),
+      tracker
+    );
+    assert.equal(
+      statusOf(tracker, media.id, 'searching').detail,
+      'Searching indexers'
+    );
+
+    tracker.advance(media.id, false, 'grabbed');
+    const done = 'Completed search for 1 movies. 1 reports downloaded.';
+    await handleCommand(
+      radarr,
+      search('completed', { id, message: done, reportsDownloaded: 1 }),
+      tracker
+    );
+    await handleCommand(
+      radarr,
+      search('started', { trigger: 'unspecified', message: 'Other search' }),
+      tracker
+    );
+    assert.equal(statusOf(tracker, media.id, 'searching').detail, done);
+  });
+
   it('fails with no results on a completed search with 0 reports', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });

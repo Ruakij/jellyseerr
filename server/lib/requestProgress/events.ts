@@ -170,20 +170,32 @@ export async function handleCommand(
         // Covers requests sent before a restart or added in Radarr/Sonarr directly.
         tracker.ensure({ mediaId: media.id, is4k, serverKey: key });
       }
-    } else if (entry?.steps.searching.status !== 'running') {
-      continue;
-    } else if (event.status === 'completed') {
-      if (event.reportsDownloaded === 0) {
-        tracker.fail(media.id, is4k, NO_RESULTS);
-      } else if (event.reportsDownloaded === undefined) {
-        tracker.searchCompleted(media.id, is4k);
+    } else if (entry?.steps.searching.status === 'running') {
+      if (event.status === 'completed') {
+        if (event.reportsDownloaded === 0) {
+          tracker.fail(media.id, is4k, NO_RESULTS);
+        } else if (event.reportsDownloaded === undefined) {
+          tracker.searchCompleted(media.id, is4k);
+        }
+      } else if (SEARCH_FAILED.includes(event.status)) {
+        tracker.fail(
+          media.id,
+          is4k,
+          `Search failed${event.message ? `: ${event.message}` : ''}`
+        );
       }
-    } else if (SEARCH_FAILED.includes(event.status)) {
-      tracker.fail(
-        media.id,
-        is4k,
-        `Search failed${event.message ? `: ${event.message}` : ''}`
-      );
+    }
+
+    // The search that runs while searching owns the detail, up to its final report count.
+    const current = tracker.entry(media.id, is4k);
+    if (
+      event.message &&
+      current &&
+      (current.steps.searching.status === 'running' ||
+        current.searchCommandId === event.id)
+    ) {
+      current.searchCommandId = event.id;
+      tracker.setDetail(media.id, is4k, 'searching', event.message);
     }
   }
   if (event.status === 'completed') serverRefresh.push(key);
