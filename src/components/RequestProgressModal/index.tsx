@@ -40,13 +40,10 @@ const messages = defineMessages('components.RequestProgressModal', {
   lastSearched: 'Last searched {duration} ago',
   searchStarted: 'Search started.',
   searchCooldown: 'Searched too recently, try again later.',
+  searchNoRequest: 'There is no open request to search for.',
+  searchNotInArr: 'Not in Radarr/Sonarr yet, try again later.',
   searchFailed: 'Something went wrong while starting the search.',
 });
-
-// TODO remove once RequestProgress.search lands from the backend merge
-type ProgressWithSearch = RequestProgress & {
-  search?: { allowed: boolean; retryAfter?: string; lastSearchedAt?: string };
-};
 
 // Step errors that are not technical and shown to every user
 const PUBLIC_ERRORS = [
@@ -61,6 +58,15 @@ const PUBLIC_ERRORS = [
 const formatDuration = (ms: number): string => {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+};
+
+// Coarse age of a past event: 45s, 12m, 3h, 2d
+const formatAge = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 };
 
 const stepElapsed = (step: ProgressStep, now: number): number | undefined => {
@@ -110,7 +116,7 @@ const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
 
 interface RequestProgressModalProps {
   show: boolean;
-  progress?: ProgressWithSearch;
+  progress?: RequestProgress;
   subTitle?: string;
   onClose: () => void;
 }
@@ -130,9 +136,11 @@ const RequestProgressModal = ({
   const { addToast } = useToasts();
   const [now, setNow] = useState(Date.now());
   const [searching, setSearching] = useState(false);
+  // From a 429 Retry-After, until the next progress event carries retryAfter
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<number>();
   const retryAt = progress?.search?.retryAfter
     ? Date.parse(progress.search.retryAfter)
-    : undefined;
+    : rateLimitedUntil;
   const step = progress && currentStep(progress.steps);
   const running = !!progress?.steps.some((s) => s.status === 'running');
   const lastSearchedAt =
@@ -204,8 +212,7 @@ const RequestProgressModal = ({
   const canSearch =
     !!progress?.search?.allowed &&
     step?.key === 'searching' &&
-    (step.status === 'running' ||
-      (step.status === 'failed' && step.error === 'No results'));
+    (step.status === 'running' || step.status === 'failed');
   const cooldownMs = retryAt !== undefined ? retryAt - now : 0;
 
   const searchAgain = async () => {
@@ -220,11 +227,21 @@ const RequestProgressModal = ({
         appearance: 'success',
       });
     } catch (e) {
+      const res = axios.isAxiosError(e) ? e.response : undefined;
+      const status = res?.status;
+      const retrySecs = Number(res?.headers['retry-after']);
+      if (status === 429 && retrySecs > 0) {
+        setRateLimitedUntil(Date.now() + retrySecs * 1000);
+      }
       addToast(
         intl.formatMessage(
-          axios.isAxiosError(e) && e.response?.status === 429
+          status === 429
             ? messages.searchCooldown
-            : messages.searchFailed
+            : status === 404
+              ? messages.searchNoRequest
+              : status === 409
+                ? messages.searchNotInArr
+                : messages.searchFailed
         ),
         { autoDismiss: true, appearance: 'error' }
       );
@@ -374,9 +391,7 @@ const RequestProgressModal = ({
                 {lastSearchedAt && (
                   <span>
                     {intl.formatMessage(messages.lastSearched, {
-                      duration: formatDuration(
-                        now - Date.parse(lastSearchedAt)
-                      ),
+                      duration: formatAge(now - Date.parse(lastSearchedAt)),
                     })}
                   </span>
                 )}
