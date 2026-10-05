@@ -14,6 +14,7 @@ import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
+import type { ProgressDownload } from '@server/interfaces/api/progressInterfaces';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
 import stepStats from '@server/lib/requestProgress/stepStats';
@@ -217,9 +218,23 @@ async function requestedSeasons(
   return seasons;
 }
 
+/** Milliseconds until a queue item completes, as the download client estimates it. */
+export function queueEtaMs(
+  item: { timeleft?: string; estimatedCompletionTime?: string },
+  now = Date.now()
+): number | undefined {
+  const at = Date.parse(item.estimatedCompletionTime ?? '');
+  if (!Number.isNaN(at)) return Math.max(0, at - now);
+  // [d.]hh:mm:ss
+  const m = item.timeleft?.match(/^(?:(\d+)\.)?(\d+):(\d+):(\d+)/);
+  if (!m) return undefined;
+  const [days, hours, minutes, seconds] = m.slice(1).map((v) => Number(v ?? 0));
+  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+}
+
 /**
  * Brings the tracked media of one Radarr/Sonarr server up to date from its history (grab and
- * import times, download ids) and queue (blocked or failed downloads).
+ * import times, download ids, release titles) and queue (downloads, blocked or failed ones).
  */
 export async function refreshServer(
   key: string,
@@ -258,6 +273,8 @@ export async function refreshServer(
       return !wanted || season === undefined || wanted.has(season);
     });
 
+  const grabbedTitles = new Map<TrackedProgress, Set<string>>();
+  const indexers = new Map<string, string>();
   const ascending = [...history].sort(
     (a, b) => Date.parse(a.date) - Date.parse(b.date)
   );
@@ -277,6 +294,13 @@ export async function refreshServer(
         tracker.advance(mediaId, is4k, 'grabbed', at, {
           downloadId: record.downloadId,
         });
+        grabbedTitles.set(
+          entry,
+          (grabbedTitles.get(entry) ?? new Set()).add(record.sourceTitle)
+        );
+        if (record.downloadId && record.data?.indexer) {
+          indexers.set(record.downloadId, record.data.indexer);
+        }
       } else if (record.eventType === 'downloadFolderImported') {
         tracker.advance(mediaId, is4k, 'importing', at);
       } else if (record.eventType === 'downloadFailed') {
@@ -284,7 +308,17 @@ export async function refreshServer(
       }
     }
   }
+  for (const [entry, titles] of grabbedTitles) {
+    tracker.setDetail(
+      entry.mediaId,
+      entry.is4k,
+      'grabbed',
+      [...titles].join(', ')
+    );
+  }
 
+  // Keyed by downloadId: Sonarr lists a season pack once per episode.
+  const downloads = new Map<TrackedProgress, Map<string, ProgressDownload>>();
   for (const item of queue as ((typeof queue)[number] & ArrItem)[]) {
     const state = item.trackedDownloadState;
     const reason =
@@ -294,15 +328,29 @@ export async function refreshServer(
         : state === 'failedPending' || state === 'failed'
           ? DOWNLOAD_FAILED
           : undefined;
-    if (!reason) continue;
     for (const entry of entriesOf(item)) {
-      if (
-        entry.steps.importing.status !== 'done' &&
-        !entry.staleDownloadIds.includes(item.downloadId)
-      ) {
+      if (entry.staleDownloadIds.includes(item.downloadId)) continue;
+      const own = downloads.get(entry) ?? new Map();
+      own.set(item.downloadId, {
+        title: item.title,
+        indexer: item.indexer || indexers.get(item.downloadId),
+        size: item.size,
+        sizeLeft: item.sizeleft,
+        etaMs: queueEtaMs(item),
+      });
+      downloads.set(entry, own);
+      if (reason && entry.steps.importing.status !== 'done') {
         tracker.fail(entry.mediaId, entry.is4k, reason);
       }
     }
+  }
+  for (const entry of entries) {
+    const own = downloads.get(entry);
+    tracker.setDownloads(
+      entry.mediaId,
+      entry.is4k,
+      own ? [...own.values()] : undefined
+    );
   }
 
   for (const entry of entries) {
