@@ -98,6 +98,8 @@ const HISTORY_EVENT_TYPE_IDS = {
   downloadFailed: 4,
 } as const;
 
+const HISTORY_SINCE_PAGE_SIZE = 250;
+
 export type HistoryEventTypeFilter = keyof typeof HISTORY_EVENT_TYPE_IDS;
 
 export interface HistoryRecord {
@@ -226,37 +228,25 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
   };
 
   /**
-   * Newest records first. With `since`, all records after that date are returned unpaged.
+   * Newest records first. With `since`, pages are read until a record is older than that date or
+   * `limit` records were read; the `/history/since` endpoint is unpaged and times out on large
+   * histories.
    */
   public getHistory = async ({
     eventType,
     since,
+    limit,
     page = 1,
     pageSize = 200,
   }: {
     eventType?: HistoryEventTypeFilter;
     since?: Date;
+    limit?: number;
     page?: number;
     pageSize?: number;
   } = {}): Promise<HistoryRecord[]> => {
     const eventTypeId = eventType && HISTORY_EVENT_TYPE_IDS[eventType];
-    try {
-      if (since) {
-        const response = await this.axios.get<HistoryRecord[]>(
-          '/history/since',
-          {
-            params: {
-              date: since.toISOString(),
-              eventType: eventTypeId,
-              includeEpisode: true,
-            },
-          }
-        );
-        return [...response.data].sort(
-          (a, b) => Date.parse(b.date) - Date.parse(a.date)
-        );
-      }
-
+    const getPage = async (page: number, pageSize: number) => {
       const response = await this.axios.get<HistoryResponse>('/history', {
         params: {
           page,
@@ -267,7 +257,22 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
           includeEpisode: true,
         },
       });
-      return response.data.records;
+      return response.data;
+    };
+    try {
+      if (!since) return (await getPage(page, pageSize)).records;
+
+      const oldest = since.getTime();
+      const records: HistoryRecord[] = [];
+      for (let next = 1; ; next++) {
+        const data = await getPage(next, HISTORY_SINCE_PAGE_SIZE);
+        for (const record of data.records) {
+          if (Date.parse(record.date) < oldest) return records;
+          records.push(record);
+          if (limit && records.length >= limit) return records;
+        }
+        if (next * HISTORY_SINCE_PAGE_SIZE >= data.totalRecords) return records;
+      }
     } catch (e) {
       throw new Error(
         `[${this.apiName}] Failed to retrieve history: ${e.message}`,

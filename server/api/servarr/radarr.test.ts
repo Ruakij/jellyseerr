@@ -145,33 +145,64 @@ describe('ServarrBase getHistory', () => {
     ]);
   });
 
-  it('uses the since endpoint and sorts newest first', async () => {
+  it('pages back until a record is older than since', async () => {
     const radarr = buildRadarr();
-    const get = mock.method(getAxios(radarr), 'get', async () => ({
-      data: [
-        { id: 1, date: '2026-10-05T10:00:00Z' },
+    const pages = [
+      [
+        { id: 1, date: '2026-10-05T12:00:00Z' },
         { id: 2, date: '2026-10-05T11:00:00Z' },
       ],
-    }));
+      [
+        { id: 3, date: '2026-10-05T10:00:00Z' },
+        { id: 4, date: '2026-10-04T10:00:00Z' },
+      ],
+    ];
+    const get = mock.method(
+      getAxios(radarr),
+      'get',
+      async (_: string, { params }: { params: { page: number } }) => ({
+        data: { totalRecords: 600, records: pages[params.page - 1] },
+      })
+    );
 
     const records = await radarr.getHistory({
+      eventType: 'grabbed',
       since: new Date('2026-10-05T00:00:00Z'),
     });
 
     assert.deepEqual(
       records.map((r) => r.id),
-      [2, 1]
+      [1, 2, 3]
     );
-    assert.deepEqual(get.mock.calls[0].arguments, [
-      '/history/since',
+    assert.equal(get.mock.callCount(), 2);
+    assert.deepEqual(get.mock.calls[1].arguments, [
+      '/history',
       {
         params: {
-          date: '2026-10-05T00:00:00.000Z',
-          eventType: undefined,
+          page: 2,
+          pageSize: 250,
+          sortKey: 'date',
+          sortDirection: 'descending',
+          eventType: 1,
           includeEpisode: true,
         },
       },
     ]);
+  });
+
+  it('stops paging at the limit or the last page', async () => {
+    const radarr = buildRadarr();
+    const get = mock.method(getAxios(radarr), 'get', async () => ({
+      data: {
+        totalRecords: 3,
+        records: [1, 2, 3].map((id) => ({ id, date: '2026-10-05T12:00:00Z' })),
+      },
+    }));
+    const since = new Date('2026-10-05T00:00:00Z');
+
+    assert.equal((await radarr.getHistory({ since, limit: 2 })).length, 2);
+    assert.equal((await radarr.getHistory({ since })).length, 3);
+    assert.equal(get.mock.callCount(), 2);
   });
 });
 
@@ -189,5 +220,36 @@ describe('ServarrBase getItemHistory', () => {
       '/history/movie',
       { params: { movieId: 42, includeEpisode: true } },
     ]);
+  });
+});
+
+describe('RadarrAPI monitorMovie', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('sets an unmonitored movie to monitored', async () => {
+    const radarr = buildRadarr();
+    mock.method(getAxios(radarr), 'get', async () => ({
+      data: { id: 42, monitored: false },
+    }));
+    const put = mock.method(getAxios(radarr), 'put', async () => ({}));
+
+    await radarr.monitorMovie(42);
+
+    assert.deepEqual(put.mock.calls[0].arguments, [
+      '/movie',
+      { id: 42, monitored: true },
+    ]);
+  });
+
+  it('leaves a monitored movie alone', async () => {
+    const radarr = buildRadarr();
+    mock.method(getAxios(radarr), 'get', async () => ({
+      data: { id: 42, monitored: true },
+    }));
+    const put = mock.method(getAxios(radarr), 'put', async () => ({}));
+
+    await radarr.monitorMovie(42);
+
+    assert.equal(put.mock.callCount(), 0);
   });
 });

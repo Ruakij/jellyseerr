@@ -251,6 +251,22 @@ class RadarrAPI extends ServarrBase<{ movieId: number }> {
     }
   };
 
+  /** Sets an existing movie to monitored, as requesting it does. */
+  public async monitorMovie(id: number): Promise<void> {
+    const movie = await this.getMovie({ id });
+    if (movie.monitored) return;
+    try {
+      await this.axios.put<RadarrMovie>('/movie', {
+        ...movie,
+        monitored: true,
+      });
+    } catch (e) {
+      throw new Error(`[Radarr] Failed to monitor movie: ${e.message}`, {
+        cause: e,
+      });
+    }
+  }
+
   public async searchMovie(movieId: number): Promise<void> {
     logger.info('Executing movie search command', {
       label: 'Radarr API',

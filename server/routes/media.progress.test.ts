@@ -248,6 +248,11 @@ describe('POST /media/:mediaId/progress/search', () => {
       'runCommand',
       async () => undefined
     );
+    const monitor = mock.method(
+      RadarrAPI.prototype,
+      'monitorMovie',
+      async () => undefined
+    );
     const users = getRepository(User);
     const friend = await users.findOneByOrFail({ email: 'friend@seerr.dev' });
     const stranger = await users.save(
@@ -282,6 +287,7 @@ describe('POST /media/:mediaId/progress/search', () => {
       'MoviesSearch',
       { movieIds: [42] },
     ]);
+    assert.deepEqual(monitor.mock.calls[0].arguments, [42]);
     const limited = await postSearch(media.id, friend.id);
     assert.equal(limited.statusCode, 429);
     const retryAfter = Number(limited.headers['retry-after']);
@@ -299,6 +305,7 @@ describe('POST /media/:mediaId/progress/search', () => {
     assert.equal(search.allowed, true);
     assert.ok(Date.parse(search.retryAfter) > Date.now());
     commands.mock.restore();
+    monitor.mock.restore();
   });
 
   it('searches whole seasons without files and the missing aired episodes', async () => {
@@ -328,6 +335,11 @@ describe('POST /media/:mediaId/progress/search', () => {
         episode(5, 2, false, '2099-01-01T00:00:00Z'),
         episode(6, 3, false),
       ]
+    );
+    const monitor = mock.method(
+      SonarrAPI.prototype,
+      'monitorSeasons',
+      async () => undefined
     );
     const admin = await getRepository(User).findOneByOrFail({ id: 1 });
     const media = await getRepository(Media).save(
@@ -361,8 +373,11 @@ describe('POST /media/:mediaId/progress/search', () => {
         ['EpisodeSearch', { episodeIds: [4] }],
       ]
     );
+    const [seriesId, seasons] = monitor.mock.calls[0].arguments;
+    assert.deepEqual([seriesId, seasons], [34, [1, 2]]);
     commands.mock.restore();
     episodes.mock.restore();
+    monitor.mock.restore();
   });
 
   it('returns 404 without an open request', async () => {
