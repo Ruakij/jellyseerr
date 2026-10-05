@@ -9,6 +9,7 @@ import Media from '@server/entity/Media';
 import MediaRequest from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
 import { Notification } from '@server/lib/notifications';
+import { applyRequestFailure } from '@server/lib/requestRetry';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import AsyncLock from '@server/utils/asyncLock';
@@ -714,7 +715,7 @@ class BaseScanner<T> {
 
     await this.failRequests(media, is4k, (request) => {
       if (!arrItem) {
-        return `removed from ${media.mediaType === MediaType.MOVIE ? 'Radarr' : 'Sonarr'}`;
+        return `Removed from ${media.mediaType === MediaType.MOVIE ? 'Radarr' : 'Sonarr'}`;
       }
       const lostSeasons = request.seasons
         .map((s) => s.seasonNumber)
@@ -731,7 +732,7 @@ class BaseScanner<T> {
           );
         });
       if (lostSeasons.length > 0) {
-        return `season(s) ${lostSeasons.join(', ')} unmonitored or missing in Sonarr without files`;
+        return `Season(s) ${lostSeasons.join(', ')} not monitored in Sonarr`;
       }
     });
   }
@@ -761,7 +762,7 @@ class BaseScanner<T> {
         continue;
       }
 
-      request.status = MediaRequestStatus.FAILED;
+      applyRequestFailure(request, { kind: 'permanent', reason });
       await requestRepository.save(request);
       MediaRequest.sendNotification(request, media, Notification.MEDIA_FAILED);
       this.log(
@@ -807,7 +808,7 @@ class BaseScanner<T> {
         media,
         is4k,
         () =>
-          `unmonitored in ${media.mediaType === MediaType.MOVIE ? 'Radarr' : 'Sonarr'} with nothing downloaded`
+          `Not monitored in ${media.mediaType === MediaType.MOVIE ? 'Radarr' : 'Sonarr'}`
       );
     }
   }
