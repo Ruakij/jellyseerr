@@ -7713,6 +7713,46 @@ paths:
                 type: string
         '404':
           description: Media does not exist
+  /media/{mediaId}/progress/search:
+    post:
+      summary: Search for a requested media item
+      description: |
+        Triggers a Radarr/Sonarr search for exactly the requested scope of the newest open
+        request: the movie, each requested season without any file, or the missing aired episodes
+        of the other requested seasons. Allowed with the `MANAGE_REQUESTS` permission, and with the
+        `REQUEST_SEARCH` permission once every 15 minutes per media item.
+      tags:
+        - media
+      parameters:
+        - in: path
+          name: mediaId
+          description: Media ID
+          required: true
+          example: '1'
+          schema:
+            type: string
+        - in: query
+          name: is4k
+          required: false
+          example: false
+          schema:
+            type: boolean
+      responses:
+        '204':
+          description: Search triggered
+        '403':
+          description: Neither `MANAGE_REQUESTS` nor `REQUEST_SEARCH`
+        '404':
+          description: Media does not exist or has no open request
+        '409':
+          description: The media is not in Radarr/Sonarr yet
+        '429':
+          description: Without `MANAGE_REQUESTS`, the media item was searched within the last 15 minutes
+          headers:
+            Retry-After:
+              description: Seconds until the next search is allowed
+              schema:
+                type: integer
   /media/{mediaId}/{status}:
     post:
       summary: Update media status

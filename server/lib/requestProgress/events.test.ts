@@ -26,7 +26,10 @@ import {
   requestStarts,
 } from '@server/lib/requestProgress/events';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
-import { ProgressTracker } from '@server/lib/requestProgress/tracker';
+import progressTracker, {
+  ProgressTracker,
+  WAITING_FOR_RELEASE,
+} from '@server/lib/requestProgress/tracker';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
@@ -34,9 +37,17 @@ import { setupTestDb } from '@server/test/db';
 let history: Partial<HistoryRecord>[] = [];
 let queue: Record<string, unknown>[] = [];
 let hasFile = false;
+let monitored = true;
+let lastSearchTime: string | undefined;
+let removed = false;
 Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
   set() {},
-  get: () => async () => ({ hasFile }),
+  get: () => async () => {
+    if (removed) {
+      throw new Error('Not found', { cause: { response: { status: 404 } } });
+    }
+    return { hasFile, monitored, lastSearchTime };
+  },
   configurable: true,
 });
 for (const Api of [RadarrAPI, SonarrAPI]) {
@@ -79,6 +90,9 @@ async function setup(overrides: Partial<Media> = {}) {
   history = [];
   queue = [];
   hasFile = false;
+  monitored = true;
+  lastSearchTime = undefined;
+  removed = false;
   return { media, tracker };
 }
 
@@ -99,6 +113,7 @@ describe('refreshServer', () => {
       { eventType: 'grabbed', date: grab, movieId: 42, downloadId: 'D' },
       { eventType: 'grabbed', date: grab, movieId: 7, downloadId: 'other' },
     ];
+    hasFile = true;
 
     await refreshServer('radarr-0', tracker);
 
@@ -243,32 +258,67 @@ describe('refreshServer', () => {
     assert.equal(step.error, 'Manual interaction required');
   });
 
-  it('fails with no results when a search without report count completed ungrabbed', async () => {
+  it('waits for a release after a search without results', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
-    await handleCommand(
-      { type: 'radarr', serverId: 0 },
-      {
-        type: 'command',
-        id: commandId++,
-        name: 'MoviesSearch',
-        status: 'completed',
-        movieIds: [42],
-      },
-      tracker
-    );
+    lastSearchTime = '2026-10-05T12:00:00.000Z';
 
     await refreshServer('radarr-0', tracker);
 
     const step = statusOf(tracker, media.id, 'searching');
+    assert.equal(step.status, 'running');
+    assert.equal(step.detail, WAITING_FOR_RELEASE);
+    assert.equal(
+      tracker.entry(media.id, false)!.lastSearchedAt,
+      Date.parse(lastSearchTime)
+    );
+  });
+
+  it('goes back to searching when the files disappear after the import', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    tracker.advance(media.id, false, 'playable');
+
+    await refreshServer('radarr-0', tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'running');
+    for (const key of ['grabbed', 'importing', 'inJellyfin', 'playable']) {
+      assert.equal(statusOf(tracker, media.id, key).status, 'pending');
+    }
+  });
+
+  it('fails the run with the Radarr reason once the request failed', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    removed = true;
+
+    await refreshServer('radarr-0', tracker);
+
+    // The request status decides, not the tracker.
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'running');
+
+    tracker.failRequest(media.id, false);
+
+    const step = statusOf(tracker, media.id, 'searching');
     assert.equal(step.status, 'failed');
-    assert.equal(step.error, 'No results');
+    assert.equal(step.error, 'Removed from Radarr');
+  });
+
+  it('keeps an unmonitored item with a running download', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    tracker.advance(media.id, false, 'grabbed');
+    monitored = false;
+
+    await refreshServer('radarr-0', tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'running');
   });
 });
 
 const radarr = { type: 'radarr', serverId: 0 } as const;
 const search = (
-  status: 'started' | 'completed',
+  status: CommandEvent['status'],
   extra: Partial<CommandEvent> = {}
 ): CommandEvent => ({
   type: 'command',
@@ -281,49 +331,50 @@ const search = (
 });
 
 describe('handleCommand', () => {
-  it('shows the messages of the running search as searching detail', async () => {
+  it('shows a running search with its indexers, then waits for a release', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
     const id = commandId++;
     await handleCommand(
       radarr,
-      search('started', { id, message: 'Searching indexers' }),
+      search('started', {
+        id,
+        message: 'Searching indexers for [Movie]. 3 active indexers',
+      }),
       tracker
     );
     assert.equal(
       statusOf(tracker, media.id, 'searching').detail,
-      'Searching indexers'
+      'Searching (3 indexers)'
     );
+    assert.equal(tracker.entry(media.id, false)!.lastSearchedAt, undefined);
 
-    tracker.advance(media.id, false, 'grabbed');
-    const done = 'Completed search for 1 movies. 1 reports downloaded.';
-    await handleCommand(
-      radarr,
-      search('completed', { id, message: done, reportsDownloaded: 1 }),
-      tracker
-    );
-    await handleCommand(
-      radarr,
-      search('started', { trigger: 'unspecified', message: 'Other search' }),
-      tracker
-    );
-    assert.equal(statusOf(tracker, media.id, 'searching').detail, done);
-  });
-
-  it('fails with no results on a completed search with 0 reports', async () => {
-    const { media, tracker } = await setup();
-    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
     await handleCommand(
       radarr,
       search('completed', {
+        id,
         message: 'Completed search for 1 movies. 0 reports downloaded.',
         reportsDownloaded: 0,
       }),
       tracker
     );
     const step = statusOf(tracker, media.id, 'searching');
+    assert.equal(step.status, 'running');
+    assert.equal(step.detail, WAITING_FOR_RELEASE);
+    assert.ok(tracker.entry(media.id, false)!.lastSearchedAt);
+  });
+
+  it('fails the search on a failed search command', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    await handleCommand(
+      radarr,
+      search('failed', { message: 'Indexer down' }),
+      tracker
+    );
+    const step = statusOf(tracker, media.id, 'searching');
     assert.equal(step.status, 'failed');
-    assert.equal(step.error, 'No results');
+    assert.equal(step.error, 'Search failed: Indexer down');
   });
 
   it('restarts the search on an automatic re-search after a failed download', async () => {
@@ -481,6 +532,16 @@ describe('reconcileJellyfin', () => {
     assert.ok(progress.steps.every((s) => s.status === 'done'));
     assert.match(progress.playUrl ?? '', /id=abc/);
   });
+
+  it('reopens the Jellyfin step when the item left Jellyfin', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false });
+    tracker.advance(media.id, false, 'inJellyfin');
+
+    await reconcileJellyfin(undefined, tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+  });
 });
 
 describe('reconstructProgress', () => {
@@ -522,6 +583,7 @@ describe('reconstructProgress', () => {
         movieId: 42,
       },
     ];
+    hasFile = true;
 
     await reconstructProgress([{ mediaId: media.id, is4k: false }], tracker);
 
@@ -541,7 +603,7 @@ describe('reconstructProgress', () => {
     const searching = statusOf(tracker, media.id, 'searching');
     assert.equal(searching.status, 'running');
     assert.equal(searching.startedAt, requestedAt);
-    assert.equal(searching.detail, 'No release found yet, waiting for one');
+    assert.equal(searching.detail, WAITING_FOR_RELEASE);
   });
 
   it('takes a file in Radarr as imported', async () => {
@@ -692,5 +754,32 @@ describe('queueEtaMs', () => {
     );
     assert.equal(queueEtaMs({ timeleft: '1.02:00:05' }, now), 93_605_000);
     assert.equal(queueEtaMs({}, now), undefined);
+  });
+});
+
+describe('request status', () => {
+  it('fails the tracked run when the request is saved as FAILED', async () => {
+    const { media } = await setup();
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    const requests = getRepository(MediaRequest);
+    const request = await requests.save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy: user,
+        modifiedBy: user,
+      })
+    );
+    progressTracker.start({ mediaId: media.id, is4k: false });
+
+    request.status = MediaRequestStatus.FAILED;
+    await requests.save(request);
+
+    const step = progressTracker
+      .get(media.id, false)!
+      .steps.find((s) => s.key === 'searching')!;
+    assert.equal(step.status, 'failed');
+    assert.equal(step.error, 'Request failed');
   });
 });
