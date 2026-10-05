@@ -51,6 +51,25 @@ const messages = defineMessages('components.RequestProgressModal', {
   searchNoRequest: 'There is no open request to search for.',
   searchNotInArr: 'Not in Radarr/Sonarr yet, try again later.',
   searchFailed: 'Something went wrong while starting the search.',
+  waitingRelease: 'Waiting for release',
+  waitingRss: 'Waiting for RSS',
+  waitingFor: 'for {duration}',
+  unitCounts: '{done}/{total}',
+  unitsFailed: '{failed} failed',
+  details: 'Details',
+  timeline_searchStarted: 'Search started',
+  timeline_searchFinished: 'Search finished',
+  timeline_searchFailed: 'Search failed',
+  timeline_grabbed: 'Grabbed',
+  timeline_downloaded: 'Downloaded',
+  timeline_downloadFailed: 'Download failed',
+  timeline_importBlocked: 'Import blocked',
+  timeline_imported: 'Imported',
+  timeline_fileDeleted: 'File deleted',
+  timeline_inJellyfin: 'Added to Jellyfin',
+  timeline_leftJellyfin: 'Removed from Jellyfin',
+  timeline_playable: 'Ready to play',
+  timeline_requestFailed: 'Request failed',
 });
 
 // Step errors that are not technical and shown to every user
@@ -76,6 +95,13 @@ const formatAge = (ms: number): string => {
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
 };
+
+// Time searches ran, without the waiting between them
+const searchTime = (step: ProgressStep, now: number): number | undefined =>
+  step.searchMs === undefined && !step.searchStartedAt
+    ? undefined
+    : (step.searchMs ?? 0) +
+      (step.searchStartedAt ? now - Date.parse(step.searchStartedAt) : 0);
 
 const stepElapsed = (step: ProgressStep, now: number): number | undefined => {
   if (!step.startedAt) return undefined;
@@ -182,8 +208,17 @@ const RequestProgressModal = ({
     .map((s) => s.finishedAt)
     .filter((f): f is string => !!f)
     .pop();
+  const searchStep = progress?.steps.find((s) => s.key === 'searching');
+  const waitedMs = searchStep
+    ? Math.max(
+        0,
+        (stepElapsed(searchStep, now) ?? 0) - (searchTime(searchStep, now) ?? 0)
+      )
+    : 0;
   const totalMs = firstStart
-    ? (running || !lastEnd ? now : Date.parse(lastEnd)) - Date.parse(firstStart)
+    ? (running || !lastEnd ? now : Date.parse(lastEnd)) -
+      Date.parse(firstStart) -
+      waitedMs
     : undefined;
 
   const formatEstimate = (est: Estimate) =>
@@ -200,9 +235,15 @@ const RequestProgressModal = ({
     est && <span className="text-gray-500">{formatEstimate(est)}</span>;
   const label = (s: ProgressStep) =>
     intl.formatMessage(
-      s.key === 'requested' && s.status === 'running'
-        ? messages.awaitingApproval
-        : messages[s.key]
+      s.status !== 'running'
+        ? messages[s.key]
+        : s.key === 'requested'
+          ? messages.awaitingApproval
+          : s.waiting === 'release'
+            ? messages.waitingRelease
+            : s.waiting === 'rss'
+              ? messages.waitingRss
+              : messages[s.key]
     );
 
   const downloads =
@@ -261,7 +302,8 @@ const RequestProgressModal = ({
 
   const stats = (s: ProgressStep) => {
     if (!progress) return {};
-    const elapsed = stepElapsed(s, now);
+    const elapsed =
+      s.key === 'searching' ? searchTime(s, now) : stepElapsed(s, now);
     const est = estimateOf(progress, s);
     const fraction =
       s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
@@ -294,6 +336,20 @@ const RequestProgressModal = ({
       episodes:
         s.episodes &&
         intl.formatMessage(messages.episodesImported, { ...s.episodes }),
+      counts:
+        s.counts && s.counts.total > 1 && s.status !== 'pending'
+          ? intl.formatMessage(messages.unitCounts, { ...s.counts })
+          : undefined,
+      failed:
+        s.counts && s.counts.total > 1 && s.counts.failed > 0
+          ? intl.formatMessage(messages.unitsFailed, { ...s.counts })
+          : undefined,
+      waiting:
+        s.status === 'running' && s.waitingSince
+          ? intl.formatMessage(messages.waitingFor, {
+              duration: formatAge(now - Date.parse(s.waitingSince)),
+            })
+          : undefined,
     };
   };
 
@@ -336,6 +392,37 @@ const RequestProgressModal = ({
               </div>
             )}
           </>
+        )}
+        {(progress?.timeline ?? []).length > 0 && (
+          <details className="mt-4 text-xs text-gray-400">
+            <summary className="cursor-pointer select-none text-gray-300">
+              {intl.formatMessage(messages.details)}
+            </summary>
+            <ol className="mt-2 max-h-60 space-y-1 overflow-y-auto">
+              {[...(progress?.timeline ?? [])].reverse().map((e, i) => (
+                <li key={`tl-${i}`} className="flex gap-2">
+                  <span className="flex-shrink-0 tabular-nums text-gray-500">
+                    {intl.formatTime(e.at, { timeStyle: 'medium' })}
+                  </span>
+                  <span className="min-w-0 break-words">
+                    <span
+                      className={
+                        /Failed|Blocked/.test(e.kind)
+                          ? 'text-red-400'
+                          : 'text-gray-200'
+                      }
+                    >
+                      {intl.formatMessage(messages[`timeline_${e.kind}`])}
+                    </span>
+                    {e.units && ` ${e.units.join(', ')}`}
+                    {canManage && e.detail && (
+                      <span className="text-gray-500"> - {e.detail}</span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </details>
         )}
         {(detail ||
           error ||
