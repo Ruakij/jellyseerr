@@ -13,6 +13,8 @@ import { MediaStatus, MediaType } from '@server/constants/media';
 import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
+import { MediaRequest } from '@server/entity/MediaRequest';
+import type { ProgressDownload } from '@server/interfaces/api/progressInterfaces';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
 import stepStats from '@server/lib/requestProgress/stepStats';
@@ -81,23 +83,78 @@ const isWaiting = (status: MediaStatus) =>
   status === MediaStatus.PENDING || status === MediaStatus.PROCESSING;
 
 const SEARCH_FAILED = ['failed', 'aborted', 'cancelled', 'orphaned'];
+const IMPORT_BLOCKED = 'Manual interaction required';
+const DOWNLOAD_FAILED = 'Download failed';
+const NO_RESULTS = 'No results';
+
+// Sonarr episode searches carry episode ids only; episode messages and the API link them to series.
+// ponytail: unbounded until it hits the cap, then starts over; an LRU if that ever matters.
+const episodeSeries = new Map<string, number>();
+
+export function rememberEpisode(
+  serverId: number,
+  episodeId: number,
+  seriesId: number
+) {
+  if (episodeSeries.size > 10_000) episodeSeries.clear();
+  episodeSeries.set(`${serverId}:${episodeId}`, seriesId);
+}
+
+async function commandArrIds(
+  source: SignalRSource,
+  event: CommandEvent
+): Promise<number[]> {
+  if (event.movieIds) return event.movieIds;
+  if (event.seriesId) return [event.seriesId];
+  const ids = new Set<number>();
+  for (const episodeId of event.episodeIds ?? []) {
+    let seriesId = episodeSeries.get(`${source.serverId}:${episodeId}`);
+    if (seriesId === undefined) {
+      const api = servarrApi('sonarr', source.serverId) as
+        | SonarrAPI
+        | undefined;
+      seriesId = (await api?.getEpisode(episodeId))?.seriesId;
+      if (seriesId !== undefined) {
+        rememberEpisode(source.serverId, episodeId, seriesId);
+      }
+    }
+    if (seriesId !== undefined) ids.add(seriesId);
+  }
+  return [...ids];
+}
 
 export async function handleCommand(
   source: SignalRSource,
   event: CommandEvent,
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
-  const arrIds = event.movieIds ?? (event.seriesId ? [event.seriesId] : []);
   const key = serverKey(source.type, source.serverId);
-  for (const arrId of arrIds) {
+  for (const arrId of await commandArrIds(source, event)) {
     for (const { media, is4k } of await findMedia(source, arrId)) {
+      const entry = tracker.entry(media.id, is4k);
       if (event.status === 'started') {
-        // Covers requests sent before a restart or added in Radarr/Sonarr directly.
-        if (isWaiting(is4k ? media.status4k : media.status)) {
+        const downloadFailed = Object.values(entry?.steps ?? {}).some(
+          (s) => s.error === DOWNLOAD_FAILED
+        );
+        // An automatic search on a grabbed item is housekeeping, not a new attempt.
+        const userResearch =
+          event.trigger === 'manual' &&
+          entry?.steps.grabbed.status === 'done' &&
+          entry.steps.playable.status !== 'done';
+        if (downloadFailed || userResearch) {
+          tracker.research(media.id, is4k);
+        } else if (!entry && isWaiting(is4k ? media.status4k : media.status)) {
+          // Covers requests sent before a restart or added in Radarr/Sonarr directly.
           tracker.ensure({ mediaId: media.id, is4k, serverKey: key });
         }
+      } else if (entry?.steps.searching.status !== 'running') {
+        continue;
       } else if (event.status === 'completed') {
-        tracker.searchCompleted(media.id, is4k);
+        if (event.reportsDownloaded === 0) {
+          tracker.fail(media.id, is4k, NO_RESULTS);
+        } else if (event.reportsDownloaded === undefined) {
+          tracker.searchCompleted(media.id, is4k);
+        }
       } else if (SEARCH_FAILED.includes(event.status)) {
         tracker.fail(
           media.id,
@@ -110,12 +167,52 @@ export async function handleCommand(
   if (event.status === 'completed') serverRefresh.push(key);
 }
 
-const IMPORT_BLOCKED = 'Manual interaction required';
-const DOWNLOAD_FAILED = 'Download failed';
+interface ArrItem {
+  movieId?: number;
+  seriesId?: number;
+  episode?: { seasonNumber: number };
+}
+
+/** Seasons of the request behind each tracked series; absent when no request is found. */
+async function requestedSeasons(
+  entries: TrackedProgress[]
+): Promise<Map<TrackedProgress, Set<number>>> {
+  const requests = await getRepository(MediaRequest).find({
+    where: { media: { id: In(entries.map((e) => e.mediaId)) } },
+    order: { id: 'DESC' },
+  });
+  const seasons = new Map<TrackedProgress, Set<number>>();
+  for (const entry of entries) {
+    // Entries started from a search event carry no request id; the newest request stands in.
+    const request = requests.find((r) =>
+      entry.requestId !== undefined
+        ? r.id === entry.requestId
+        : r.media.id === entry.mediaId && r.is4k === entry.is4k
+    );
+    if (request) {
+      seasons.set(entry, new Set(request.seasons.map((s) => s.seasonNumber)));
+    }
+  }
+  return seasons;
+}
+
+/** Milliseconds until a queue item completes, as the download client estimates it. */
+export function queueEtaMs(
+  item: { timeleft?: string; estimatedCompletionTime?: string },
+  now = Date.now()
+): number | undefined {
+  const at = Date.parse(item.estimatedCompletionTime ?? '');
+  if (!Number.isNaN(at)) return Math.max(0, at - now);
+  // [d.]hh:mm:ss
+  const m = item.timeleft?.match(/^(?:(\d+)\.)?(\d+):(\d+):(\d+)/);
+  if (!m) return undefined;
+  const [days, hours, minutes, seconds] = m.slice(1).map((v) => Number(v ?? 0));
+  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+}
 
 /**
  * Brings the tracked media of one Radarr/Sonarr server up to date from its history (grab and
- * import times, download ids) and queue (blocked or failed downloads).
+ * import times, download ids, release titles) and queue (downloads, blocked or failed ones).
  */
 export async function refreshServer(
   key: string,
@@ -138,24 +235,50 @@ export async function refreshServer(
   const since = Math.min(
     ...entries.map((e) => e.steps.requested.startedAt ?? Date.now())
   );
-  const [history, queue] = await Promise.all([
+  const [history, queue, seasons] = await Promise.all([
     api.getHistory({ since: new Date(since) }),
     api.getQueue(),
+    type === 'sonarr' ? requestedSeasons(entries) : undefined,
   ]);
-  const arrIdOf = (r: { movieId?: number; seriesId?: number }) =>
-    type === 'radarr' ? r.movieId : r.seriesId;
+  // Records of the same series can belong to seasons another request asked for.
+  const entriesOf = (item: ArrItem) =>
+    (
+      byArrId.get((type === 'radarr' ? item.movieId : item.seriesId) ?? -1) ??
+      []
+    ).filter((entry) => {
+      const wanted = seasons?.get(entry);
+      const season = item.episode?.seasonNumber;
+      return !wanted || season === undefined || wanted.has(season);
+    });
 
+  const grabbedTitles = new Map<TrackedProgress, Set<string>>();
+  const indexers = new Map<string, string>();
   const ascending = [...history].sort(
     (a, b) => Date.parse(a.date) - Date.parse(b.date)
   );
   for (const record of ascending as HistoryRecord[]) {
     const at = Date.parse(record.date);
-    for (const entry of byArrId.get(arrIdOf(record) ?? -1) ?? []) {
+    for (const entry of entriesOf(record)) {
       const { mediaId, is4k } = entry;
+      // The history window starts at the oldest tracked request, so it holds older records too.
+      if (
+        at < (entry.steps.requested.startedAt ?? 0) ||
+        (record.downloadId &&
+          entry.staleDownloadIds.includes(record.downloadId))
+      ) {
+        continue;
+      }
       if (record.eventType === 'grabbed') {
         tracker.advance(mediaId, is4k, 'grabbed', at, {
           downloadId: record.downloadId,
         });
+        grabbedTitles.set(
+          entry,
+          (grabbedTitles.get(entry) ?? new Set()).add(record.sourceTitle)
+        );
+        if (record.downloadId && record.data?.indexer) {
+          indexers.set(record.downloadId, record.data.indexer);
+        }
       } else if (record.eventType === 'downloadFolderImported') {
         tracker.advance(mediaId, is4k, 'importing', at);
       } else if (record.eventType === 'downloadFailed') {
@@ -163,30 +286,54 @@ export async function refreshServer(
       }
     }
   }
+  for (const [entry, titles] of grabbedTitles) {
+    tracker.setDetail(
+      entry.mediaId,
+      entry.is4k,
+      'grabbed',
+      [...titles].join(', ')
+    );
+  }
 
-  for (const item of queue as ((typeof queue)[number] & {
-    movieId?: number;
-    seriesId?: number;
-  })[]) {
+  // Keyed by downloadId: Sonarr lists a season pack once per episode.
+  const downloads = new Map<TrackedProgress, Map<string, ProgressDownload>>();
+  for (const item of queue as ((typeof queue)[number] & ArrItem)[]) {
     const state = item.trackedDownloadState;
     const reason =
-      state === 'importBlocked' ||
-      (state === 'importPending' && item.trackedDownloadStatus === 'warning')
+      (state === 'importBlocked' || state === 'importPending') &&
+      item.trackedDownloadStatus === 'warning'
         ? IMPORT_BLOCKED
         : state === 'failedPending' || state === 'failed'
           ? DOWNLOAD_FAILED
           : undefined;
-    if (!reason) continue;
-    for (const entry of byArrId.get(arrIdOf(item) ?? -1) ?? []) {
-      if (entry.steps.importing.status !== 'done') {
+    for (const entry of entriesOf(item)) {
+      if (entry.staleDownloadIds.includes(item.downloadId)) continue;
+      const own = downloads.get(entry) ?? new Map();
+      own.set(item.downloadId, {
+        title: item.title,
+        indexer: item.indexer || indexers.get(item.downloadId),
+        size: item.size,
+        sizeLeft: item.sizeleft,
+        etaMs: queueEtaMs(item),
+      });
+      downloads.set(entry, own);
+      if (reason && entry.steps.importing.status !== 'done') {
         tracker.fail(entry.mediaId, entry.is4k, reason);
       }
     }
   }
+  for (const entry of entries) {
+    const own = downloads.get(entry);
+    tracker.setDownloads(
+      entry.mediaId,
+      entry.is4k,
+      own ? [...own.values()] : undefined
+    );
+  }
 
   for (const entry of entries) {
     if (entry.searchCompletedAt && entry.steps.grabbed.status !== 'done') {
-      tracker.fail(entry.mediaId, entry.is4k, 'No results');
+      tracker.fail(entry.mediaId, entry.is4k, NO_RESULTS);
     }
   }
 }
@@ -262,6 +409,8 @@ function onSignalRMessage(
         label: 'Request Progress',
       })
     );
+  } else if (event.type === 'episode' && event.seriesId !== undefined) {
+    rememberEpisode(source.serverId, event.id, event.seriesId);
   } else if (
     event.type === 'queue' ||
     event.type === 'movieFile' ||
