@@ -99,6 +99,19 @@ const RequestProgressModal = ({
   const [now, setNow] = useState(Date.now());
   const ticking = show && !!progress?.steps.some((s) => s.status === 'running');
 
+  // Capture phase on window runs before React's handlers, so an enclosing
+  // slide-over never sees this Escape (React bubbles through portals)
+  useEffect(() => {
+    if (!show) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [show, onClose]);
+
   useEffect(() => {
     if (!ticking) return;
     setNow(Date.now());
