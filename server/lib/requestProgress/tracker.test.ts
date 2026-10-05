@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
-import { StepStats } from '@server/lib/requestProgress/stepStats';
+import {
+  MIN_TOTAL_SAMPLES,
+  StepStats,
+} from '@server/lib/requestProgress/stepStats';
 import { ProgressTracker } from '@server/lib/requestProgress/tracker';
 
 function setup() {
@@ -122,5 +125,22 @@ describe('ProgressTracker', () => {
     assert.equal(again, first);
     assert.equal(again.serverKey, 'radarr-1');
     assert.equal(again.steps.grabbed.status, 'done');
+  });
+
+  it('estimates the total from finished runs once there are enough', () => {
+    const { tracker, stats, tick } = setup();
+    // Every run takes 51s, but alternates which step is slow, so the step p90s add up to 100s.
+    for (let i = 0; i < MIN_TOTAL_SAMPLES; i++) {
+      tracker.start({ mediaId: 1, is4k: false, serverKey: 'radarr-0' });
+      tick(i % 2 ? 1_000 : 50_000);
+      tracker.advance(1, false, 'importing');
+      tick(i % 2 ? 50_000 : 1_000);
+      tracker.advance(1, false, 'playable');
+      if (i === MIN_TOTAL_SAMPLES - 2) {
+        assert.equal(tracker.get(1, false)!.totalP90Ms, 100_000);
+      }
+    }
+    assert.equal(stats.totalP90('radarr-0'), 51_000);
+    assert.equal(tracker.get(1, false)!.totalP90Ms, 51_000);
   });
 });
