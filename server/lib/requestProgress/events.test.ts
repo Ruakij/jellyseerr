@@ -54,6 +54,9 @@ async function setup(overrides: Partial<Media> = {}) {
   return { media, tracker };
 }
 
+// handleCommand caches media per command id, so each test sends its own commands.
+let commandId = 1;
+
 const statusOf = (tracker: ProgressTracker, id: number, key: string) =>
   tracker.get(id, false)!.steps.find((s) => s.key === key)!;
 
@@ -106,7 +109,7 @@ describe('refreshServer', () => {
       { type: 'radarr', serverId: 0 },
       {
         type: 'command',
-        id: 1,
+        id: commandId++,
         name: 'MoviesSearch',
         status: 'completed',
         movieIds: [42],
@@ -128,7 +131,7 @@ const search = (
   extra: Partial<CommandEvent> = {}
 ): CommandEvent => ({
   type: 'command',
-  id: 1,
+  id: commandId++,
   name: 'MoviesSearch',
   status,
   trigger: 'manual',
@@ -249,7 +252,7 @@ describe('handleCommand', () => {
       { type: 'radarr', serverId: 0 },
       {
         type: 'command',
-        id: 1,
+        id: commandId++,
         name: 'MoviesSearch',
         status: 'started',
         movieIds: [42],
@@ -265,7 +268,7 @@ describe('handleCommand', () => {
       { type: 'radarr', serverId: 0 },
       {
         type: 'command',
-        id: 1,
+        id: commandId++,
         name: 'MoviesSearch',
         status: 'started',
         movieIds: [42],
@@ -273,6 +276,24 @@ describe('handleCommand', () => {
       tracker
     );
     assert.equal(tracker.entry(media.id, false), undefined);
+  });
+});
+
+describe('handleCommand media cache', () => {
+  it('looks up the media once per command until it ends', async () => {
+    const { media, tracker } = await setup({ status: MediaStatus.AVAILABLE });
+    const id = commandId++;
+    await handleCommand(radarr, search('started', { id }), tracker);
+    await getRepository(Media).update(media.id, {
+      status: MediaStatus.PROCESSING,
+    });
+
+    await handleCommand(radarr, search('started', { id }), tracker);
+    assert.equal(tracker.entry(media.id, false), undefined);
+
+    await handleCommand(radarr, search('completed', { id }), tracker);
+    await handleCommand(radarr, search('started', { id }), tracker);
+    assert.ok(tracker.entry(media.id, false));
   });
 });
 
