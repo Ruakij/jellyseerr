@@ -43,6 +43,10 @@ Object.defineProperty(SonarrAPI.prototype, 'getLibrarySeriesByTvdbId', {
   },
   configurable: true,
 });
+let getSeriesByIdImpl: (id: number) => Promise<SonarrSeries> = async () => {
+  throw new Error('Not found', { cause: { response: { status: 404 } } });
+};
+SonarrAPI.prototype.getSeriesById = async (id: number) => getSeriesByIdImpl(id);
 
 function fakeTmdbShow(
   tmdbId: number,
@@ -280,6 +284,9 @@ describe('Sonarr Scanner', () => {
     getLibrarySeriesByTvdbIdImpl = async () => [];
     getShowByTvdbIdImpl = async () => fakeTmdbShow(1);
     getTvShowImpl = async () => fakeTmdbShow(1);
+    getSeriesByIdImpl = async () => {
+      throw new Error('Not found', { cause: { response: { status: 404 } } });
+    };
   });
 
   describe('orphaned show cleanup', () => {
@@ -1187,6 +1194,63 @@ describe('Sonarr Scanner', () => {
       });
 
       assert.strictEqual(updated.status, MediaRequestStatus.APPROVED);
+    });
+  });
+
+  describe('syncSeries', () => {
+    async function seedLinked(tvdbId: number) {
+      const request = await seedSeasonRequest(tvdbId, tvdbId);
+      await getRepository(Media).update(request.media.id, {
+        serviceId: 0,
+        externalServiceId: 1,
+      });
+      getTvShowImpl = async () => fakeTmdbShow(tvdbId, tmdbSeasons(1, 2));
+      configureSonarr([{ syncEnabled: true }]);
+      return request;
+    }
+
+    it('fails the request when Sonarr unmonitored a requested season', async () => {
+      const request = await seedLinked(2200);
+      getSeriesByIdImpl = async (id) =>
+        fakeSonarrSeries({
+          id,
+          tvdbId: 2200,
+          seasons: [sonarrSeason(1, false), sonarrSeason(2, true)],
+        });
+
+      await sonarrScanner.syncSeries(0, 1);
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.FAILED
+      );
+    });
+
+    it('keeps the request while the requested season is monitored', async () => {
+      const request = await seedLinked(2201);
+      getSeriesByIdImpl = async (id) =>
+        fakeSonarrSeries({
+          id,
+          tvdbId: 2201,
+          seasons: [sonarrSeason(1, true), sonarrSeason(2, false)],
+        });
+
+      await sonarrScanner.syncSeries(0, 1);
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.APPROVED
+      );
+    });
+
+    it('fails the request and resets the show when Sonarr deleted it', async () => {
+      const request = await seedLinked(2202);
+
+      await sonarrScanner.syncSeries(0, 1);
+
+      const updated = await reload(request);
+      assert.strictEqual(updated.status, MediaRequestStatus.FAILED);
+      assert.strictEqual(updated.media.status, MediaStatus.UNKNOWN);
     });
   });
 });

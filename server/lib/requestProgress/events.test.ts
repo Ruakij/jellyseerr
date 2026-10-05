@@ -15,8 +15,10 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
+import { DEBOUNCE_MS } from '@server/lib/requestProgress/debounce';
 import {
   handleCommand,
+  onSignalRMessage,
   queueEtaMs,
   reconcileJellyfin,
   reconstructProgress,
@@ -30,6 +32,8 @@ import progressTracker, {
   ProgressTracker,
   WAITING_FOR_RELEASE,
 } from '@server/lib/requestProgress/tracker';
+import { radarrScanner } from '@server/lib/scanners/radarr';
+import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
@@ -781,5 +785,51 @@ describe('request status', () => {
       .steps.find((s) => s.key === 'searching')!;
     assert.equal(step.status, 'failed');
     assert.equal(step.error, 'Request failed');
+  });
+});
+
+describe('onSignalRMessage', () => {
+  it('syncs each changed item once per burst of events', async () => {
+    const syncMovie = mock.method(radarrScanner, 'syncMovie', async () => {});
+    const syncSeries = mock.method(sonarrScanner, 'syncSeries', async () => {});
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      onSignalRMessage(radarr, { type: 'movie', action: 'updated', id: 42 });
+      onSignalRMessage(radarr, {
+        type: 'movieFile',
+        action: 'deleted',
+        id: 9,
+        movieId: 42,
+      });
+      onSignalRMessage(radarr, { type: 'movie', action: 'deleted', id: 7 });
+      onSignalRMessage(
+        { type: 'sonarr', serverId: 1 },
+        { type: 'episodeFile', action: 'deleted', id: 3, seriesId: 5 }
+      );
+      onSignalRMessage(
+        { type: 'sonarr', serverId: 1 },
+        { type: 'series', action: 'updated', id: 5 }
+      );
+      assert.equal(syncMovie.mock.callCount(), 0);
+
+      mock.timers.tick(DEBOUNCE_MS);
+      await new Promise(setImmediate);
+
+      assert.deepEqual(
+        syncMovie.mock.calls.map((c) => c.arguments),
+        [
+          [0, 42],
+          [0, 7],
+        ]
+      );
+      assert.deepEqual(
+        syncSeries.mock.calls.map((c) => c.arguments),
+        [[1, 5]]
+      );
+    } finally {
+      mock.timers.reset();
+      syncMovie.mock.restore();
+      syncSeries.mock.restore();
+    }
   });
 });

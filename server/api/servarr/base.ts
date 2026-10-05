@@ -124,6 +124,11 @@ interface HistoryResponse {
   records: HistoryRecord[];
 }
 
+/** The request failed with a 404, i.e. the item does not exist in Radarr/Sonarr. */
+export const isNotFound = (e: Error) =>
+  (e.cause as { response?: { status?: number } } | undefined)?.response
+    ?.status === 404;
+
 class ServarrBase<QueueItemAppendT> extends ExternalAPI {
   static buildUrl(settings: DVRSettings, path?: string): string {
     return `${settings.useSsl ? 'https' : 'http'}://${settings.hostname}:${
