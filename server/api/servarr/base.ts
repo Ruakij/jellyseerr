@@ -276,6 +276,25 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
     }
   };
 
+  /** All records of one Radarr movie or Sonarr series. */
+  public getItemHistory = async (id: number): Promise<HistoryRecord[]> => {
+    const [path, param] =
+      this.apiName === 'Radarr'
+        ? ['/history/movie', 'movieId']
+        : ['/history/series', 'seriesId'];
+    try {
+      const response = await this.axios.get<HistoryRecord[]>(path, {
+        params: { [param]: id, includeEpisode: true },
+      });
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[${this.apiName}] Failed to retrieve history: ${e.message}`,
+        { cause: e }
+      );
+    }
+  };
+
   public getTags = async (): Promise<Tag[]> => {
     try {
       const response = await this.axios.get<Tag[]>(`/tag`);
@@ -328,7 +347,7 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
     await this.runCommand('RefreshMonitoredDownloads', {});
   }
 
-  protected async runCommand(
+  public async runCommand(
     commandName: string,
     options: Record<string, unknown>
   ): Promise<void> {

@@ -25,6 +25,7 @@ interface EpisodeResult {
   overview: string;
   hasFile: boolean;
   monitored: boolean;
+  lastSearchTime?: string;
   absoluteEpisodeNumber: number;
   unverifiedSceneNumbering: boolean;
   id: number;
