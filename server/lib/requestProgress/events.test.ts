@@ -15,9 +15,11 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
+import availabilitySync from '@server/lib/availabilitySync';
 import { DEBOUNCE_MS } from '@server/lib/requestProgress/debounce';
 import {
   handleCommand,
+  onJellyfinRemoved,
   onSignalRMessage,
   queueEtaMs,
   reconcileJellyfin,
@@ -830,6 +832,41 @@ describe('onSignalRMessage', () => {
       mock.timers.reset();
       syncMovie.mock.restore();
       syncSeries.mock.restore();
+    }
+  });
+});
+
+describe('onJellyfinRemoved', () => {
+  it('checks each movie or series behind removed items once per burst', async () => {
+    const { media } = await setup({ jellyfinMediaId: 'jf-movie' });
+    const uhd = Object.assign(new Media(), {
+      tmdbId: 551,
+      mediaType: MediaType.TV,
+      jellyfinMediaId4k: 'jf-series-4k',
+    });
+    await getRepository(Media).save(uhd);
+    const syncMedia = mock.method(
+      availabilitySync,
+      'syncMedia',
+      async () => {}
+    );
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      await onJellyfinRemoved(['jf-movie', 'jf-episode']);
+      await onJellyfinRemoved(['jf-movie', 'jf-series-4k']);
+      await onJellyfinRemoved(['jf-season', 'jf-folder']);
+      assert.equal(syncMedia.mock.callCount(), 0);
+
+      mock.timers.tick(DEBOUNCE_MS);
+      await new Promise(setImmediate);
+
+      assert.deepEqual(
+        syncMedia.mock.calls.map((c) => c.arguments).sort(),
+        [[media.id], [uhd.id]].sort()
+      );
+    } finally {
+      mock.timers.reset();
+      syncMedia.mock.restore();
     }
   });
 });
