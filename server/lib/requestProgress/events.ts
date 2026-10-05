@@ -32,7 +32,6 @@ import type {
   TrackedProgress,
 } from '@server/lib/requestProgress/tracker';
 import progressTracker, {
-  REQUEST_FAILED,
   STEP_KEYS,
 } from '@server/lib/requestProgress/tracker';
 import {
@@ -628,13 +627,18 @@ export async function reconstructProgress(
         request.status === MediaRequestStatus.DECLINED,
       reconstructed: true,
     });
-    if (failed) {
+    if (request.status === MediaRequestStatus.FAILED) {
+      tracker.failRequest(
+        media.id,
+        is4k,
+        request.failureReason,
+        request.updatedAt.getTime()
+      );
+    } else if (failed) {
       tracker.fail(
         media.id,
         is4k,
-        request.status === MediaRequestStatus.DECLINED
-          ? REQUEST_DECLINED
-          : REQUEST_FAILED,
+        REQUEST_DECLINED,
         request.updatedAt.getTime()
       );
     } else if (request.status === MediaRequestStatus.APPROVED) {

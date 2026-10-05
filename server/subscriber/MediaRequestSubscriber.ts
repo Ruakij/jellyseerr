@@ -1130,7 +1130,11 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
 
     const request = event.entity as MediaRequest;
     if (request.status === MediaRequestStatus.FAILED && request.media) {
-      progressTracker.failRequest(request.media.id, request.is4k);
+      progressTracker.failRequest(
+        request.media.id,
+        request.is4k,
+        request.failureReason
+      );
     }
 
     try {
