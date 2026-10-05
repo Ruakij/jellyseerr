@@ -18,6 +18,8 @@ import { User } from '@server/entity/User';
 import availabilitySync from '@server/lib/availabilitySync';
 import { DEBOUNCE_MS } from '@server/lib/requestProgress/debounce';
 import {
+  FULL_SYNC_DEBOUNCE_MS,
+  REMOVAL_DEBOUNCE_MS,
   handleCommand,
   onJellyfinRemoved,
   onSignalRMessage,
@@ -56,6 +58,21 @@ Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
   },
   configurable: true,
 });
+let sonarrSeasons: {
+  seasonNumber: number;
+  statistics: { episodeFileCount: number; episodeCount: number };
+}[] = [];
+let sonarrEpisodes: Record<string, unknown>[] = [];
+for (const [name, impl] of [
+  ['getSeriesById', async () => ({ monitored, seasons: sonarrSeasons })],
+  ['getEpisodes', async () => sonarrEpisodes],
+] as const) {
+  Object.defineProperty(SonarrAPI.prototype, name, {
+    set() {},
+    get: () => impl,
+    configurable: true,
+  });
+}
 for (const Api of [RadarrAPI, SonarrAPI]) {
   for (const [name, impl] of [
     ['getHistory', async () => history],
@@ -224,6 +241,19 @@ describe('refreshServer', () => {
       })),
     ];
 
+    const stats = (episodeFileCount: number, episodeCount: number) => ({
+      episodeFileCount,
+      episodeCount,
+    });
+    sonarrSeasons = [
+      { seasonNumber: 1, statistics: stats(10, 10) },
+      { seasonNumber: 2, statistics: stats(0, 12) },
+    ];
+    sonarrEpisodes = [
+      { seasonNumber: 1, hasFile: true, monitored: true },
+      { seasonNumber: 2, hasFile: false, monitored: true },
+    ];
+
     await refreshServer('sonarr-0', tracker);
 
     const progress = tracker.get(media.id, false)!;
@@ -240,6 +270,20 @@ describe('refreshServer', () => {
         etaMs: 90_000,
       },
     ]);
+    assert.deepEqual(statusOf(tracker, media.id, 'importing').episodes, {
+      imported: 0,
+      total: 12,
+    });
+
+    // An episode file event refreshes the server with the counts as they are then.
+    sonarrSeasons[1].statistics = stats(7, 12);
+    sonarrEpisodes[1].hasFile = true;
+    await refreshServer('sonarr-0', tracker);
+
+    const importing = statusOf(tracker, media.id, 'importing');
+    assert.equal(importing.status, 'done');
+    assert.deepEqual(importing.episodes, { imported: 7, total: 12 });
+    assert.equal(statusOf(tracker, media.id, 'grabbed').episodes, undefined);
   });
 
   it('fails a blocked import as manual interaction', async () => {
@@ -836,6 +880,92 @@ describe('onSignalRMessage', () => {
   });
 });
 
+// Lets the database lookups behind the handlers finish; only setTimeout is mocked.
+async function settle() {
+  for (let i = 0; i < 50; i++) await new Promise(setImmediate);
+}
+
+describe('content removed in Radarr/Sonarr', () => {
+  it('checks each available media once after the removal events settle', async () => {
+    const sonarr = { type: 'sonarr', serverId: 1 } as const;
+    const { media: movie } = await setup({ status: MediaStatus.AVAILABLE });
+    const series = Object.assign(new Media(), {
+      tmdbId: 552,
+      mediaType: MediaType.TV,
+      status: MediaStatus.AVAILABLE,
+      serviceId: 1,
+      externalServiceId: 5,
+    });
+    const grabbing = Object.assign(new Media(), {
+      tmdbId: 553,
+      mediaType: MediaType.TV,
+      status: MediaStatus.PARTIALLY_AVAILABLE,
+      serviceId: 1,
+      externalServiceId: 6,
+    });
+    await getRepository(Media).save([series, grabbing]);
+    const syncMedia = mock.method(
+      availabilitySync,
+      'syncMedia',
+      async () => {}
+    );
+    const syncMovie = mock.method(radarrScanner, 'syncMovie', async () => {});
+    const syncSeries = mock.method(sonarrScanner, 'syncSeries', async () => {});
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      // A deleted season as Sonarr v4 reports it: file ids only, then the episodes and series.
+      for (const id of [1, 2, 3]) {
+        onSignalRMessage(sonarr, {
+          type: 'episodeFile',
+          action: 'deleted',
+          id,
+        });
+        onSignalRMessage(sonarr, {
+          type: 'episode',
+          action: 'updated',
+          id: 100 + id,
+          seriesId: 5,
+          episodeFileId: 0,
+          hasFile: false,
+        });
+      }
+      onSignalRMessage(sonarr, { type: 'series', action: 'updated', id: 5 });
+      onSignalRMessage(sonarr, {
+        type: 'episode',
+        action: 'updated',
+        id: 200,
+        seriesId: 6,
+        hasFile: false,
+        grabbed: true,
+      });
+      // A deleted movie file as Radarr reports it.
+      onSignalRMessage(radarr, { type: 'movieFile', action: 'deleted', id: 9 });
+      onSignalRMessage(radarr, {
+        type: 'movie',
+        action: 'updated',
+        id: 42,
+        hasFile: false,
+      });
+      await settle();
+      mock.timers.tick(REMOVAL_DEBOUNCE_MS - 1);
+      await settle();
+      assert.equal(syncMedia.mock.callCount(), 0);
+
+      mock.timers.tick(1);
+      await settle();
+      assert.deepEqual(
+        syncMedia.mock.calls.map((c) => c.arguments).sort(),
+        [[movie.id], [series.id]].sort()
+      );
+    } finally {
+      mock.timers.reset();
+      syncMedia.mock.restore();
+      syncMovie.mock.restore();
+      syncSeries.mock.restore();
+    }
+  });
+});
+
 describe('onJellyfinRemoved', () => {
   it('checks each movie or series behind removed items once per burst', async () => {
     const { media } = await setup({ jellyfinMediaId: 'jf-movie' });
@@ -850,23 +980,45 @@ describe('onJellyfinRemoved', () => {
       'syncMedia',
       async () => {}
     );
+    const run = mock.method(availabilitySync, 'run', async () => {});
     mock.timers.enable({ apis: ['setTimeout'] });
     try {
-      await onJellyfinRemoved(['jf-movie', 'jf-episode']);
+      await onJellyfinRemoved(['jf-movie']);
       await onJellyfinRemoved(['jf-movie', 'jf-series-4k']);
-      await onJellyfinRemoved(['jf-season', 'jf-folder']);
       assert.equal(syncMedia.mock.callCount(), 0);
 
-      mock.timers.tick(DEBOUNCE_MS);
-      await new Promise(setImmediate);
+      mock.timers.tick(REMOVAL_DEBOUNCE_MS);
+      await settle();
 
       assert.deepEqual(
         syncMedia.mock.calls.map((c) => c.arguments).sort(),
         [[media.id], [uhd.id]].sort()
       );
+      assert.equal(run.mock.callCount(), 0);
     } finally {
       mock.timers.reset();
       syncMedia.mock.restore();
+      run.mock.restore();
+    }
+  });
+
+  it('runs the full availability sync once for a burst of unknown items', async () => {
+    const run = mock.method(availabilitySync, 'run', async () => {});
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      await onJellyfinRemoved(['jf-episode-1', 'jf-season']);
+      mock.timers.tick(FULL_SYNC_DEBOUNCE_MS - 1);
+      await onJellyfinRemoved(['jf-episode-2']);
+      mock.timers.tick(FULL_SYNC_DEBOUNCE_MS - 1);
+      await settle();
+      assert.equal(run.mock.callCount(), 0);
+
+      mock.timers.tick(1);
+      await settle();
+      assert.equal(run.mock.callCount(), 1);
+    } finally {
+      mock.timers.reset();
+      run.mock.restore();
     }
   });
 });

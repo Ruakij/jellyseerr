@@ -223,6 +223,13 @@ function fakeTmdbShow(
 
 import availabilitySync from '@server/lib/availabilitySync';
 
+// The sync singleton and its TMDB client are built while the imports above
+// load, before the prototype stubs exist, so its own arrow-function fields
+// shadow them.
+Object.assign(availabilitySync.tmdb, {
+  getTvShowForScan: async (args: { tvId: number }) => getTvShowImpl(args),
+});
+
 setupTestDb();
 
 function configureSonarr(overrides: Partial<SonarrSettings>[] = [{}]): void {

@@ -17,6 +17,13 @@ export interface ProgressStep {
   estimateRangeMs?: [number, number]; // 95% confidence interval of estimateMs; only when enabled and enough samples
   error?: string; // set when status is 'failed'
   detail?: string; // searching while running: 'Searching (N indexers)' or the waiting text; grabbed: release title(s)
+  episodes?: ProgressEpisodes; // importing of a series request only
+}
+
+// Requested seasons: episodes with a file against monitored aired ones, as Sonarr counts them
+export interface ProgressEpisodes {
+  imported: number;
+  total: number;
 }
 
 export interface ProgressDownload {
@@ -46,6 +53,7 @@ export interface ProgressSearch {
   allowed: boolean; // the viewer may search (manager, or the requester) and it is not playable yet
   retryAfter?: string; // ISO; set while the requester cooldown holds
   lastSearchedAt?: string; // ISO; last search by Radarr/Sonarr for the requested scope
+  running: boolean; // a Radarr/Sonarr search command for the media is in flight
 }
 
 export type EstimatePercentile = 50 | 90 | 95 | 99;

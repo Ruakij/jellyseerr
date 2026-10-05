@@ -34,6 +34,15 @@ const delay = (i: number, step: number) => ({
   animationDelay: `${i * step}s`,
 });
 
+// One sweep of the search icon over the three indexer blocks, a third per block;
+// ps-glide and ps-light in globals.css are keyed to these thirds
+const SEARCH_CYCLE = 2.4;
+// A negative delay starts every block in phase instead of idle for its offset
+const searchTiming = (i: number) => ({
+  animationDelay: `${(i / 3 - 1) * SEARCH_CYCLE}s`,
+  animationDuration: `${SEARCH_CYCLE}s`,
+});
+
 // Animated scenes; keyframes and the .ps-* classes live in globals.css
 const scenes: Record<
   ProgressStepKey,
@@ -90,7 +99,7 @@ const scenes: Record<
         <g key={i}>
           <rect
             className="ps-card"
-            style={delay(i, 0.6)}
+            style={searchTiming(i)}
             x={6 + i * 14}
             y="24"
             width="10"
@@ -101,7 +110,7 @@ const scenes: Record<
           />
           <circle
             className="ps-fall"
-            style={delay(i, 0.6)}
+            style={searchTiming(i)}
             cx={11 + i * 14}
             cy="40"
             r="1.8"
@@ -109,7 +118,7 @@ const scenes: Record<
           />
         </g>
       ))}
-      <g className="ps-glide">
+      <g className="ps-glide" style={searchTiming(0)}>
         <circle
           cx="11"
           cy="12"

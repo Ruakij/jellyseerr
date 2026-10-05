@@ -1,5 +1,7 @@
 import ButtonWithDropdown from '@app/components/Common/ButtonWithDropdown';
 import RequestModal from '@app/components/RequestModal';
+import RequestProgressModal from '@app/components/RequestProgressModal';
+import useRequestProgress from '@app/hooks/useRequestProgress';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
@@ -67,6 +69,24 @@ const RequestButton = ({
   const [showRequestModal, setShowRequestModal] = useState(false);
   const [showRequest4kModal, setShowRequest4kModal] = useState(false);
   const [editRequest, setEditRequest] = useState(false);
+  // is4k of the request just sent, whose progress pop-up is open
+  const [progressIs4k, setProgressIs4k] = useState<boolean>();
+  // a new media item gets its id from the onUpdate revalidation
+  const progress = useRequestProgress(
+    progressIs4k === undefined ? undefined : media?.id,
+    !!progressIs4k
+  );
+  const requestCompleted = (is4k: boolean) => (newStatus: MediaStatus) => {
+    onUpdate();
+    (is4k ? setShowRequest4kModal : setShowRequestModal)(false);
+    if (
+      !editRequest &&
+      (newStatus === MediaStatus.PENDING ||
+        newStatus === MediaStatus.PROCESSING)
+    ) {
+      setProgressIs4k(is4k);
+    }
+  };
 
   // All pending requests
   const activeRequests = media?.requests.filter(
@@ -362,21 +382,28 @@ const RequestButton = ({
 
   const [buttonOne, ...others] = buttons;
 
+  // stays mounted when the request removes the last button
+  const progressModal = (
+    <RequestProgressModal
+      show={progressIs4k !== undefined}
+      progress={progress}
+      onClose={() => setProgressIs4k(undefined)}
+    />
+  );
+
   if (!buttonOne) {
-    return null;
+    return progressModal;
   }
 
   return (
     <>
+      {progressModal}
       <RequestModal
         tmdbId={tmdbId}
         show={showRequestModal}
         type={mediaType}
         editRequest={editRequest ? activeRequest : undefined}
-        onComplete={() => {
-          onUpdate();
-          setShowRequestModal(false);
-        }}
+        onComplete={requestCompleted(false)}
         onCancel={() => setShowRequestModal(false)}
       />
       <RequestModal
@@ -385,10 +412,7 @@ const RequestButton = ({
         type={mediaType}
         editRequest={editRequest ? active4kRequest : undefined}
         is4k
-        onComplete={() => {
-          onUpdate();
-          setShowRequest4kModal(false);
-        }}
+        onComplete={requestCompleted(true)}
         onCancel={() => setShowRequest4kModal(false)}
       />
       <ButtonWithDropdown
