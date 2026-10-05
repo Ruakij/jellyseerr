@@ -19,6 +19,7 @@ import type { AvailableCacheIds } from '@server/lib/cache';
 import cacheManager from '@server/lib/cache';
 import ImageProxy from '@server/lib/imageproxy';
 import { Permission } from '@server/lib/permissions';
+import { restartJellyfinSocket } from '@server/lib/requestProgress/events';
 import { jellyfinFullScanner } from '@server/lib/scanners/jellyfin';
 import { plexFullScanner } from '@server/lib/scanners/plex';
 import type { JobId, Library, MainSettings } from '@server/lib/settings';
@@ -334,6 +335,7 @@ settingsRoutes.post('/jellyfin', async (req, res, next) => {
     settings.jellyfin.serverId = result.Id;
     settings.jellyfin.name = result.ServerName;
     await settings.save();
+    restartJellyfinSocket();
   } catch (e) {
     if (e instanceof ApiError) {
       logger.error('Something went wrong testing Jellyfin connection', {
