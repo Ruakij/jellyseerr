@@ -97,6 +97,13 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     return this.entries.get(key(mediaId, is4k));
   }
 
+  /** Entries not playable yet; failed ones included, as a later event may recover them. */
+  public incomplete(): TrackedProgress[] {
+    return [...this.entries.values()].filter(
+      (e) => e.steps.playable.status !== 'done'
+    );
+  }
+
   /** Entries still waiting for a step. */
   public active(): TrackedProgress[] {
     return [...this.entries.values()].filter((e) => !this.finished(e));
