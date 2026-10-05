@@ -119,7 +119,10 @@ describe('JellyfinSocket', () => {
   });
 
   const startSocket = () => {
-    const client = new JellyfinSocket(() => 'ws://jf/socket?api_key=k');
+    const client = new JellyfinSocket(() => ({
+      url: 'ws://jf/socket',
+      headers: {},
+    }));
     client.start();
     return client;
   };
