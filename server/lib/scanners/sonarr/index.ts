@@ -1,4 +1,5 @@
 import { getMetadataProvider } from '@server/api/metadata';
+import { isNotFound } from '@server/api/servarr/base';
 import type { SonarrSeries } from '@server/api/servarr/sonarr';
 import SonarrAPI from '@server/api/servarr/sonarr';
 import TheMovieDb from '@server/api/themoviedb';
@@ -81,10 +82,7 @@ class SonarrScanner
             'info'
           );
 
-          this.sonarrApi = new SonarrAPI({
-            apiKey: server.apiKey,
-            url: SonarrAPI.buildUrl(server, '/api/v3'),
-          });
+          this.sonarrApi = sonarrApi(server);
 
           this.items = await this.sonarrApi.getSeries();
 
@@ -147,8 +145,62 @@ class SonarrScanner
     }
   }
 
-  private async processSonarrSeries(sonarrSeries: SonarrSeries) {
-    const server4k = this.enable4kShow && this.currentServer.is4k;
+  /**
+   * Processes one series Seerr links to a Sonarr series, as the scan would, e.g. after a Sonarr
+   * event. A series gone from that server and from every other one of its profile type is handled
+   * as the orphan cleanup handles it.
+   */
+  public async syncSeries(serverId: number, sonarrSeriesId: number) {
+    const settings = getSettings();
+    const server = settings.sonarr.find((s) => s.id === serverId);
+    if (!server?.syncEnabled) return;
+    this.enable4kShow = settings.sonarr.some((s) => s.is4k);
+    const is4k = this.enable4kShow && server.is4k;
+    const media = await getRepository(Media).findOne({
+      where: is4k
+        ? {
+            mediaType: MediaType.TV,
+            serviceId4k: serverId,
+            externalServiceId4k: sonarrSeriesId,
+          }
+        : {
+            mediaType: MediaType.TV,
+            serviceId: serverId,
+            externalServiceId: sonarrSeriesId,
+          },
+      relations: { seasons: true },
+    });
+    if (!media) return;
+
+    try {
+      const series = await sonarrApi(server).getSeriesById(sonarrSeriesId);
+      return this.processSonarrSeries(series, server);
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+    }
+
+    const others = settings.sonarr.filter(
+      (s) => s.id !== serverId && (this.enable4kShow && s.is4k) === is4k
+    );
+    // As in the orphan cleanup: a server not synced may hold the series.
+    if (!media.tvdbId || others.some((s) => !s.syncEnabled)) return;
+    for (const other of others) {
+      const series = await sonarrApi(other)
+        .getSeriesByTvdbId(media.tvdbId)
+        .catch((e: Error) => {
+          if (e.message === 'Series not found') return undefined;
+          throw e;
+        });
+      if (series?.id) return this.processSonarrSeries(series, other);
+    }
+    await this.resetOrphanedShow(media, is4k);
+  }
+
+  private async processSonarrSeries(
+    sonarrSeries: SonarrSeries,
+    server = this.currentServer
+  ) {
+    const server4k = this.enable4kShow && server.is4k;
     if (server4k) {
       this.scanned4kTvdbIds.add(sonarrSeries.tvdbId);
     } else {
@@ -232,7 +284,7 @@ class SonarrScanner
       }
 
       await this.processShow(tmdbId, sonarrSeries.tvdbId, processableSeasons, {
-        serviceId: this.currentServer.id,
+        serviceId: server.id,
         externalServiceId: sonarrSeries.id,
         externalServiceSlug: sonarrSeries.titleSlug,
         title: sonarrSeries.title,
@@ -246,6 +298,24 @@ class SonarrScanner
     }
   }
 
+  /** For a show no Sonarr server of its profile type has; needs the seasons relation. */
+  private async resetOrphanedShow(media: Media, is4k: boolean) {
+    const statusKey = is4k ? 'status4k' : 'status';
+    if (media[statusKey] !== MediaStatus.PROCESSING) return;
+    await this.failUnfulfillableRequests(media, is4k, null);
+    media[statusKey] = MediaStatus.UNKNOWN;
+    for (const season of media.seasons) {
+      if (season[statusKey] === MediaStatus.PROCESSING) {
+        season[statusKey] = MediaStatus.UNKNOWN;
+      }
+    }
+    await getRepository(Media).save(media);
+    this.log(
+      `Show ${media.tmdbId} (tvdb: ${media.tvdbId}) not found in any ${is4k ? '4K ' : ''}Sonarr server. ${is4k ? '4K status' : 'Status'} reset to UNKNOWN.`,
+      'info'
+    );
+  }
+
   private async cleanupOrphanedShows(): Promise<void> {
     const mediaRepository = getRepository(Media);
 
@@ -257,18 +327,7 @@ class SonarrScanner
 
       for (const media of processingShows) {
         if (media.tvdbId && !this.scannedTvdbIds.has(media.tvdbId)) {
-          await this.failUnfulfillableRequests(media, false, null);
-          media.status = MediaStatus.UNKNOWN;
-          for (const season of media.seasons) {
-            if (season.status === MediaStatus.PROCESSING) {
-              season.status = MediaStatus.UNKNOWN;
-            }
-          }
-          await mediaRepository.save(media);
-          this.log(
-            `Show ${media.tmdbId} (tvdb: ${media.tvdbId}) not found in any Sonarr server. Status reset to UNKNOWN.`,
-            'info'
-          );
+          await this.resetOrphanedShow(media, false);
         }
       }
     } else {
@@ -286,18 +345,7 @@ class SonarrScanner
 
       for (const media of processing4kShows) {
         if (media.tvdbId && !this.scanned4kTvdbIds.has(media.tvdbId)) {
-          await this.failUnfulfillableRequests(media, true, null);
-          media.status4k = MediaStatus.UNKNOWN;
-          for (const season of media.seasons) {
-            if (season.status4k === MediaStatus.PROCESSING) {
-              season.status4k = MediaStatus.UNKNOWN;
-            }
-          }
-          await mediaRepository.save(media);
-          this.log(
-            `Show ${media.tmdbId} (tvdb: ${media.tvdbId}) not found in any 4K Sonarr server. 4K status reset to UNKNOWN.`,
-            'info'
-          );
+          await this.resetOrphanedShow(media, true);
         }
       }
     } else if (this.enable4kShow) {
@@ -308,5 +356,11 @@ class SonarrScanner
     }
   }
 }
+
+const sonarrApi = (server: SonarrSettings) =>
+  new SonarrAPI({
+    apiKey: server.apiKey,
+    url: SonarrAPI.buildUrl(server, '/api/v3'),
+  });
 
 export const sonarrScanner = new SonarrScanner();
