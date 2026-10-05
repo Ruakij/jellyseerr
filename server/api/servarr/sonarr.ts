@@ -25,6 +25,7 @@ interface EpisodeResult {
   overview: string;
   hasFile: boolean;
   monitored: boolean;
+  lastSearchTime?: string;
   absoluteEpisodeNumber: number;
   unverifiedSceneNumbering: boolean;
   id: number;
@@ -408,6 +409,38 @@ class SonarrAPI extends ServarrBase<{
       });
       throw new Error('Failed to monitor episodes', { cause: e });
     }
+  }
+
+  /**
+   * Sets a series, the given seasons and their episodes to monitored, as requesting them does.
+   * `episodes` are the current episodes of the series.
+   */
+  public async monitorSeasons(
+    seriesId: number,
+    seasons: number[],
+    episodes: EpisodeResult[]
+  ): Promise<void> {
+    const series = await this.getSeriesById(seriesId);
+    if (
+      !series.monitored ||
+      series.seasons.some(
+        (s) => seasons.includes(s.seasonNumber) && !s.monitored
+      )
+    ) {
+      series.monitored = true;
+      series.seasons = this.buildSeasonList(seasons, series.seasons);
+      try {
+        await this.axios.put<SonarrSeries>('/series', series);
+      } catch (e) {
+        throw new Error(`[Sonarr] Failed to monitor series: ${e.message}`, {
+          cause: e,
+        });
+      }
+    }
+    const unmonitored = episodes
+      .filter((e) => seasons.includes(e.seasonNumber) && !e.monitored)
+      .map((e) => e.id);
+    if (unmonitored.length > 0) await this.monitorEpisodes(unmonitored);
   }
 
   private buildSeasonList(

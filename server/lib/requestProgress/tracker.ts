@@ -36,9 +36,17 @@ export interface TrackedProgress {
   downloadId?: string;
   /** Downloads given up on by a re-search; their history no longer applies. */
   staleDownloadIds: string[];
-  searchCompletedAt?: number;
-  /** Radarr/Sonarr command whose messages make up the searching detail. */
+  /** Radarr/Sonarr search command running for the media, if any. */
   searchCommandId?: number;
+  /** Indexers the running search queries, from its messages. */
+  searchIndexers?: number;
+  lastSearchedAt?: number;
+  /** Radarr/Sonarr holds no file of the requested media, so Jellyfin cannot serve it either. */
+  filesMissing?: boolean;
+  /** Why Radarr/Sonarr will not deliver it, e.g. the item was removed there. */
+  arrError?: string;
+  /** Why sending the request to Radarr/Sonarr failed, from the request. */
+  failureReason?: string;
   downloads?: ProgressDownload[];
   playUrl?: string;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
@@ -47,6 +55,17 @@ export interface TrackedProgress {
 }
 
 const key = (mediaId: number, is4k: boolean) => `${mediaId}:${is4k}`;
+
+export const REQUEST_FAILED = 'Request failed';
+
+export const WAITING_FOR_RELEASE = 'No release found yet, waiting for RSS';
+
+const searchingDetail = (entry: TrackedProgress) =>
+  entry.searchCommandId === undefined
+    ? WAITING_FOR_RELEASE
+    : entry.searchIndexers
+      ? `Searching (${entry.searchIndexers} indexers)`
+      : 'Searching';
 const iso = (ms?: number) =>
   ms === undefined ? undefined : new Date(ms).toISOString();
 
@@ -128,6 +147,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
 
   public entry(mediaId: number, is4k: boolean): TrackedProgress | undefined {
     return this.entries.get(key(mediaId, is4k));
+  }
+
+  /** All entries, finished ones included until they are evicted. */
+  public tracked(): TrackedProgress[] {
+    return [...this.entries.values()];
   }
 
   /** Entries not playable yet; failed ones included, as a later event may recover them. */
@@ -219,25 +243,67 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     this.changed(entry);
   }
 
+  /** Shows the request status FAILED, with its failure reason or the one Radarr/Sonarr gives. */
+  public failRequest(
+    mediaId: number,
+    is4k: boolean,
+    failureReason?: string | null,
+    at = this.now()
+  ): void {
+    const entry = this.entry(mediaId, is4k);
+    if (entry && failureReason && entry.failureReason !== failureReason) {
+      entry.failureReason = failureReason;
+      // A run already failed by the send keeps its step, only its error text changes.
+      if (this.finished(entry)) this.changed(entry);
+    }
+    this.fail(mediaId, is4k, REQUEST_FAILED, at);
+  }
+
   /** Restarts the search, e.g. after Radarr/Sonarr gave up on a failed download. */
   public research(mediaId: number, is4k: boolean, at = this.now()): void {
     const entry = this.entry(mediaId, is4k);
     if (!entry) return;
     if (entry.downloadId) entry.staleDownloadIds.push(entry.downloadId);
     entry.downloadId = undefined;
-    entry.searchCompletedAt = undefined;
-    entry.searchCommandId = undefined;
     entry.downloads = undefined;
-    for (const k of STEP_KEYS.slice(STEP_KEYS.indexOf('grabbed'))) {
+    this.reopen(mediaId, is4k, 'searching', at);
+  }
+
+  /** Runs `step` again from `at`, with the steps after it pending. */
+  public reopen(
+    mediaId: number,
+    is4k: boolean,
+    step: ProgressStepKey,
+    at = this.now()
+  ): void {
+    const entry = this.entry(mediaId, is4k);
+    if (!entry) return;
+    for (const k of STEP_KEYS.slice(STEP_KEYS.indexOf(step) + 1)) {
       entry.steps[k] = { status: 'pending' };
     }
-    entry.steps.searching = { status: 'running', startedAt: at };
+    entry.steps[step] = { status: 'running', startedAt: at };
     this.changed(entry);
   }
 
-  public searchCompleted(mediaId: number, is4k: boolean, at = this.now()) {
+  public setSearch(
+    mediaId: number,
+    is4k: boolean,
+    search: Pick<
+      TrackedProgress,
+      'searchCommandId' | 'searchIndexers' | 'lastSearchedAt'
+    >
+  ): void {
     const entry = this.entry(mediaId, is4k);
-    if (entry) entry.searchCompletedAt = at;
+    if (!entry) return;
+    const before = searchingDetail(entry);
+    const lastSearchedAt = entry.lastSearchedAt;
+    Object.assign(entry, search);
+    if (
+      searchingDetail(entry) !== before ||
+      entry.lastSearchedAt !== lastSearchedAt
+    ) {
+      this.changed(entry);
+    }
   }
 
   public setDetail(
@@ -292,8 +358,16 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         finishedAt: iso(state.finishedAt),
         estimateMs: estimate?.valueMs,
         estimateRangeMs: showConfidenceInterval ? estimate?.rangeMs : undefined,
-        error: state.error,
-        detail: state.detail,
+        error:
+          state.status === 'failed' && entry.failureReason
+            ? entry.failureReason
+            : state.error === REQUEST_FAILED
+              ? (entry.arrError ?? REQUEST_FAILED)
+              : state.error,
+        detail:
+          k === 'searching' && state.status === 'running'
+            ? searchingDetail(entry)
+            : state.detail,
       };
     });
     const totals = entry.serverKey

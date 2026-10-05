@@ -53,6 +53,9 @@ export const messages = defineMessages('components.PermissionEdit', {
   advancedrequest: 'Advanced Requests',
   advancedrequestDescription:
     'Grant permission to modify advanced media request options.',
+  requestsearch: 'Trigger Searches',
+  requestsearchDescription:
+    'Grant permission to trigger a new Radarr/Sonarr search for open requests from the request progress pop-up.',
   autorequest: 'Auto-Request',
   autorequestDescription:
     'Grant permission to automatically submit requests for non-4K media via Plex Watchlist.',
@@ -127,6 +130,12 @@ export const PermissionEdit = ({
           name: intl.formatMessage(messages.advancedrequest),
           description: intl.formatMessage(messages.advancedrequestDescription),
           permission: Permission.REQUEST_ADVANCED,
+        },
+        {
+          id: 'requestsearch',
+          name: intl.formatMessage(messages.requestsearch),
+          description: intl.formatMessage(messages.requestsearchDescription),
+          permission: Permission.REQUEST_SEARCH,
         },
         {
           id: 'viewrequests',
