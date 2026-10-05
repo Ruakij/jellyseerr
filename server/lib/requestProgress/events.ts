@@ -123,33 +123,55 @@ async function commandArrIds(
   return [...ids];
 }
 
+// A search repeats its command message per processed release with the same ids.
+// ponytail: cleared at the cap, in case terminal messages of some commands never arrive.
+const commandMedia = new Map<
+  string,
+  Promise<{ media: Media; is4k: boolean }[]>
+>();
+
+async function findCommandMedia(source: SignalRSource, event: CommandEvent) {
+  const cacheKey = `${serverKey(source.type, source.serverId)}:${event.id}`;
+  let found = commandMedia.get(cacheKey);
+  if (!found) {
+    if (commandMedia.size > 1_000) commandMedia.clear();
+    found = commandArrIds(source, event).then(async (arrIds) =>
+      (await Promise.all(arrIds.map((id) => findMedia(source, id)))).flat()
+    );
+    commandMedia.set(cacheKey, found);
+    found.catch(() => commandMedia.delete(cacheKey));
+  }
+  if (event.status === 'completed' || SEARCH_FAILED.includes(event.status)) {
+    commandMedia.delete(cacheKey);
+  }
+  return found;
+}
+
 export async function handleCommand(
   source: SignalRSource,
   event: CommandEvent,
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
   const key = serverKey(source.type, source.serverId);
-  for (const arrId of await commandArrIds(source, event)) {
-    for (const { media, is4k } of await findMedia(source, arrId)) {
-      const entry = tracker.entry(media.id, is4k);
-      if (event.status === 'started') {
-        const downloadFailed = Object.values(entry?.steps ?? {}).some(
-          (s) => s.error === DOWNLOAD_FAILED
-        );
-        // An automatic search on a grabbed item is housekeeping, not a new attempt.
-        const userResearch =
-          event.trigger === 'manual' &&
-          entry?.steps.grabbed.status === 'done' &&
-          entry.steps.playable.status !== 'done';
-        if (downloadFailed || userResearch) {
-          tracker.research(media.id, is4k);
-        } else if (!entry && isWaiting(is4k ? media.status4k : media.status)) {
-          // Covers requests sent before a restart or added in Radarr/Sonarr directly.
-          tracker.ensure({ mediaId: media.id, is4k, serverKey: key });
-        }
-      } else if (entry?.steps.searching.status !== 'running') {
-        continue;
-      } else if (event.status === 'completed') {
+  for (const { media, is4k } of await findCommandMedia(source, event)) {
+    const entry = tracker.entry(media.id, is4k);
+    if (event.status === 'started') {
+      const downloadFailed = Object.values(entry?.steps ?? {}).some(
+        (s) => s.error === DOWNLOAD_FAILED
+      );
+      // An automatic search on a grabbed item is housekeeping, not a new attempt.
+      const userResearch =
+        event.trigger === 'manual' &&
+        entry?.steps.grabbed.status === 'done' &&
+        entry.steps.playable.status !== 'done';
+      if (downloadFailed || userResearch) {
+        tracker.research(media.id, is4k);
+      } else if (!entry && isWaiting(is4k ? media.status4k : media.status)) {
+        // Covers requests sent before a restart or added in Radarr/Sonarr directly.
+        tracker.ensure({ mediaId: media.id, is4k, serverKey: key });
+      }
+    } else if (entry?.steps.searching.status === 'running') {
+      if (event.status === 'completed') {
         if (event.reportsDownloaded === 0) {
           tracker.fail(media.id, is4k, NO_RESULTS);
         } else if (event.reportsDownloaded === undefined) {
@@ -162,6 +184,18 @@ export async function handleCommand(
           `Search failed${event.message ? `: ${event.message}` : ''}`
         );
       }
+    }
+
+    // The search that runs while searching owns the detail, up to its final report count.
+    const current = tracker.entry(media.id, is4k);
+    if (
+      event.message &&
+      current &&
+      (current.steps.searching.status === 'running' ||
+        current.searchCommandId === event.id)
+    ) {
+      current.searchCommandId = event.id;
+      tracker.setDetail(media.id, is4k, 'searching', event.message);
     }
   }
   if (event.status === 'completed') serverRefresh.push(key);
