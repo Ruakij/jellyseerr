@@ -118,6 +118,7 @@ describe('parseSignalRMessage', () => {
         seriesId: 34,
         episodeFileId: 0,
         hasFile: false,
+        grabbed: true,
       }
     );
   });
@@ -180,7 +181,13 @@ describe('parseSignalRMessage', () => {
         name: 'movie',
         body: { action: 'updated', resource: { id: 7, tmdbId: 550 } },
       }),
-      { type: 'movie', action: 'updated', id: 7, tmdbId: 550 }
+      {
+        type: 'movie',
+        action: 'updated',
+        id: 7,
+        tmdbId: 550,
+        hasFile: undefined,
+      }
     );
     assert.deepStrictEqual(
       parseSignalRMessage({
