@@ -410,6 +410,12 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
             await mediaRepository.save(media);
           })
           .catch(async () => {
+            // Ahead of saving FAILED: a failed run keeps its first error.
+            progressTracker.fail(
+              entity.media.id,
+              entity.is4k,
+              'Sending the request to Radarr failed'
+            );
             try {
               const requestRepository = getRepository(MediaRequest);
 
@@ -427,12 +433,6 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
                     : String(saveError),
               });
             }
-
-            progressTracker.fail(
-              entity.media.id,
-              entity.is4k,
-              'Sending the request to Radarr failed'
-            );
 
             logger.warn(
               'Something went wrong sending movie request to Radarr, marking status as FAILED',
@@ -771,6 +771,12 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
             await mediaRepository.save(media);
           })
           .catch(async () => {
+            // Ahead of saving FAILED: a failed run keeps its first error.
+            progressTracker.fail(
+              entity.media.id,
+              entity.is4k,
+              'Sending the request to Sonarr failed'
+            );
             try {
               const requestRepository = getRepository(MediaRequest);
 
@@ -788,12 +794,6 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
                     : String(saveError),
               });
             }
-
-            progressTracker.fail(
-              entity.media.id,
-              entity.is4k,
-              'Sending the request to Sonarr failed'
-            );
 
             logger.warn(
               'Something went wrong sending series request to Sonarr, marking status as FAILED',
@@ -1082,6 +1082,11 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
   public async afterUpdate(event: UpdateEvent<MediaRequest>): Promise<void> {
     if (!event.entity) {
       return;
+    }
+
+    const request = event.entity as MediaRequest;
+    if (request.status === MediaRequestStatus.FAILED && request.media) {
+      progressTracker.failRequest(request.media.id, request.is4k);
     }
 
     try {

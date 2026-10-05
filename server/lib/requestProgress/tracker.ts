@@ -43,6 +43,8 @@ export interface TrackedProgress {
   lastSearchedAt?: number;
   /** Radarr/Sonarr holds no file of the requested media, so Jellyfin cannot serve it either. */
   filesMissing?: boolean;
+  /** Why Radarr/Sonarr will not deliver it, e.g. the item was removed there. */
+  arrError?: string;
   downloads?: ProgressDownload[];
   playUrl?: string;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
@@ -51,6 +53,8 @@ export interface TrackedProgress {
 }
 
 const key = (mediaId: number, is4k: boolean) => `${mediaId}:${is4k}`;
+
+export const REQUEST_FAILED = 'Request failed';
 
 export const WAITING_FOR_RELEASE = 'No release found yet, waiting for RSS';
 
@@ -237,6 +241,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     this.changed(entry);
   }
 
+  /** Shows the request status FAILED, with the reason Radarr/Sonarr gives when known. */
+  public failRequest(mediaId: number, is4k: boolean, at = this.now()): void {
+    this.fail(mediaId, is4k, REQUEST_FAILED, at);
+  }
+
   /** Restarts the search, e.g. after Radarr/Sonarr gave up on a failed download. */
   public research(mediaId: number, is4k: boolean, at = this.now()): void {
     const entry = this.entry(mediaId, is4k);
@@ -336,7 +345,10 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         finishedAt: iso(state.finishedAt),
         estimateMs: estimate?.valueMs,
         estimateRangeMs: showConfidenceInterval ? estimate?.rangeMs : undefined,
-        error: state.error,
+        error:
+          state.error === REQUEST_FAILED
+            ? (entry.arrError ?? REQUEST_FAILED)
+            : state.error,
         detail:
           k === 'searching' && state.status === 'running'
             ? searchingDetail(entry)

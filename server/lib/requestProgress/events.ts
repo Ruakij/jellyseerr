@@ -30,7 +30,10 @@ import type {
   ProgressTracker,
   TrackedProgress,
 } from '@server/lib/requestProgress/tracker';
-import progressTracker from '@server/lib/requestProgress/tracker';
+import progressTracker, {
+  REQUEST_FAILED,
+  STEP_KEYS,
+} from '@server/lib/requestProgress/tracker';
 import {
   jellyfinItemScanner,
   jellyfinRecentScanner,
@@ -320,14 +323,10 @@ async function arrState(
 }
 
 const ARR_NAME = { radarr: 'Radarr', sonarr: 'Sonarr' } as const;
-const removedError = (type: ServarrType) => `Removed from ${ARR_NAME[type]}`;
-const unmonitoredError = (type: ServarrType) =>
-  `Not monitored in ${ARR_NAME[type]}`;
 
 /**
- * Files appearing finish the import; files disappearing send the run back to searching. Without
- * files, an item gone from Radarr/Sonarr or no longer monitored fails the search, as nothing would
- * ever grab it.
+ * Files appearing finish the import; files disappearing send the run back to searching. Whether
+ * the request failed is up to the request status, see `ProgressTracker.failRequest`.
  */
 function applyArrState(
   entry: TrackedProgress,
@@ -340,35 +339,21 @@ function applyArrState(
     tracker.setSearch(mediaId, is4k, { lastSearchedAt: state.lastSearchedAt });
   }
   entry.filesMissing = !state.hasFile;
+  entry.arrError = state.removed
+    ? `Removed from ${ARR_NAME[type]}`
+    : state.monitored
+      ? undefined
+      : `Not monitored in ${ARR_NAME[type]}`;
   // Awaiting approval: nothing was sent to Radarr/Sonarr yet.
   if (steps.requested.status !== 'done') return;
   if (state.hasFile) {
     tracker.advance(mediaId, is4k, 'importing');
-    return;
-  }
-
-  const imported = steps.importing.status === 'done';
-  // An unmonitored item still imports what it already downloads.
-  const error = state.removed
-    ? removedError(type)
-    : !state.monitored && (imported || steps.grabbed.status === 'pending')
-      ? unmonitoredError(type)
-      : undefined;
-  const searching = steps.searching;
-  if (searching.status === 'failed' && searching.error === error) return;
-  const arrFailed =
-    searching.status === 'failed' &&
-    (searching.error === removedError(type) ||
-      searching.error === unmonitoredError(type));
-  if (
-    imported ||
-    (error &&
-      (steps.grabbed.status !== 'pending' || searching.status !== 'running')) ||
-    (!error && arrFailed)
+  } else if (
+    steps.importing.status === 'done' &&
+    !STEP_KEYS.some((k) => steps[k].status === 'failed')
   ) {
     tracker.research(mediaId, is4k);
   }
-  if (error) tracker.fail(mediaId, is4k, error);
 }
 
 /** Milliseconds until a queue item completes, as the download client estimates it. */
@@ -579,7 +564,6 @@ export async function reconcileJellyfin(
 }
 
 const REQUEST_DECLINED = 'Request declined';
-const REQUEST_FAILED = 'Request failed';
 
 /**
  * Starts entries for media whose newest request the tracker never saw, e.g. one sent before a
