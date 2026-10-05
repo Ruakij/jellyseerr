@@ -257,8 +257,9 @@ const RequestProgressModal = ({
     const est = estimateOf(progress, s);
     const fraction =
       s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
+    // searching has no progress signal, elapsed time against its estimate would fake one
     const percent =
-      s.status !== 'running'
+      s.status !== 'running' || s.key === 'searching'
         ? undefined
         : fraction !== undefined
           ? Math.round(fraction * 100)
