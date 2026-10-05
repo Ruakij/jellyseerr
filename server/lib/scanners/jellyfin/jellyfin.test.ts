@@ -20,13 +20,16 @@ import Media from '@server/entity/Media';
 import MediaRequest from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
 import { User } from '@server/entity/User';
-import { jellyfinFullScanner } from '@server/lib/scanners/jellyfin';
+import {
+  jellyfinFullScanner,
+  jellyfinItemScanner,
+} from '@server/lib/scanners/jellyfin';
 import type { Library } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
 import { runWithMockTimers } from '@server/test/runWithMockTimers';
 import assert from 'node:assert/strict';
-import { beforeEach, describe, it } from 'node:test';
+import { beforeEach, describe, it, mock } from 'node:test';
 
 // --- Mock animeList.sync to avoid filesystem/network I/O in tests ---
 Object.defineProperty(animeList, 'sync', {
@@ -61,6 +64,18 @@ Object.defineProperty(JellyfinAPI.prototype, 'getLibraryContents', {
 Object.defineProperty(JellyfinAPI.prototype, 'getItemData', {
   get() {
     return async (id: string) => getItemDataImpl(id);
+  },
+  set() {},
+  configurable: true,
+});
+
+let getVirtualFoldersImpl: () => Promise<
+  { ItemId: string; Locations: string[] }[]
+> = async () => [];
+
+Object.defineProperty(JellyfinAPI.prototype, 'getVirtualFolders', {
+  get() {
+    return async () => getVirtualFoldersImpl();
   },
   set() {},
   configurable: true,
@@ -249,6 +264,7 @@ describe('Jellyfin Scanner', () => {
   beforeEach(async () => {
     getLibraryContentsImpl = async () => [];
     getItemDataImpl = async () => undefined;
+    getVirtualFoldersImpl = async () => [];
     getSeasonsImpl = async () => [];
     getEpisodesImpl = async () => [];
     getTvShowImpl = async () => fakeTmdbShow(1);
@@ -598,6 +614,67 @@ describe('Jellyfin Scanner', () => {
         MediaStatus.PARTIALLY_AVAILABLE,
         'Show should stay PARTIALLY_AVAILABLE when a DELETED season is missing from the metadata provider'
       );
+    });
+  });
+
+  describe('runItems', () => {
+    const scanned = async (ids: string[]) => {
+      const processed = mock.method(
+        jellyfinItemScanner as unknown as { processItem: () => Promise<void> },
+        'processItem',
+        async () => undefined
+      );
+      try {
+        await jellyfinItemScanner.runItems(ids);
+        return processed.mock.calls.map(
+          (c) => (c.arguments as unknown as [{ Id: string }])[0].Id
+        );
+      } finally {
+        processed.mock.restore();
+      }
+    };
+
+    // Jellyfin lists only the physical folder and the root as ancestors, never the library.
+    it('scans items under an enabled library location only', async () => {
+      configureJellyfinWithLibrary([
+        { id: 'lib-on', name: 'Shows', enabled: true, type: 'show' },
+        { id: 'lib-off', name: 'Other', enabled: false, type: 'show' },
+      ]);
+      getVirtualFoldersImpl = async () => [
+        { ItemId: 'lib-on', Locations: ['/media/tv/'] },
+        { ItemId: 'lib-off', Locations: ['/media/other'] },
+      ];
+      const paths: Record<string, string> = {
+        'in-on': '/media/tv/Show A',
+        'in-off': '/media/other/Show B',
+      };
+      getItemDataImpl = async (id) =>
+        ({
+          Id: id,
+          Name: id,
+          Type: 'Series',
+          Path: paths[id],
+        }) as JellyfinLibraryItemExtended;
+
+      assert.deepEqual(await scanned(['in-on', 'in-off']), ['in-on']);
+    });
+
+    it('scans items whose library cannot be decided', async () => {
+      configureJellyfinWithLibrary([
+        { id: 'lib-on', name: 'Shows', enabled: true, type: 'show' },
+      ]);
+      getVirtualFoldersImpl = async () => {
+        throw new Error('forbidden');
+      };
+      getItemDataImpl = async (id) =>
+        ({
+          Id: id,
+          Name: id,
+          Type: 'Series',
+          Path: '/anywhere',
+        }) as JellyfinLibraryItemExtended;
+
+      assert.deepEqual(await scanned(['a']), ['a']);
     });
   });
 });
