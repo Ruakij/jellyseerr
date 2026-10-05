@@ -147,6 +147,13 @@ class RadarrScanner
     }
 
     try {
+      const media = await getRepository(Media).findOne({
+        where: { tmdbId: radarrMovie.tmdbId, mediaType: MediaType.MOVIE },
+      });
+      if (media) {
+        await this.failUnfulfillableRequests(media, server4k, radarrMovie);
+      }
+
       await this.processMovie(radarrMovie.tmdbId, {
         is4k: server4k,
         serviceId: this.currentServer.id,
@@ -170,14 +177,13 @@ class RadarrScanner
     if (this.didScanStandard) {
       const processingMovies = await mediaRepository.find({
         where: { mediaType: MediaType.MOVIE, status: MediaStatus.PROCESSING },
-        relations: { requests: true },
       });
 
       for (const media of processingMovies) {
         if (!this.scannedTmdbIds.has(media.tmdbId)) {
+          await this.failUnfulfillableRequests(media, false, null);
           media.status = MediaStatus.UNKNOWN;
           await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, false);
           this.log(
             `Movie ${media.tmdbId} not found in any Radarr server. Status reset to UNKNOWN.`,
             'info'
@@ -197,14 +203,13 @@ class RadarrScanner
           mediaType: MediaType.MOVIE,
           status4k: MediaStatus.PROCESSING,
         },
-        relations: { requests: true },
       });
 
       for (const media of processing4kMovies) {
         if (!this.scanned4kTmdbIds.has(media.tmdbId)) {
+          await this.failUnfulfillableRequests(media, true, null);
           media.status4k = MediaStatus.UNKNOWN;
           await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, true);
           this.log(
             `Movie ${media.tmdbId} not found in any 4K Radarr server. 4K status reset to UNKNOWN.`,
             'info'
