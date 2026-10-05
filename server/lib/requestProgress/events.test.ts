@@ -56,6 +56,21 @@ Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
   },
   configurable: true,
 });
+let sonarrSeasons: {
+  seasonNumber: number;
+  statistics: { episodeFileCount: number; episodeCount: number };
+}[] = [];
+let sonarrEpisodes: Record<string, unknown>[] = [];
+for (const [name, impl] of [
+  ['getSeriesById', async () => ({ monitored, seasons: sonarrSeasons })],
+  ['getEpisodes', async () => sonarrEpisodes],
+] as const) {
+  Object.defineProperty(SonarrAPI.prototype, name, {
+    set() {},
+    get: () => impl,
+    configurable: true,
+  });
+}
 for (const Api of [RadarrAPI, SonarrAPI]) {
   for (const [name, impl] of [
     ['getHistory', async () => history],
@@ -224,6 +239,19 @@ describe('refreshServer', () => {
       })),
     ];
 
+    const stats = (episodeFileCount: number, episodeCount: number) => ({
+      episodeFileCount,
+      episodeCount,
+    });
+    sonarrSeasons = [
+      { seasonNumber: 1, statistics: stats(10, 10) },
+      { seasonNumber: 2, statistics: stats(0, 12) },
+    ];
+    sonarrEpisodes = [
+      { seasonNumber: 1, hasFile: true, monitored: true },
+      { seasonNumber: 2, hasFile: false, monitored: true },
+    ];
+
     await refreshServer('sonarr-0', tracker);
 
     const progress = tracker.get(media.id, false)!;
@@ -240,6 +268,20 @@ describe('refreshServer', () => {
         etaMs: 90_000,
       },
     ]);
+    assert.deepEqual(statusOf(tracker, media.id, 'importing').episodes, {
+      imported: 0,
+      total: 12,
+    });
+
+    // An episode file event refreshes the server with the counts as they are then.
+    sonarrSeasons[1].statistics = stats(7, 12);
+    sonarrEpisodes[1].hasFile = true;
+    await refreshServer('sonarr-0', tracker);
+
+    const importing = statusOf(tracker, media.id, 'importing');
+    assert.equal(importing.status, 'done');
+    assert.deepEqual(importing.episodes, { imported: 7, total: 12 });
+    assert.equal(statusOf(tracker, media.id, 'grabbed').episodes, undefined);
   });
 
   it('fails a blocked import as manual interaction', async () => {
