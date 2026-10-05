@@ -4,9 +4,8 @@ import type {
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
 import type { StepStats } from '@server/lib/requestProgress/stepStats';
-import stepStats, {
-  PROGRESS_STEPS,
-} from '@server/lib/requestProgress/stepStats';
+import stepStats from '@server/lib/requestProgress/stepStats';
+import { PROGRESS_STEPS } from '@server/lib/requestProgress/steps';
 import { EventEmitter } from 'node:events';
 
 export const STEP_KEYS: readonly ProgressStepKey[] = [
