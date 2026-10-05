@@ -90,6 +90,50 @@ export function pairGrabToImport(records: HistoryRecord[]): Sample[] {
   return samples.sort((a, b) => b.at - a.at);
 }
 
+/** A request as sent to Radarr/Sonarr; `seasons` limits a series request. */
+export interface RequestStart {
+  at: number;
+  arrId: number;
+  seasons?: number[];
+}
+
+/**
+ * Request -> grab durations: each request is paired with the first grab of its item (and season)
+ * at or after it. A grab several requests reach counts once, with the shortest duration.
+ */
+export function pairRequestToGrab(
+  requests: RequestStart[],
+  records: HistoryRecord[]
+): Sample[] {
+  const grabs = records
+    .filter((r) => r.eventType === 'grabbed')
+    .map((record) => ({ record, at: Date.parse(record.date) }))
+    .filter((g) => !Number.isNaN(g.at))
+    .sort((a, b) => a.at - b.at);
+  const byGrab = new Map<string, Sample>();
+  for (const request of requests) {
+    const grab = grabs.find(
+      ({ record, at }) =>
+        at >= request.at &&
+        (record.movieId ?? record.seriesId) === request.arrId &&
+        (!request.seasons ||
+          !record.episode ||
+          request.seasons.includes(record.episode.seasonNumber))
+    );
+    if (!grab) continue;
+    const key = grab.record.downloadId ?? `record-${grab.record.id}`;
+    const durationMs = grab.at - request.at;
+    if (durationMs < (byGrab.get(key)?.durationMs ?? Infinity)) {
+      byGrab.set(key, {
+        at: grab.at,
+        durationMs,
+        downloadId: grab.record.downloadId,
+      });
+    }
+  }
+  return [...byGrab.values()].sort((a, b) => b.at - a.at);
+}
+
 /** The newest samples within the window. */
 export function windowed(
   samples: Sample[],
@@ -115,16 +159,20 @@ const localWindow = (): SampleWindow => {
 
 type HistorySource = Pick<ServarrBase<unknown>, 'getHistory'>;
 
+/** Loads the requests sent to a server since a date. */
+export type RequestLoader = (since: Date) => Promise<RequestStart[]>;
+
 interface ServerSamples {
-  history: Sample[];
+  history: Partial<Record<ProgressStep, Sample[]>>;
   recorded: Record<ProgressStep, Sample[]>;
   /** Requested -> playable durations of tracked runs. */
   totals: Sample[];
 }
 
 /**
- * Duration samples per step and server. Grab -> import pairs from history count towards the
- * `importing` step, which runs from the grab until the file is imported. Recorded samples are
+ * Duration samples per step and server. From history, request -> grab pairs count towards the
+ * `searching` step and grab -> import pairs towards the `importing` step, which runs from the
+ * grab until the file is imported. Recorded samples are
  * kept in the database when `persist` is set, so estimates survive restarts.
  */
 export class StepStats {
@@ -136,7 +184,7 @@ export class StepStats {
     let entry = this.servers.get(serverKey);
     if (!entry) {
       entry = {
-        history: [],
+        history: {},
         recorded: Object.fromEntries(
           PROGRESS_STEPS.map((step) => [step, []])
         ) as unknown as Record<ProgressStep, Sample[]>,
@@ -148,21 +196,35 @@ export class StepStats {
   }
 
   /** Replaces the history samples of a server; on failure the previous ones stay. */
-  public async refresh(serverKey: string, api: HistorySource): Promise<void> {
+  public async refresh(
+    serverKey: string,
+    api: HistorySource,
+    loadRequests?: RequestLoader
+  ): Promise<void> {
     const window = historyWindow();
-    const range =
+    const since =
       window.maxAgeDays > 0
-        ? { since: new Date(Date.now() - window.maxAgeDays * DAY_MS) }
-        : { pageSize: window.maxSamples || UNLIMITED_HISTORY };
+        ? new Date(Date.now() - window.maxAgeDays * DAY_MS)
+        : undefined;
+    const range = since
+      ? { since }
+      : { pageSize: window.maxSamples || UNLIMITED_HISTORY };
     // Two filtered requests, as the paged endpoint of older Radarr/Sonarr takes one event type only.
     const [grabs, imports] = await Promise.all([
       api.getHistory({ eventType: 'grabbed', ...range }),
       api.getHistory({ eventType: 'downloadFolderImported', ...range }),
     ]);
-    this.server(serverKey).history = windowed(
-      pairGrabToImport([...grabs, ...imports]),
-      window
-    );
+    // Without an age limit, requests older than the oldest grab read have no grab to pair with.
+    const requests =
+      loadRequests && grabs.length > 0
+        ? await loadRequests(
+            since ?? new Date(Math.min(...grabs.map((r) => Date.parse(r.date))))
+          )
+        : [];
+    this.server(serverKey).history = {
+      searching: windowed(pairRequestToGrab(requests, grabs), window),
+      importing: windowed(pairGrabToImport([...grabs, ...imports]), window),
+    };
   }
 
   /** Replaces the recorded samples with the persisted ones, pruned to the current window. */
@@ -295,11 +357,10 @@ export class StepStats {
       PROGRESS_STEPS.map((step) => {
         const own = recorded[step];
         const tracked = new Set(own.map((s) => s.downloadId).filter(Boolean));
-        const samples = (
-          step === 'importing'
-            ? [...history.filter((s) => !tracked.has(s.downloadId)), ...own]
-            : own
-        ).map((s) => s.durationMs);
+        const samples = [
+          ...(history[step] ?? []).filter((s) => !tracked.has(s.downloadId)),
+          ...own,
+        ].map((s) => s.durationMs);
         return [
           step,
           {
