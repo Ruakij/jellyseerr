@@ -4,7 +4,7 @@ import CachedImage from '@app/components/Common/CachedImage';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestModal from '@app/components/RequestModal';
 import useRequestOverride from '@app/hooks/useRequestOverride';
-import { useUser } from '@app/hooks/useUser';
+import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import {
@@ -42,11 +42,21 @@ const messages = defineMessages('components.RequestBlock', {
 
 interface RequestBlockProps {
   request: MediaRequest;
+  // without it the block is read-only
   onUpdate?: () => void;
 }
 
 const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
-  const { user } = useUser();
+  const { user, hasPermission } = useUser();
+  const showRequester =
+    request.requestedBy.id === user?.id ||
+    hasPermission([Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW], {
+      type: 'or',
+    });
+  const showOverrides = hasPermission(
+    [Permission.MANAGE_REQUESTS, Permission.REQUEST_ADVANCED],
+    { type: 'or' }
+  );
   const intl = useIntl();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -95,34 +105,36 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
       <div className="px-4 py-3 text-gray-300">
         <div className="flex items-center justify-between">
           <div className="mr-6 min-w-0 flex-1 flex-col items-center text-sm leading-5">
-            <div className="white mb-1 flex flex-nowrap">
-              <span className="flex w-40 items-center truncate md:w-auto">
-                <Tooltip content={intl.formatMessage(messages.requestedby)}>
-                  <UserIcon className="mr-1.5 h-5 w-5 min-w-0 flex-shrink-0" />
-                </Tooltip>
-                <Link
-                  href={
-                    request.requestedBy.id === user?.id
-                      ? '/profile'
-                      : `/users/${request.requestedBy.id}`
-                  }
-                  className="flex items-center font-semibold text-gray-100 transition duration-300 hover:text-white hover:underline"
-                >
-                  <span className="avatar-sm">
-                    <CachedImage
-                      type="avatar"
-                      src={request.requestedBy.avatar}
-                      alt=""
-                      className="avatar-sm object-cover"
-                      width={20}
-                      height={20}
-                    />
-                  </span>
-                  {request.requestedBy.displayName}
-                </Link>
-              </span>
-            </div>
-            {request.modifiedBy && (
+            {showRequester && (
+              <div className="white mb-1 flex flex-nowrap">
+                <span className="flex w-40 items-center truncate md:w-auto">
+                  <Tooltip content={intl.formatMessage(messages.requestedby)}>
+                    <UserIcon className="mr-1.5 h-5 w-5 min-w-0 flex-shrink-0" />
+                  </Tooltip>
+                  <Link
+                    href={
+                      request.requestedBy.id === user?.id
+                        ? '/profile'
+                        : `/users/${request.requestedBy.id}`
+                    }
+                    className="flex items-center font-semibold text-gray-100 transition duration-300 hover:text-white hover:underline"
+                  >
+                    <span className="avatar-sm">
+                      <CachedImage
+                        type="avatar"
+                        src={request.requestedBy.avatar}
+                        alt=""
+                        className="avatar-sm object-cover"
+                        width={20}
+                        height={20}
+                      />
+                    </span>
+                    {request.requestedBy.displayName}
+                  </Link>
+                </span>
+              </div>
+            )}
+            {showRequester && request.modifiedBy && (
               <div className="flex flex-nowrap">
                 <span className="flex w-40 items-center truncate md:w-auto">
                   <Tooltip
@@ -155,7 +167,7 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
             )}
           </div>
           <div className="ml-2 flex flex-shrink-0 flex-wrap">
-            {request.status === MediaRequestStatus.PENDING && (
+            {onUpdate && request.status === MediaRequestStatus.PENDING && (
               <>
                 <Tooltip content={intl.formatMessage(messages.approve)}>
                   <Button
@@ -188,7 +200,7 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
                 </Tooltip>
               </>
             )}
-            {request.status !== MediaRequestStatus.PENDING && (
+            {onUpdate && request.status !== MediaRequestStatus.PENDING && (
               <Tooltip content={intl.formatMessage(messages.delete)}>
                 <Button
                   buttonType="danger"
@@ -283,47 +295,48 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
             </div>
           </div>
         )}
-        {(server || profile || rootFolder || languageProfile) && (
-          <>
-            <div className="mb-1 mt-4 text-sm">
-              {intl.formatMessage(messages.requestoverrides)}
-            </div>
-            <ul className="divide-y divide-gray-700 rounded-md bg-gray-800 px-2 text-xs">
-              {server && (
-                <li className="flex justify-between px-1 py-2">
-                  <span className="font-bold">
-                    {intl.formatMessage(messages.server)}
-                  </span>
-                  <span>{server}</span>
-                </li>
-              )}
-              {profile && (
-                <li className="flex justify-between px-1 py-2">
-                  <span className="font-bold">
-                    {intl.formatMessage(messages.profilechanged)}
-                  </span>
-                  <span>{profile}</span>
-                </li>
-              )}
-              {rootFolder && (
-                <li className="flex justify-between px-1 py-2">
-                  <span className="mr-2 font-bold">
-                    {intl.formatMessage(messages.rootfolder)}
-                  </span>
-                  <span>{rootFolder}</span>
-                </li>
-              )}
-              {languageProfile && (
-                <li className="flex justify-between px-1 py-2">
-                  <span className="mr-2 font-bold">
-                    {intl.formatMessage(messages.languageprofile)}
-                  </span>
-                  <span>{languageProfile}</span>
-                </li>
-              )}
-            </ul>
-          </>
-        )}
+        {showOverrides &&
+          (server || profile || rootFolder || languageProfile) && (
+            <>
+              <div className="mb-1 mt-4 text-sm">
+                {intl.formatMessage(messages.requestoverrides)}
+              </div>
+              <ul className="divide-y divide-gray-700 rounded-md bg-gray-800 px-2 text-xs">
+                {server && (
+                  <li className="flex justify-between px-1 py-2">
+                    <span className="font-bold">
+                      {intl.formatMessage(messages.server)}
+                    </span>
+                    <span>{server}</span>
+                  </li>
+                )}
+                {profile && (
+                  <li className="flex justify-between px-1 py-2">
+                    <span className="font-bold">
+                      {intl.formatMessage(messages.profilechanged)}
+                    </span>
+                    <span>{profile}</span>
+                  </li>
+                )}
+                {rootFolder && (
+                  <li className="flex justify-between px-1 py-2">
+                    <span className="mr-2 font-bold">
+                      {intl.formatMessage(messages.rootfolder)}
+                    </span>
+                    <span>{rootFolder}</span>
+                  </li>
+                )}
+                {languageProfile && (
+                  <li className="flex justify-between px-1 py-2">
+                    <span className="mr-2 font-bold">
+                      {intl.formatMessage(messages.languageprofile)}
+                    </span>
+                    <span>{languageProfile}</span>
+                  </li>
+                )}
+              </ul>
+            </>
+          )}
       </div>
     </div>
   );
