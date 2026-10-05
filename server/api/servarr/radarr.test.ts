@@ -117,3 +117,53 @@ describe('RadarrAPI getMovieByTmdbId', () => {
     });
   });
 });
+
+describe('ServarrBase getHistory', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('requests a page sorted by date with the numeric event type', async () => {
+    const radarr = buildRadarr();
+    const get = mock.method(getAxios(radarr), 'get', async () => ({
+      data: { records: [{ id: 1 }] },
+    }));
+
+    const records = await radarr.getHistory({ eventType: 'grabbed' });
+
+    assert.deepEqual(records, [{ id: 1 }]);
+    assert.deepEqual(get.mock.calls[0].arguments, [
+      '/history',
+      {
+        params: {
+          page: 1,
+          pageSize: 200,
+          sortKey: 'date',
+          sortDirection: 'descending',
+          eventType: 1,
+        },
+      },
+    ]);
+  });
+
+  it('uses the since endpoint and sorts newest first', async () => {
+    const radarr = buildRadarr();
+    const get = mock.method(getAxios(radarr), 'get', async () => ({
+      data: [
+        { id: 1, date: '2026-10-05T10:00:00Z' },
+        { id: 2, date: '2026-10-05T11:00:00Z' },
+      ],
+    }));
+
+    const records = await radarr.getHistory({
+      since: new Date('2026-10-05T00:00:00Z'),
+    });
+
+    assert.deepEqual(
+      records.map((r) => r.id),
+      [2, 1]
+    );
+    assert.deepEqual(get.mock.calls[0].arguments, [
+      '/history/since',
+      { params: { date: '2026-10-05T00:00:00.000Z', eventType: undefined } },
+    ]);
+  });
+});
