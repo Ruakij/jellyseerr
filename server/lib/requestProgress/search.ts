@@ -38,8 +38,8 @@ export async function searchableRequest(
 }
 
 /**
- * Request managers may search any time, the requester once per cooldown. `retryAfter` is set while
- * the cooldown holds for this user.
+ * Request managers may search any time, holders of REQUEST_SEARCH once per cooldown. `retryAfter`
+ * is set while the cooldown holds for this user.
  */
 export function searchAccess(
   user: User | undefined,
@@ -48,7 +48,7 @@ export function searchAccess(
 ): { allowed: boolean; retryAfter?: number } {
   if (!user || !request) return { allowed: false };
   const manager = user.hasPermission(Permission.MANAGE_REQUESTS);
-  if (!manager && request.requestedBy?.id !== user.id) {
+  if (!manager && !user.hasPermission(Permission.REQUEST_SEARCH)) {
     return { allowed: false };
   }
   const until =
