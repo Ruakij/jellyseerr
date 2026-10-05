@@ -38,6 +38,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   failed: 'Something went wrong at this step.',
   searchAgain: 'Search again',
   searchAvailableIn: 'Available again in {duration}',
+  searchRunning: 'A search is running',
   lastSearched: 'Last searched {duration} ago',
   searchStarted: 'Search started.',
   searchCooldown: 'Searched too recently, try again later.',
@@ -215,6 +216,7 @@ const RequestProgressModal = ({
     step?.key === 'searching' &&
     (step.status === 'running' || step.status === 'failed');
   const cooldownMs = retryAt !== undefined ? retryAt - now : 0;
+  const searchRunning = !!progress?.search?.running;
 
   const searchAgain = async () => {
     if (!progress) return;
@@ -379,14 +381,17 @@ const RequestProgressModal = ({
                   <Button
                     buttonType="primary"
                     buttonSize="sm"
-                    disabled={searching || cooldownMs > 0}
+                    disabled={searching || searchRunning || cooldownMs > 0}
                     onClick={searchAgain}
                   >
                     <MagnifyingGlassIcon />
                     <span>{intl.formatMessage(messages.searchAgain)}</span>
                   </Button>
                 )}
-                {canSearch && cooldownMs > 0 && (
+                {canSearch && searchRunning && (
+                  <span>{intl.formatMessage(messages.searchRunning)}</span>
+                )}
+                {canSearch && !searchRunning && cooldownMs > 0 && (
                   <span>
                     {intl.formatMessage(messages.searchAvailableIn, {
                       duration: formatDuration(cooldownMs),

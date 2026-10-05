@@ -626,6 +626,7 @@
   "components.RequestProgressModal.searchFailed": "Something went wrong while starting the search.",
   "components.RequestProgressModal.searchNoRequest": "There is no open request to search for.",
   "components.RequestProgressModal.searchNotInArr": "Not in Radarr/Sonarr yet, try again later.",
+  "components.RequestProgressModal.searchRunning": "A search is running",
   "components.RequestProgressModal.searchStarted": "Search started.",
   "components.RequestProgressModal.searching": "Searching",
   "components.RequestProgressModal.title": "Request Progress",
