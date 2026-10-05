@@ -20,9 +20,9 @@ import PreparedEmail from '@server/lib/email';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
+import { listenOnLocalhost } from '@server/test/server';
 import { ApiError } from '@server/types/error';
 import cookieParser from 'cookie-parser';
-import type { Express } from 'express';
 import express from 'express';
 import session from 'express-session';
 import fetchMock from 'fetch-mock';
@@ -79,8 +79,6 @@ const authenticateQCMock = mock.method(
   async () => ({ ...defaultAuthenticateResponse })
 );
 
-let app: Express;
-
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -114,9 +112,7 @@ function createApp() {
   return app;
 }
 
-before(async () => {
-  app = createApp();
-});
+const app = listenOnLocalhost(createApp());
 
 afterEach(() => {
   getSettings().reset();
