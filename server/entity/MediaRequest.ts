@@ -20,6 +20,8 @@ import {
   AfterInsert,
   AfterLoad,
   AfterUpdate,
+  BeforeInsert,
+  BeforeUpdate,
   Column,
   Entity,
   Index,
@@ -38,6 +40,8 @@ export class QuotaRestrictedError extends Error {}
 export class DuplicateMediaRequestError extends Error {}
 export class NoSeasonsAvailableError extends Error {}
 export class BlocklistedMediaError extends Error {}
+
+export type RequestFailureKind = 'transient' | 'permanent';
 
 type MediaRequestOptions = {
   isAutoRequest?: boolean;
@@ -664,6 +668,18 @@ export class MediaRequest {
   @Column({ default: false })
   public ignoreQuota: boolean;
 
+  @Column({ type: 'varchar', nullable: true })
+  public failureReason?: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  public failureKind?: RequestFailureKind | null;
+
+  @Column({ type: 'integer', default: 0 })
+  public retryCount: number;
+
+  @DbAwareColumn({ type: 'datetime', nullable: true })
+  public nextRetryAt?: Date | null;
+
   constructor(init?: Partial<MediaRequest>) {
     Object.assign(this, init);
   }
@@ -765,6 +781,16 @@ export class MediaRequest {
   public async autoapprovalNotification(): Promise<void> {
     if (this.status === MediaRequestStatus.APPROVED) {
       this.notifyApprovedOrDeclined(true);
+    }
+  }
+
+  @BeforeInsert()
+  @BeforeUpdate()
+  private clearFailure() {
+    if (this.status !== MediaRequestStatus.FAILED) {
+      this.failureReason = null;
+      this.failureKind = null;
+      this.nextRetryAt = null;
     }
   }
 

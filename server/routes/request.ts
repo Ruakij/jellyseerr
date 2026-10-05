@@ -22,6 +22,7 @@ import type {
   RequestResultsResponse,
 } from '@server/interfaces/api/requestInterfaces';
 import { Permission } from '@server/lib/permissions';
+import { retryFailedRequest } from '@server/lib/requestRetry';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
@@ -659,9 +660,7 @@ requestRoutes.post<{
       }
 
       // this also triggers updating the parent media's status & sending to *arr
-      request.status = MediaRequestStatus.APPROVED;
-      request.modifiedBy = req.user;
-      await requestRepository.save(request);
+      await retryFailedRequest(request, { modifiedBy: req.user });
 
       return res.status(200).json(request);
     } catch (e) {

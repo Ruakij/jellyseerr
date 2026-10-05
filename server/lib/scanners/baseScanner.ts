@@ -9,6 +9,7 @@ import Media from '@server/entity/Media';
 import MediaRequest from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
 import { Notification } from '@server/lib/notifications';
+import { applyRequestFailure } from '@server/lib/requestRetry';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import AsyncLock from '@server/utils/asyncLock';
@@ -695,10 +696,10 @@ class BaseScanner<T> {
       let reason: string | undefined;
 
       if (!arrItem) {
-        reason = `removed from ${arrName}`;
+        reason = `Removed from ${arrName}`;
       } else if ('hasFile' in arrItem) {
         if (!arrItem.monitored && !arrItem.hasFile) {
-          reason = 'unmonitored in Radarr without a file';
+          reason = 'Not monitored in Radarr';
         }
       } else {
         const lostSeasons = request.seasons
@@ -716,7 +717,7 @@ class BaseScanner<T> {
             );
           });
         if (lostSeasons.length > 0) {
-          reason = `season(s) ${lostSeasons.join(', ')} unmonitored or missing in Sonarr without files`;
+          reason = `Season(s) ${lostSeasons.join(', ')} not monitored in Sonarr`;
         }
       }
 
@@ -724,7 +725,7 @@ class BaseScanner<T> {
         continue;
       }
 
-      request.status = MediaRequestStatus.FAILED;
+      applyRequestFailure(request, { kind: 'permanent', reason });
       await requestRepository.save(request);
       MediaRequest.sendNotification(request, media, Notification.MEDIA_FAILED);
       this.log(
