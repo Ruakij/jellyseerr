@@ -2,6 +2,7 @@ import { SmallLoadingSpinner } from '@app/components/Common/LoadingSpinner';
 import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestBlock from '@app/components/RequestBlock';
+import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
@@ -148,6 +149,13 @@ const RequestProgressModal = ({
         okText={intl.formatMessage(messages.watch)}
         okButtonType="success"
       >
+        {progress && (
+          <ProgressStepper
+            steps={progress.steps}
+            downloads={progress.downloads}
+            label={(key) => intl.formatMessage(messages[key])}
+          />
+        )}
         <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-3 gap-y-1">
           {progress?.steps.map((step) => {
             const elapsed = stepElapsed(step, now);
