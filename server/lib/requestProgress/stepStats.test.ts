@@ -4,12 +4,13 @@ import { after, afterEach, before, describe, it } from 'node:test';
 import type { HistoryRecord } from '@server/api/servarr/base';
 import { getRepository } from '@server/datasource';
 import { StepSample } from '@server/entity/StepSample';
+import type { StepEstimate } from '@server/lib/requestProgress/stepStats';
 import {
-  MIN_TOTAL_SAMPLES,
   StepStats,
   pairGrabToImport,
   pairRequestToGrab,
   percentile,
+  quantileCiRanks,
   windowed,
 } from '@server/lib/requestProgress/stepStats';
 import { getSettings } from '@server/lib/settings';
@@ -40,6 +41,12 @@ const sevenSecondGrab: Parameters<StepStats['refresh']>[1] = {
       ? [rec('grabbed', '2026-10-05T10:00:00Z', 'A')]
       : [rec('downloadFolderImported', '2026-10-05T10:00:07Z', 'A')],
 };
+
+const summary = (e: StepEstimate) => ({
+  count: e.historyCount + e.localCount,
+  p50: e.percentiles[50]?.valueMs,
+  p90: e.percentiles[90]?.valueMs,
+});
 
 describe('percentile', () => {
   it('returns undefined for no values', () => {
@@ -206,18 +213,22 @@ describe('StepStats', () => {
     stats.record('radarr-0', 'inJellyfin', 60_000);
 
     const radarr = stats.get('radarr-0');
-    assert.deepEqual(radarr.importing, { count: 2, p50: 7_000, p90: 20_000 });
-    assert.deepEqual(radarr.inJellyfin, {
+    assert.deepEqual(summary(radarr.importing), {
+      count: 2,
+      p50: 7_000,
+      p90: 20_000,
+    });
+    assert.deepEqual(summary(radarr.inJellyfin), {
       count: 1,
       p50: 60_000,
       p90: 60_000,
     });
-    assert.deepEqual(radarr.searching, {
+    assert.deepEqual(summary(radarr.searching), {
       count: 0,
       p50: undefined,
       p90: undefined,
     });
-    assert.equal(stats.get('sonarr-0').importing.count, 0);
+    assert.equal(summary(stats.get('sonarr-0').importing).count, 0);
   });
 
   it('keeps only the newest samples per step', () => {
@@ -227,7 +238,7 @@ describe('StepStats', () => {
     for (let i = 0; i < localMaxSamples + 50; i++) {
       stats.record('s', 'searching', i < 50 ? 1_000_000 : 1, { at: now + i });
     }
-    assert.deepEqual(stats.get('s').searching, {
+    assert.deepEqual(summary(stats.get('s').searching), {
       count: localMaxSamples,
       p50: 1,
       p90: 1,
@@ -238,7 +249,7 @@ describe('StepStats', () => {
     const stats = new StepStats();
     await stats.refresh('s', sevenSecondGrab);
     stats.record('s', 'importing', 9_000, { downloadId: 'A' });
-    assert.deepEqual(stats.get('s').importing, {
+    assert.deepEqual(summary(stats.get('s').importing), {
       count: 1,
       p50: 9_000,
       p90: 9_000,
@@ -253,13 +264,13 @@ describe('StepStats', () => {
       return [{ at: Date.parse('2026-10-05T09:59:00Z'), arrId: 1 }];
     });
     assert.deepEqual(since, new Date('2026-10-05T10:00:00Z'));
-    assert.deepEqual(stats.get('s').searching, {
+    assert.deepEqual(summary(stats.get('s').searching), {
       count: 1,
       p50: 60_000,
       p90: 60_000,
     });
     stats.record('s', 'searching', 5_000, { downloadId: 'A' });
-    assert.equal(stats.get('s').searching.count, 1);
+    assert.equal(summary(stats.get('s').searching).count, 1);
   });
 
   it('keeps the previous history when a refresh fails', async () => {
@@ -272,17 +283,65 @@ describe('StepStats', () => {
         },
       })
     );
-    assert.equal(stats.get('s').importing.count, 1);
+    assert.equal(summary(stats.get('s').importing).count, 1);
   });
 
-  it('estimates the total from end-to-end samples once there are enough', () => {
+  it('counts history and local samples apart', async () => {
     const stats = new StepStats();
-    for (let i = 1; i < MIN_TOTAL_SAMPLES; i++)
-      stats.recordTotal('s', i * 1_000);
-    assert.equal(stats.totalP90('s'), undefined);
-    stats.recordTotal('s', MIN_TOTAL_SAMPLES * 1_000);
-    assert.equal(stats.totalP90('s'), 18_000);
-    assert.equal(stats.totalP90('other'), undefined);
+    await stats.refresh('s', sevenSecondGrab);
+    stats.record('s', 'importing', 20_000);
+    const { historyCount, localCount } = stats.get('s').importing;
+    assert.deepEqual([historyCount, localCount], [1, 1]);
+  });
+
+  it('estimates the end-to-end durations with confidence intervals', () => {
+    const stats = new StepStats();
+    for (let i = 1; i <= 20; i++) stats.recordTotal('s', i * 1_000);
+    assert.deepEqual(stats.total('s'), {
+      historyCount: 0,
+      localCount: 20,
+      percentiles: {
+        50: { valueMs: 10_000, rangeMs: [6_000, 15_000] },
+        90: { valueMs: 18_000, rangeMs: undefined },
+        95: { valueMs: 19_000, rangeMs: undefined },
+        99: { valueMs: 20_000, rangeMs: undefined },
+      },
+    });
+    assert.deepEqual(stats.total('other').percentiles, {});
+  });
+});
+
+describe('quantileCiRanks', () => {
+  it('finds the order statistics of a 95% interval', () => {
+    assert.deepEqual(quantileCiRanks(10, 0.5), [2, 9]);
+    assert.deepEqual(quantileCiRanks(6, 0.5), [1, 6]);
+    assert.deepEqual(quantileCiRanks(100, 0.5), [41, 61]);
+    assert.deepEqual(quantileCiRanks(100, 0.9), [84, 96]);
+  });
+
+  it('has no interval with too few samples', () => {
+    assert.equal(quantileCiRanks(5, 0.5), undefined);
+    assert.equal(quantileCiRanks(28, 0.9), undefined);
+    assert.deepEqual(quantileCiRanks(29, 0.9), [21, 29]);
+    assert.equal(quantileCiRanks(0, 0.5), undefined);
+  });
+
+  it('covers the quantile with at least 95%', () => {
+    for (const q of [0.5, 0.9, 0.95, 0.99]) {
+      for (let n = 1; n <= 400; n++) {
+        const ranks = quantileCiRanks(n, q);
+        if (!ranks) continue;
+        const [l, u] = ranks;
+        // Exact binomial sum, independent of the implementation.
+        let coverage = 0;
+        let binom = 1;
+        for (let k = 0; k < u; k++) {
+          if (k >= l) coverage += binom * q ** k * (1 - q) ** (n - k);
+          binom = (binom * (n - k)) / (k + 1);
+        }
+        assert.ok(coverage >= 0.95, `n=${n} q=${q} [${l}, ${u}]`);
+      }
+    }
   });
 });
 
@@ -324,7 +383,7 @@ describe('StepStats persistence', () => {
 
     const stats = new StepStats(true);
     await stats.load();
-    assert.deepEqual(stats.get('s').inJellyfin, {
+    assert.deepEqual(summary(stats.get('s').inJellyfin), {
       count: 1,
       p50: 5_000,
       p90: 5_000,
@@ -366,7 +425,7 @@ describe('StepStats persistence', () => {
     settings.localMaxAgeDays = 3;
     await stats.load();
 
-    assert.equal(stats.get('s').searching.count, 1);
+    assert.equal(summary(stats.get('s').searching).count, 1);
     assert.deepEqual(
       (await getRepository(StepSample).find()).map((r) => r.durationMs),
       [2]
