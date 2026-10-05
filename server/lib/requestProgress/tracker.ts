@@ -45,6 +45,8 @@ export interface TrackedProgress {
   filesMissing?: boolean;
   /** Why Radarr/Sonarr will not deliver it, e.g. the item was removed there. */
   arrError?: string;
+  /** Why sending the request to Radarr/Sonarr failed, from the request. */
+  failureReason?: string;
   downloads?: ProgressDownload[];
   playUrl?: string;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
@@ -241,8 +243,19 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     this.changed(entry);
   }
 
-  /** Shows the request status FAILED, with the reason Radarr/Sonarr gives when known. */
-  public failRequest(mediaId: number, is4k: boolean, at = this.now()): void {
+  /** Shows the request status FAILED, with its failure reason or the one Radarr/Sonarr gives. */
+  public failRequest(
+    mediaId: number,
+    is4k: boolean,
+    failureReason?: string | null,
+    at = this.now()
+  ): void {
+    const entry = this.entry(mediaId, is4k);
+    if (entry && failureReason && entry.failureReason !== failureReason) {
+      entry.failureReason = failureReason;
+      // A run already failed by the send keeps its step, only its error text changes.
+      if (this.finished(entry)) this.changed(entry);
+    }
     this.fail(mediaId, is4k, REQUEST_FAILED, at);
   }
 
@@ -346,9 +359,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         estimateMs: estimate?.valueMs,
         estimateRangeMs: showConfidenceInterval ? estimate?.rangeMs : undefined,
         error:
-          state.error === REQUEST_FAILED
-            ? (entry.arrError ?? REQUEST_FAILED)
-            : state.error,
+          state.status === 'failed' && entry.failureReason
+            ? entry.failureReason
+            : state.error === REQUEST_FAILED
+              ? (entry.arrError ?? REQUEST_FAILED)
+              : state.error,
         detail:
           k === 'searching' && state.status === 'running'
             ? searchingDetail(entry)
