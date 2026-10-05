@@ -646,21 +646,42 @@
   animation: ps-shimmer 1.5s linear infinite;
 }
 
+/* A third of the cycle per indexer block: rest over it for 70%, then move on.
+   The last third fades out over the last block and back in over the first. */
 @keyframes ps-glide {
   0%,
-  100% {
+  23.33% {
     transform: translateX(0);
   }
-  50% {
-    transform: translateX(28px);
+  33.33%,
+  56.67% {
+    transform: translateX(14px);
   }
-}
-@keyframes ps-light {
-  0%,
-  20% {
+  66.67%,
+  90% {
+    transform: translateX(28px);
     opacity: 1;
   }
-  35%,
+  96% {
+    transform: translateX(28px);
+    opacity: 0;
+  }
+  96.01% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+/* Delayed by a third of the cycle per block: lit while ps-glide rests over it */
+@keyframes ps-light {
+  0%,
+  23.33% {
+    opacity: 1;
+  }
+  30%,
   100% {
     opacity: 0.3;
   }
