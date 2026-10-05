@@ -797,7 +797,7 @@ export function startProgressEvents(): void {
   jellyfinSocket.on('connected', jellyfinPoll);
   jellyfinSocket.on('reconnected', jellyfinPoll);
   jellyfinSocket.on('libraryChanged', (event) => {
-    if (event.itemsAdded.length > 0 && progressTracker.active().length > 0) {
+    if (event.itemsAdded.length > 0) {
       jellyfinAdded.push('added', { ids: event.itemsAdded, at: Date.now() });
     }
   });
