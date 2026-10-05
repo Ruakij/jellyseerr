@@ -42,6 +42,11 @@ Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
 for (const Api of [RadarrAPI, SonarrAPI]) {
   for (const [name, impl] of [
     ['getHistory', async () => history],
+    [
+      'getItemHistory',
+      async (id: number) =>
+        history.filter((r) => (r.movieId ?? r.seriesId) === id),
+    ],
     ['getQueue', async () => queue],
   ] as const) {
     // Instance arrow properties: the getter shadows them, the setter swallows the constructor's.
