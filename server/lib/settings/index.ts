@@ -195,6 +195,16 @@ export interface ProxySettings {
   bypassLocalAddresses: boolean;
 }
 
+/** Sample windows of the request progress estimates; 0 means no limit. */
+export interface RequestProgressSettings {
+  /** Samples derived from Radarr/Sonarr history and Seerr requests. */
+  historyMaxAgeDays: number;
+  historyMaxSamples: number;
+  /** Samples the progress tracker measured, kept in the database. */
+  localMaxAgeDays: number;
+  localMaxSamples: number;
+}
+
 export interface DnsCacheSettings {
   enabled: boolean;
   forceMinTtl?: number;
@@ -416,6 +426,7 @@ export interface AllSettings {
   jobs: Record<JobId, JobSettings>;
   network: NetworkSettings;
   metadataSettings: MetadataSettings;
+  requestProgress: RequestProgressSettings;
   migrations: string[];
 }
 
@@ -574,6 +585,14 @@ class Settings {
 
   set network(data: NetworkSettings) {
     this.data.network = mergeSettings(this.data.network, data);
+  }
+
+  get requestProgress(): RequestProgressSettings {
+    return this.data.requestProgress;
+  }
+
+  set requestProgress(data: RequestProgressSettings) {
+    this.data.requestProgress = mergeSettings(this.data.requestProgress, data);
   }
 
   get migrations(): string[] {
@@ -948,6 +967,12 @@ class Settings {
           forceMaxTtl: -1,
         },
         apiRequestTimeout: 10000,
+      },
+      requestProgress: {
+        historyMaxAgeDays: 30,
+        historyMaxSamples: 100,
+        localMaxAgeDays: 90,
+        localMaxSamples: 200,
       },
       migrations: [],
     };

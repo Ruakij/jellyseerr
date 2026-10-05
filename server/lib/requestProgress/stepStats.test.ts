@@ -1,14 +1,20 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 
 import type { HistoryRecord } from '@server/api/servarr/base';
+import { getRepository } from '@server/datasource';
+import { StepSample } from '@server/entity/StepSample';
 import {
-  MAX_SAMPLES,
   MIN_TOTAL_SAMPLES,
   StepStats,
   pairGrabToImport,
   percentile,
+  windowed,
 } from '@server/lib/requestProgress/stepStats';
+import { getSettings } from '@server/lib/settings';
+import { setupTestDb } from '@server/test/db';
+
+const DAY = 24 * 60 * 60 * 1000;
 
 let nextId = 1;
 function rec(
@@ -142,12 +148,14 @@ describe('StepStats', () => {
   });
 
   it('keeps only the newest samples per step', () => {
+    const { localMaxSamples } = getSettings().requestProgress;
     const stats = new StepStats();
-    for (let i = 0; i < MAX_SAMPLES + 50; i++) {
-      stats.record('s', 'searching', i < 50 ? 1_000_000 : 1, { at: i });
+    const now = Date.now();
+    for (let i = 0; i < localMaxSamples + 50; i++) {
+      stats.record('s', 'searching', i < 50 ? 1_000_000 : 1, { at: now + i });
     }
     assert.deepEqual(stats.get('s').searching, {
-      count: MAX_SAMPLES,
+      count: localMaxSamples,
       p50: 1,
       p90: 1,
     });
@@ -185,5 +193,93 @@ describe('StepStats', () => {
     stats.recordTotal('s', MIN_TOTAL_SAMPLES * 1_000);
     assert.equal(stats.totalP90('s'), 18_000);
     assert.equal(stats.totalP90('other'), undefined);
+  });
+});
+
+describe('windowed', () => {
+  const samples = [1, 2, 3, 4].map((day) => ({
+    at: day * DAY,
+    durationMs: day,
+  }));
+
+  it('keeps the newest samples within age and count', () => {
+    assert.deepEqual(
+      windowed(samples, { maxAgeDays: 2, maxSamples: 0 }, 4 * DAY).map(
+        (s) => s.durationMs
+      ),
+      [4, 3, 2]
+    );
+    assert.deepEqual(
+      windowed(samples, { maxAgeDays: 0, maxSamples: 2 }, 4 * DAY).map(
+        (s) => s.durationMs
+      ),
+      [4, 3]
+    );
+    assert.equal(windowed(samples, { maxAgeDays: 0, maxSamples: 0 }).length, 4);
+  });
+});
+
+describe('StepStats persistence', () => {
+  setupTestDb();
+
+  const settings = getSettings().requestProgress;
+  const defaults = { ...settings };
+  afterEach(() => Object.assign(settings, defaults));
+
+  it('loads recorded samples into a new instance', async () => {
+    await new StepStats(true).record('s', 'inJellyfin', 5_000, {
+      downloadId: 'A',
+    });
+    await new StepStats(true).recordTotal('s', 60_000);
+
+    const stats = new StepStats(true);
+    await stats.load();
+    assert.deepEqual(stats.get('s').inJellyfin, {
+      count: 1,
+      p50: 5_000,
+      p90: 5_000,
+    });
+    assert.equal(
+      (await getRepository(StepSample).findOneByOrFail({ step: 'total' }))
+        .durationMs,
+      60_000
+    );
+  });
+
+  it('prunes persisted samples beyond the newest per step', async () => {
+    settings.localMaxSamples = 2;
+    const stats = new StepStats(true);
+    const now = Date.now();
+    for (let i = 0; i < 4; i++) {
+      await stats.record('s', 'searching', i, { at: now - i * 1000 });
+    }
+    await stats.record('s', 'importing', 9, { at: now - 9000 });
+
+    const rows = await getRepository(StepSample).find({
+      order: { durationMs: 'ASC' },
+    });
+    assert.deepEqual(
+      rows.map((r) => [r.step, r.durationMs]),
+      [
+        ['searching', 0],
+        ['searching', 1],
+        ['importing', 9],
+      ]
+    );
+  });
+
+  it('prunes persisted samples older than the maximum age on load', async () => {
+    const now = Date.now();
+    const stats = new StepStats(true);
+    await stats.record('s', 'searching', 1, { at: now - 5 * DAY });
+    await stats.record('s', 'searching', 2, { at: now - DAY });
+    settings.localMaxAgeDays = 3;
+    await stats.load();
+
+    assert.equal(stats.get('s').searching.count, 1);
+    assert.deepEqual(
+      (await getRepository(StepSample).find()).map((r) => r.durationMs),
+      [2]
+    );
   });
 });
