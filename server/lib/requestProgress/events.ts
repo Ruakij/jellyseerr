@@ -81,23 +81,78 @@ const isWaiting = (status: MediaStatus) =>
   status === MediaStatus.PENDING || status === MediaStatus.PROCESSING;
 
 const SEARCH_FAILED = ['failed', 'aborted', 'cancelled', 'orphaned'];
+const IMPORT_BLOCKED = 'Manual interaction required';
+const DOWNLOAD_FAILED = 'Download failed';
+const NO_RESULTS = 'No results';
+
+// Sonarr episode searches carry episode ids only; episode messages and the API link them to series.
+// ponytail: unbounded until it hits the cap, then starts over; an LRU if that ever matters.
+const episodeSeries = new Map<string, number>();
+
+export function rememberEpisode(
+  serverId: number,
+  episodeId: number,
+  seriesId: number
+) {
+  if (episodeSeries.size > 10_000) episodeSeries.clear();
+  episodeSeries.set(`${serverId}:${episodeId}`, seriesId);
+}
+
+async function commandArrIds(
+  source: SignalRSource,
+  event: CommandEvent
+): Promise<number[]> {
+  if (event.movieIds) return event.movieIds;
+  if (event.seriesId) return [event.seriesId];
+  const ids = new Set<number>();
+  for (const episodeId of event.episodeIds ?? []) {
+    let seriesId = episodeSeries.get(`${source.serverId}:${episodeId}`);
+    if (seriesId === undefined) {
+      const api = servarrApi('sonarr', source.serverId) as
+        | SonarrAPI
+        | undefined;
+      seriesId = (await api?.getEpisode(episodeId))?.seriesId;
+      if (seriesId !== undefined) {
+        rememberEpisode(source.serverId, episodeId, seriesId);
+      }
+    }
+    if (seriesId !== undefined) ids.add(seriesId);
+  }
+  return [...ids];
+}
 
 export async function handleCommand(
   source: SignalRSource,
   event: CommandEvent,
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
-  const arrIds = event.movieIds ?? (event.seriesId ? [event.seriesId] : []);
   const key = serverKey(source.type, source.serverId);
-  for (const arrId of arrIds) {
+  for (const arrId of await commandArrIds(source, event)) {
     for (const { media, is4k } of await findMedia(source, arrId)) {
+      const entry = tracker.entry(media.id, is4k);
       if (event.status === 'started') {
-        // Covers requests sent before a restart or added in Radarr/Sonarr directly.
-        if (isWaiting(is4k ? media.status4k : media.status)) {
+        const downloadFailed = Object.values(entry?.steps ?? {}).some(
+          (s) => s.error === DOWNLOAD_FAILED
+        );
+        // An automatic search on a grabbed item is housekeeping, not a new attempt.
+        const userResearch =
+          event.trigger === 'manual' &&
+          entry?.steps.grabbed.status === 'done' &&
+          entry.steps.playable.status !== 'done';
+        if (downloadFailed || userResearch) {
+          tracker.research(media.id, is4k);
+        } else if (!entry && isWaiting(is4k ? media.status4k : media.status)) {
+          // Covers requests sent before a restart or added in Radarr/Sonarr directly.
           tracker.ensure({ mediaId: media.id, is4k, serverKey: key });
         }
+      } else if (entry?.steps.searching.status !== 'running') {
+        continue;
       } else if (event.status === 'completed') {
-        tracker.searchCompleted(media.id, is4k);
+        if (event.reportsDownloaded === 0) {
+          tracker.fail(media.id, is4k, NO_RESULTS);
+        } else if (event.reportsDownloaded === undefined) {
+          tracker.searchCompleted(media.id, is4k);
+        }
       } else if (SEARCH_FAILED.includes(event.status)) {
         tracker.fail(
           media.id,
@@ -109,9 +164,6 @@ export async function handleCommand(
   }
   if (event.status === 'completed') serverRefresh.push(key);
 }
-
-const IMPORT_BLOCKED = 'Manual interaction required';
-const DOWNLOAD_FAILED = 'Download failed';
 
 /**
  * Brings the tracked media of one Radarr/Sonarr server up to date from its history (grab and
@@ -152,6 +204,12 @@ export async function refreshServer(
     const at = Date.parse(record.date);
     for (const entry of byArrId.get(arrIdOf(record) ?? -1) ?? []) {
       const { mediaId, is4k } = entry;
+      if (
+        record.downloadId &&
+        entry.staleDownloadIds.includes(record.downloadId)
+      ) {
+        continue;
+      }
       if (record.eventType === 'grabbed') {
         tracker.advance(mediaId, is4k, 'grabbed', at, {
           downloadId: record.downloadId,
@@ -170,15 +228,18 @@ export async function refreshServer(
   })[]) {
     const state = item.trackedDownloadState;
     const reason =
-      state === 'importBlocked' ||
-      (state === 'importPending' && item.trackedDownloadStatus === 'warning')
+      (state === 'importBlocked' || state === 'importPending') &&
+      item.trackedDownloadStatus === 'warning'
         ? IMPORT_BLOCKED
         : state === 'failedPending' || state === 'failed'
           ? DOWNLOAD_FAILED
           : undefined;
     if (!reason) continue;
     for (const entry of byArrId.get(arrIdOf(item) ?? -1) ?? []) {
-      if (entry.steps.importing.status !== 'done') {
+      if (
+        entry.steps.importing.status !== 'done' &&
+        !entry.staleDownloadIds.includes(item.downloadId)
+      ) {
         tracker.fail(entry.mediaId, entry.is4k, reason);
       }
     }
@@ -186,7 +247,7 @@ export async function refreshServer(
 
   for (const entry of entries) {
     if (entry.searchCompletedAt && entry.steps.grabbed.status !== 'done') {
-      tracker.fail(entry.mediaId, entry.is4k, 'No results');
+      tracker.fail(entry.mediaId, entry.is4k, NO_RESULTS);
     }
   }
 }
@@ -262,6 +323,8 @@ function onSignalRMessage(
         label: 'Request Progress',
       })
     );
+  } else if (event.type === 'episode' && event.seriesId !== undefined) {
+    rememberEpisode(source.serverId, event.id, event.seriesId);
   } else if (
     event.type === 'queue' ||
     event.type === 'movieFile' ||
