@@ -122,6 +122,13 @@ Object.defineProperty(TheMovieDb.prototype, 'getTvShowForScan', {
   configurable: true,
 });
 
+// The scanner singleton and its TMDB client are built on import, before the
+// prototype stubs above exist, so its own arrow-function fields shadow them.
+Object.assign(sonarrScanner.tmdb, {
+  getTvShow: async (args: { tvId: number }) => getTvShowImpl(args),
+  getTvShowForScan: async (args: { tvId: number }) => getTvShowImpl(args),
+});
+
 mock.method(MediaRequest, 'sendNotification', async () => undefined);
 
 setupTestDb();
