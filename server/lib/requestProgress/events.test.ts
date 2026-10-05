@@ -17,6 +17,7 @@ import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
 import {
   handleCommand,
+  queueEtaMs,
   reconcileJellyfin,
   refreshServer,
   rememberEpisode,
@@ -168,12 +169,41 @@ describe('refreshServer', () => {
         episode: episode(2),
       },
     ];
+    queue = [
+      {
+        seriesId: 34,
+        downloadId: 'S1',
+        title: 'Show.S01E01',
+        episode: episode(1),
+      },
+      ...[1, 2].map((episodeNumber) => ({
+        seriesId: 34,
+        downloadId: 'S2',
+        title: 'Show.S02',
+        indexer: 'NZBgeek',
+        size: 1000,
+        sizeleft: 400,
+        timeleft: '00:01:30',
+        episode: { seasonNumber: 2, episodeNumber },
+      })),
+    ];
 
     await refreshServer('sonarr-0', tracker);
 
+    const progress = tracker.get(media.id, false)!;
     const grabbed = statusOf(tracker, media.id, 'grabbed');
     assert.equal(grabbed.finishedAt, at(3));
+    assert.equal(grabbed.detail, 'Show.S02');
     assert.equal(statusOf(tracker, media.id, 'importing').status, 'running');
+    assert.deepEqual(progress.downloads, [
+      {
+        title: 'Show.S02',
+        indexer: 'NZBgeek',
+        size: 1000,
+        sizeLeft: 400,
+        etaMs: 90_000,
+      },
+    ]);
   });
 
   it('fails a blocked import as manual interaction', async () => {
@@ -406,5 +436,23 @@ describe('reconcileJellyfin', () => {
     const progress = tracker.get(media.id, false)!;
     assert.ok(progress.steps.every((s) => s.status === 'done'));
     assert.match(progress.playUrl ?? '', /id=abc/);
+  });
+});
+
+describe('queueEtaMs', () => {
+  it('prefers the estimated completion time over timeleft', () => {
+    const now = Date.parse('2026-10-05T10:00:00Z');
+    assert.equal(
+      queueEtaMs(
+        {
+          estimatedCompletionTime: '2026-10-05T10:00:30Z',
+          timeleft: '1:00:00',
+        },
+        now
+      ),
+      30_000
+    );
+    assert.equal(queueEtaMs({ timeleft: '1.02:00:05' }, now), 93_605_000);
+    assert.equal(queueEtaMs({}, now), undefined);
   });
 });

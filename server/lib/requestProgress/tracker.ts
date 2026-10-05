@@ -1,4 +1,5 @@
 import type {
+  ProgressDownload,
   ProgressStepKey,
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
@@ -21,6 +22,7 @@ interface StepState {
   startedAt?: number;
   finishedAt?: number;
   error?: string;
+  detail?: string;
 }
 
 export interface TrackedProgress {
@@ -33,6 +35,9 @@ export interface TrackedProgress {
   /** Downloads given up on by a re-search; their history no longer applies. */
   staleDownloadIds: string[];
   searchCompletedAt?: number;
+  /** Radarr/Sonarr command whose messages make up the searching detail. */
+  searchCommandId?: number;
+  downloads?: ProgressDownload[];
   playUrl?: string;
   steps: Record<ProgressStepKey, StepState>;
 }
@@ -144,7 +149,12 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       const state = entry.steps[k];
       if (state.status !== 'done') {
         const startedAt = state.startedAt ?? previousEnd ?? at;
-        entry.steps[k] = { status: 'done', startedAt, finishedAt: at };
+        entry.steps[k] = {
+          status: 'done',
+          startedAt,
+          finishedAt: at,
+          detail: state.detail,
+        };
         if (k !== 'requested' && entry.serverKey) {
           this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
             at,
@@ -196,6 +206,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     if (entry.downloadId) entry.staleDownloadIds.push(entry.downloadId);
     entry.downloadId = undefined;
     entry.searchCompletedAt = undefined;
+    entry.searchCommandId = undefined;
+    entry.downloads = undefined;
     for (const k of STEP_KEYS.slice(STEP_KEYS.indexOf('grabbed'))) {
       entry.steps[k] = { status: 'pending' };
     }
@@ -206,6 +218,34 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   public searchCompleted(mediaId: number, is4k: boolean, at = this.now()) {
     const entry = this.entry(mediaId, is4k);
     if (entry) entry.searchCompletedAt = at;
+  }
+
+  public setDetail(
+    mediaId: number,
+    is4k: boolean,
+    step: ProgressStepKey,
+    detail: string | undefined
+  ): void {
+    const entry = this.entry(mediaId, is4k);
+    if (!entry || entry.steps[step].detail === detail) return;
+    entry.steps[step] = { ...entry.steps[step], detail };
+    this.changed(entry);
+  }
+
+  public setDownloads(
+    mediaId: number,
+    is4k: boolean,
+    downloads: ProgressDownload[] | undefined
+  ): void {
+    const entry = this.entry(mediaId, is4k);
+    if (
+      !entry ||
+      JSON.stringify(entry.downloads) === JSON.stringify(downloads)
+    ) {
+      return;
+    }
+    entry.downloads = downloads;
+    this.changed(entry);
   }
 
   public finished(entry: TrackedProgress): boolean {
@@ -228,6 +268,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         finishedAt: iso(state.finishedAt),
         p90Ms: k === 'requested' ? undefined : estimates?.[k].p90,
         error: state.error,
+        detail: state.detail,
       };
     });
     const p90s = steps.flatMap((s) => (s.p90Ms === undefined ? [] : s.p90Ms));
@@ -240,6 +281,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         (entry.serverKey ? this.stats.totalP90(entry.serverKey) : undefined) ??
         (p90s.length ? p90s.reduce((a, b) => a + b, 0) : undefined),
       playUrl: entry.playUrl,
+      // Queue items of later episodes stop being refreshed once playable.
+      downloads:
+        entry.steps.playable.status === 'done' ? undefined : entry.downloads,
     };
   }
 
