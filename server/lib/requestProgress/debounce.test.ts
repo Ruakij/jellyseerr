@@ -50,4 +50,24 @@ describe('KeyedDebouncer', () => {
       mock.timers.reset();
     }
   });
+
+  it('flushes at least every maxWait under a constant stream', async () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    try {
+      const flushed: number[][] = [];
+      const debouncer = new KeyedDebouncer<number>(
+        (_key, values) => void flushed.push(values),
+        2000,
+        10_000
+      );
+      for (let i = 0; i < 12; i++) {
+        debouncer.push('a', i);
+        mock.timers.tick(1000);
+        await new Promise((r) => setImmediate(r));
+      }
+      assert.deepEqual(flushed, [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]);
+    } finally {
+      mock.timers.reset();
+    }
+  });
 });
