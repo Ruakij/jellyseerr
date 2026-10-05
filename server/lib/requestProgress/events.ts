@@ -42,10 +42,25 @@ import { In, MoreThanOrEqual } from 'typeorm';
 const serverKey = (type: ServarrType, serverId: number) =>
   `${type}-${serverId}`;
 
-const externalId = (media: Media, is4k: boolean) =>
+export const externalId = (media: Media, is4k: boolean) =>
   is4k ? media.externalServiceId4k : media.externalServiceId;
 
-function servarrApi(type: ServarrType, serverId: number) {
+/** The Radarr/Sonarr server a request went to, or goes to once approved. */
+export function requestServer(
+  request: MediaRequest
+): { type: ServarrType; serverId: number } | undefined {
+  const { media, is4k } = request;
+  const type = request.type === MediaType.MOVIE ? 'radarr' : 'sonarr';
+  const serverId =
+    (is4k ? media.serviceId4k : media.serviceId) ??
+    request.serverId ??
+    getSettings()[type].find((s) => !!s.is4k === is4k && s.isDefault)?.id;
+  return serverId === undefined || serverId === null
+    ? undefined
+    : { type, serverId };
+}
+
+export function servarrApi(type: ServarrType, serverId: number) {
   const settings = getSettings()[type].find((s) => s.id === serverId);
   if (!settings) return undefined;
   const Api = type === 'radarr' ? RadarrAPI : SonarrAPI;
@@ -97,7 +112,6 @@ const isAvailable = (status: MediaStatus) =>
 const SEARCH_FAILED = ['failed', 'aborted', 'cancelled', 'orphaned'];
 const IMPORT_BLOCKED = 'Manual interaction required';
 const DOWNLOAD_FAILED = 'Download failed';
-const NO_RESULTS = 'No results';
 
 // Sonarr episode searches carry episode ids only; episode messages and the API link them to series.
 // ponytail: unbounded until it hits the cap, then starts over; an LRU if that ever matters.
@@ -182,32 +196,43 @@ export async function handleCommand(
         // Covers requests sent before a restart or added in Radarr/Sonarr directly.
         tracker.ensure({ mediaId: media.id, is4k, serverKey: key });
       }
-    } else if (entry?.steps.searching.status === 'running') {
-      if (event.status === 'completed') {
-        if (event.reportsDownloaded === 0) {
-          tracker.fail(media.id, is4k, NO_RESULTS);
-        } else if (event.reportsDownloaded === undefined) {
-          tracker.searchCompleted(media.id, is4k);
-        }
-      } else if (SEARCH_FAILED.includes(event.status)) {
-        tracker.fail(
-          media.id,
-          is4k,
-          `Search failed${event.message ? `: ${event.message}` : ''}`
-        );
-      }
+    } else if (
+      entry?.steps.searching.status === 'running' &&
+      SEARCH_FAILED.includes(event.status)
+    ) {
+      tracker.fail(
+        media.id,
+        is4k,
+        `Search failed${event.message ? `: ${event.message}` : ''}`
+      );
     }
 
-    // The search that runs while searching owns the detail, up to its final report count.
+    // A search without results leaves searching running: RSS may still bring a release.
     const current = tracker.entry(media.id, is4k);
-    if (
-      event.message &&
-      current &&
-      (current.steps.searching.status === 'running' ||
-        current.searchCommandId === event.id)
-    ) {
-      current.searchCommandId = event.id;
-      tracker.setDetail(media.id, is4k, 'searching', event.message);
+    if (!current) continue;
+    if (event.status === 'completed' || SEARCH_FAILED.includes(event.status)) {
+      tracker.setSearch(
+        media.id,
+        is4k,
+        current.searchCommandId === event.id
+          ? {
+              searchCommandId: undefined,
+              searchIndexers: undefined,
+              lastSearchedAt: Date.now(),
+            }
+          : { lastSearchedAt: Date.now() }
+      );
+    } else {
+      const indexers = event.message?.match(/(\d+) active indexers?/)?.[1];
+      tracker.setSearch(media.id, is4k, {
+        searchCommandId: event.id,
+        searchIndexers:
+          indexers === undefined
+            ? current.searchCommandId === event.id
+              ? current.searchIndexers
+              : undefined
+            : Number(indexers),
+      });
     }
   }
   if (event.status === 'completed') serverRefresh.push(key);
@@ -242,6 +267,110 @@ async function requestedSeasons(
   return seasons;
 }
 
+interface ArrState {
+  removed?: boolean;
+  /** A file of the movie or of a requested episode exists. */
+  hasFile: boolean;
+  /** Radarr/Sonarr searches for it, for the series: some requested episode. */
+  monitored: boolean;
+  lastSearchedAt?: number;
+}
+
+const isNotFound = (e: Error) =>
+  (e.cause as { response?: { status?: number } } | undefined)?.response
+    ?.status === 404;
+
+const latest = (times: (string | undefined)[]) => {
+  const ms = times.flatMap((t) => (t ? [Date.parse(t)] : []));
+  return ms.length ? Math.max(...ms) : undefined;
+};
+
+/** The Radarr movie or the requested seasons of the Sonarr series as they are now. */
+async function arrState(
+  api: RadarrAPI | SonarrAPI,
+  arrId: number,
+  seasons: Set<number> | undefined
+): Promise<ArrState> {
+  try {
+    if (api instanceof RadarrAPI) {
+      const movie = await api.getMovie({ id: arrId });
+      return {
+        hasFile: movie.hasFile,
+        monitored: movie.monitored,
+        lastSearchedAt: latest([movie.lastSearchTime]),
+      };
+    }
+    const [series, episodes] = await Promise.all([
+      api.getSeriesById(arrId),
+      api.getEpisodes(arrId),
+    ]);
+    const requested = episodes.filter(
+      (e) => !seasons || seasons.has(e.seasonNumber)
+    );
+    return {
+      hasFile: requested.some((e) => e.hasFile),
+      monitored: series.monitored && requested.some((e) => e.monitored),
+      lastSearchedAt: latest(requested.map((e) => e.lastSearchTime)),
+    };
+  } catch (e) {
+    if (isNotFound(e))
+      return { removed: true, hasFile: false, monitored: false };
+    throw e;
+  }
+}
+
+const ARR_NAME = { radarr: 'Radarr', sonarr: 'Sonarr' } as const;
+const removedError = (type: ServarrType) => `Removed from ${ARR_NAME[type]}`;
+const unmonitoredError = (type: ServarrType) =>
+  `Not monitored in ${ARR_NAME[type]}`;
+
+/**
+ * Files appearing finish the import; files disappearing send the run back to searching. Without
+ * files, an item gone from Radarr/Sonarr or no longer monitored fails the search, as nothing would
+ * ever grab it.
+ */
+function applyArrState(
+  entry: TrackedProgress,
+  state: ArrState,
+  type: ServarrType,
+  tracker: ProgressTracker
+): void {
+  const { mediaId, is4k, steps } = entry;
+  if ((state.lastSearchedAt ?? 0) > (entry.lastSearchedAt ?? 0)) {
+    tracker.setSearch(mediaId, is4k, { lastSearchedAt: state.lastSearchedAt });
+  }
+  entry.filesMissing = !state.hasFile;
+  // Awaiting approval: nothing was sent to Radarr/Sonarr yet.
+  if (steps.requested.status !== 'done') return;
+  if (state.hasFile) {
+    tracker.advance(mediaId, is4k, 'importing');
+    return;
+  }
+
+  const imported = steps.importing.status === 'done';
+  // An unmonitored item still imports what it already downloads.
+  const error = state.removed
+    ? removedError(type)
+    : !state.monitored && (imported || steps.grabbed.status === 'pending')
+      ? unmonitoredError(type)
+      : undefined;
+  const searching = steps.searching;
+  if (searching.status === 'failed' && searching.error === error) return;
+  const arrFailed =
+    searching.status === 'failed' &&
+    (searching.error === removedError(type) ||
+      searching.error === unmonitoredError(type));
+  if (
+    imported ||
+    (error &&
+      (steps.grabbed.status !== 'pending' || searching.status !== 'running')) ||
+    (!error && arrFailed)
+  ) {
+    tracker.research(mediaId, is4k);
+  }
+  if (error) tracker.fail(mediaId, is4k, error);
+}
+
 /** Milliseconds until a queue item completes, as the download client estimates it. */
 export function queueEtaMs(
   item: { timeleft?: string; estimatedCompletionTime?: string },
@@ -265,7 +394,8 @@ export async function refreshServer(
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
   const [type, id] = key.split('-') as [ServarrType, string];
-  const entries = tracker.incomplete().filter((e) => e.serverKey === key);
+  // Finished entries too: files deleted after the import send the run back to searching.
+  const entries = tracker.tracked().filter((e) => e.serverKey === key);
   const api = servarrApi(type, Number(id));
   if (entries.length === 0 || !api) return;
 
@@ -278,8 +408,10 @@ export async function refreshServer(
   }
   if (byArrId.size === 0) return;
 
+  const seasons =
+    type === 'sonarr' ? await requestedSeasons(entries) : undefined;
   // Per item: the history of a whole server since an old request can be too large to load.
-  const [histories, queue, seasons] = await Promise.all([
+  const [histories, queue, states] = await Promise.all([
     Promise.all(
       [...byArrId.keys()].map((arrId) =>
         api.getItemHistory(arrId).catch((e: Error) => {
@@ -293,7 +425,22 @@ export async function refreshServer(
       )
     ),
     api.getQueue(),
-    type === 'sonarr' ? requestedSeasons(entries) : undefined,
+    Promise.all(
+      entries.map((entry) => {
+        const m = media.get(entry.mediaId);
+        const arrId = m && externalId(m, entry.is4k);
+        return arrId
+          ? arrState(api, arrId, seasons?.get(entry)).catch((e: Error) => {
+              logger.warn(`Loading the item state failed: ${e.message}`, {
+                label: 'Request Progress',
+                server: key,
+                arrId,
+              });
+              return undefined;
+            })
+          : undefined;
+      })
+    ),
   ]);
   const history = histories.flat();
   // Records of the same series can belong to seasons another request asked for.
@@ -316,9 +463,12 @@ export async function refreshServer(
     const at = Date.parse(record.date);
     for (const entry of entriesOf(record)) {
       const { mediaId, is4k } = entry;
-      // The item history holds the records of earlier requests too.
+      // The item history holds the records of earlier requests and searches too.
       if (
-        at < (entry.steps.requested.startedAt ?? 0) ||
+        at <
+          (entry.steps.searching.startedAt ??
+            entry.steps.requested.startedAt ??
+            0) ||
         (record.downloadId &&
           entry.staleDownloadIds.includes(record.downloadId))
       ) {
@@ -387,11 +537,10 @@ export async function refreshServer(
     );
   }
 
-  for (const entry of entries) {
-    if (entry.searchCompletedAt && entry.steps.grabbed.status !== 'done') {
-      tracker.fail(entry.mediaId, entry.is4k, NO_RESULTS);
-    }
-  }
+  entries.forEach((entry, i) => {
+    const state = states[i];
+    if (state) applyArrState(entry, state, type, tracker);
+  });
 }
 
 /** Advances tracked media that the Jellyfin scanners linked to an item or made available. */
@@ -399,20 +548,29 @@ export async function reconcileJellyfin(
   addedAt?: number,
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
-  const entries = tracker.active();
+  const entries = tracker.tracked();
   if (entries.length === 0) return;
   const media = await loadMedia(entries);
-  for (const { mediaId, is4k } of entries) {
+  for (const entry of entries) {
+    const { mediaId, is4k } = entry;
     const m = media.get(mediaId);
     if (!m) continue;
-    if (is4k ? m.jellyfinMediaId4k : m.jellyfinMediaId) {
-      tracker.advance(mediaId, is4k, 'inJellyfin', addedAt);
-    }
+    const inJellyfin = is4k ? m.jellyfinMediaId4k : m.jellyfinMediaId;
     const status = is4k ? m.status4k : m.status;
     if (
-      status === MediaStatus.AVAILABLE ||
-      status === MediaStatus.PARTIALLY_AVAILABLE
+      !inJellyfin &&
+      !isAvailable(status) &&
+      entry.steps.inJellyfin.status === 'done'
     ) {
+      tracker.reopen(mediaId, is4k, 'inJellyfin');
+      continue;
+    }
+    // Jellyfin and the media status lag behind a deletion in Radarr/Sonarr.
+    if (tracker.finished(entry) || entry.filesMissing) continue;
+    if (inJellyfin) {
+      tracker.advance(mediaId, is4k, 'inJellyfin', addedAt);
+    }
+    if (isAvailable(status)) {
       tracker.advance(mediaId, is4k, 'playable', undefined, {
         playUrl: is4k ? m.mediaUrl4k : m.mediaUrl,
       });
@@ -422,26 +580,6 @@ export async function reconcileJellyfin(
 
 const REQUEST_DECLINED = 'Request declined';
 const REQUEST_FAILED = 'Request failed';
-const WAITING_FOR_RELEASE = 'No release found yet, waiting for one';
-
-/** Whether Radarr/Sonarr holds a file for the media, for requested seasons only. */
-async function hasFiles(
-  entry: TrackedProgress,
-  arrId: number,
-  seasons: Set<number> | undefined
-): Promise<boolean> {
-  const [type, id] = entry.serverKey?.split('-') ?? [];
-  const api = servarrApi(type as ServarrType, Number(id));
-  if (api instanceof RadarrAPI)
-    return (await api.getMovie({ id: arrId })).hasFile;
-  if (!(api instanceof SonarrAPI)) return false;
-  const series = await api.getSeriesById(arrId);
-  return series.seasons.some(
-    (s) =>
-      (!seasons || seasons.has(s.seasonNumber)) &&
-      (s.statistics?.episodeFileCount ?? 0) > 0
-  );
-}
 
 /**
  * Starts entries for media whose newest request the tracker never saw, e.g. one sent before a
@@ -460,7 +598,6 @@ export async function reconstructProgress(
         },
     order: { id: 'DESC' },
   });
-  const settings = getSettings();
   const seen = new Set<string>();
   const created: TrackedProgress[] = [];
   for (const request of requests) {
@@ -489,19 +626,12 @@ export async function reconstructProgress(
       continue;
     }
 
-    const type = request.type === MediaType.MOVIE ? 'radarr' : 'sonarr';
-    const serverId =
-      (is4k ? media.serviceId4k : media.serviceId) ??
-      request.serverId ??
-      settings[type].find((s) => !!s.is4k === is4k && s.isDefault)?.id;
+    const server = requestServer(request);
     const entry = tracker.start({
       mediaId: media.id,
       is4k,
       requestId: request.id,
-      serverKey:
-        serverId === undefined || serverId === null
-          ? undefined
-          : serverKey(type, serverId),
+      serverKey: server && serverKey(server.type, server.serverId),
       at: request.createdAt.getTime(),
       awaitingApproval:
         request.status === MediaRequestStatus.PENDING ||
@@ -526,37 +656,7 @@ export async function reconstructProgress(
   for (const key of new Set(created.flatMap((e) => e.serverKey ?? []))) {
     await refreshServer(key, tracker);
   }
-  const media = await loadMedia(created);
-  const seasons = await requestedSeasons(created);
-  for (const entry of created) {
-    const m = media.get(entry.mediaId);
-    const arrId = m && externalId(m, entry.is4k);
-    if (!arrId || entry.steps.importing.status === 'done') continue;
-    try {
-      if (await hasFiles(entry, arrId, seasons.get(entry))) {
-        tracker.advance(entry.mediaId, entry.is4k, 'importing');
-      }
-    } catch (e) {
-      logger.warn(`Looking up files failed: ${e.message}`, {
-        label: 'Request Progress',
-        server: entry.serverKey,
-      });
-    }
-  }
   await reconcileJellyfin(undefined, tracker);
-  for (const entry of created) {
-    if (
-      entry.steps.searching.status === 'running' &&
-      !entry.steps.searching.detail
-    ) {
-      tracker.setDetail(
-        entry.mediaId,
-        entry.is4k,
-        'searching',
-        WAITING_FOR_RELEASE
-      );
-    }
-  }
 }
 
 const serverRefresh = new KeyedDebouncer((key) => refreshServer(key));

@@ -14,6 +14,11 @@ import type {
 import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
 import { Permission } from '@server/lib/permissions';
 import { reconstructProgress } from '@server/lib/requestProgress/events';
+import {
+  searchAccess,
+  searchRequest,
+  searchableRequest,
+} from '@server/lib/requestProgress/search';
 import progressTracker, {
   STEP_KEYS,
 } from '@server/lib/requestProgress/tracker';
@@ -350,8 +355,31 @@ mediaRoutes.get<{ mediaId: string }>(
       // Stops nginx from buffering the stream.
       'X-Accel-Buffering': 'no',
     });
-    const send = (progress: RequestProgress) =>
+    const request = await searchableRequest(mediaId, is4k).catch(() => null);
+    const send = (progress: RequestProgress) => {
+      const access = searchAccess(req.user, request);
+      const lastSearchedAt = progressTracker.entry(
+        mediaId,
+        is4k
+      )?.lastSearchedAt;
+      const playable =
+        progress.steps.find((s) => s.key === 'playable')?.status === 'done';
+      progress = {
+        ...progress,
+        search: {
+          allowed: access.allowed && !playable,
+          retryAfter:
+            access.retryAfter !== undefined
+              ? new Date(access.retryAfter).toISOString()
+              : undefined,
+          lastSearchedAt:
+            lastSearchedAt !== undefined
+              ? new Date(lastSearchedAt).toISOString()
+              : undefined,
+        },
+      };
       res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);
+    };
 
     send(progressTracker.get(mediaId, is4k) ?? untracked);
     const onChange = (progress: RequestProgress) => {
@@ -377,6 +405,47 @@ mediaRoutes.get<{ mediaId: string }>(
       clearInterval(heartbeat);
       progressTracker.off('change', onChange);
     });
+  }
+);
+
+mediaRoutes.post<{ mediaId: string }>(
+  '/:mediaId/progress/search',
+  async (req, res, next) => {
+    const mediaId = Number(req.params.mediaId);
+    const is4k = req.query.is4k === 'true';
+    const request = Number.isInteger(mediaId)
+      ? await searchableRequest(mediaId, is4k)
+      : null;
+    if (!request) {
+      return next({ status: 404, message: 'No open request to search for.' });
+    }
+    const access = searchAccess(req.user, request);
+    if (!access.allowed) {
+      return next({ status: 403, message: 'Not allowed to search.' });
+    }
+    if (access.retryAfter !== undefined) {
+      res.setHeader(
+        'Retry-After',
+        Math.ceil((access.retryAfter - Date.now()) / 1000)
+      );
+      return next({ status: 429, message: 'Searched recently.' });
+    }
+    try {
+      if (!(await searchRequest(request))) {
+        return next({
+          status: 409,
+          message: 'The media is not in Radarr/Sonarr yet.',
+        });
+      }
+      return res.status(204).send();
+    } catch (e) {
+      logger.error('Triggering a search failed', {
+        label: 'Request Progress',
+        mediaId,
+        message: e.message,
+      });
+      return next({ status: 500, message: 'Triggering a search failed.' });
+    }
   }
 );
 
