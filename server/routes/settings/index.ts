@@ -19,7 +19,10 @@ import type { AvailableCacheIds } from '@server/lib/cache';
 import cacheManager from '@server/lib/cache';
 import ImageProxy from '@server/lib/imageproxy';
 import { Permission } from '@server/lib/permissions';
-import { restartJellyfinSocket } from '@server/lib/requestProgress/events';
+import {
+  reloadStepStats,
+  restartJellyfinSocket,
+} from '@server/lib/requestProgress/events';
 import { jellyfinFullScanner } from '@server/lib/scanners/jellyfin';
 import { plexFullScanner } from '@server/lib/scanners/plex';
 import type { JobId, Library, MainSettings } from '@server/lib/settings';
@@ -36,7 +39,7 @@ import type { DnsEntries, DnsStats } from 'dns-caching';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import fs from 'fs';
-import { escapeRegExp, merge, omit, set, sortBy } from 'lodash';
+import { escapeRegExp, merge, omit, pick, set, sortBy } from 'lodash';
 import { rescheduleJob } from 'node-schedule';
 import path from 'path';
 import semver from 'semver';
@@ -102,6 +105,25 @@ settingsRoutes.post('/network', async (req, res) => {
   await settings.save();
 
   return res.status(200).json(settings.network);
+});
+
+settingsRoutes.get('/request-progress', (_req, res) => {
+  res.status(200).json(getSettings().requestProgress);
+});
+
+settingsRoutes.post('/request-progress', async (req, res, next) => {
+  const settings = getSettings();
+  settings.requestProgress = merge(
+    settings.requestProgress,
+    pick(req.body, Object.keys(settings.requestProgress))
+  );
+  await settings.save();
+  try {
+    await reloadStepStats();
+  } catch (e) {
+    return next({ status: 500, message: e.message });
+  }
+  return res.status(200).json(settings.requestProgress);
 });
 
 settingsRoutes.post('/main/regenerate', async (req, res, next) => {

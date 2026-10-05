@@ -333,6 +333,29 @@ components:
             forceMaxTtl:
               type: number
               example: -1
+    RequestProgressSettings:
+      type: object
+      properties:
+        historyMaxAgeDays:
+          type: integer
+          minimum: 0
+          description: Maximum age of samples derived from the Radarr/Sonarr history; 0 for no limit
+          example: 30
+        historyMaxSamples:
+          type: integer
+          minimum: 0
+          description: Newest history samples kept per step; 0 for no limit
+          example: 100
+        localMaxAgeDays:
+          type: integer
+          minimum: 0
+          description: Maximum age of samples measured by Seerr; 0 for no limit
+          example: 90
+        localMaxSamples:
+          type: integer
+          minimum: 0
+          description: Newest measured samples kept per step; 0 for no limit
+          example: 200
     PlexLibrary:
       type: object
       properties:
@@ -2302,6 +2325,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/NetworkSettings'
+  /settings/request-progress:
+    get:
+      summary: Get request progress settings
+      description: Retrieves the request progress estimate settings in a JSON object.
+      tags:
+        - settings
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestProgressSettings'
+    post:
+      summary: Update request progress settings
+      description: Updates the request progress estimate settings and rebuilds the step samples.
+      tags:
+        - settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestProgressSettings'
+      responses:
+        '200':
+          description: 'Values were successfully updated'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestProgressSettings'
   /settings/main/regenerate:
     post:
       summary: Get main settings with newly-generated API key

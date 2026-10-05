@@ -422,14 +422,27 @@ function onSignalRConnected(source: SignalRSource, first: boolean): void {
   const key = serverKey(source.type, source.serverId);
   polls.push('downloads');
   serverRefresh.push(key);
-  const api = servarrApi(source.type, source.serverId);
-  if (first && api) {
-    stepStats.refresh(key, api).catch((e: Error) =>
-      logger.warn(`Loading step history failed: ${e.message}`, {
-        label: 'Request Progress',
-        server: key,
-      })
-    );
+  if (first) refreshStepHistory(source.type, source.serverId);
+}
+
+function refreshStepHistory(type: ServarrType, serverId: number): void {
+  const key = serverKey(type, serverId);
+  const api = servarrApi(type, serverId);
+  if (!api) return;
+  stepStats.refresh(key, api).catch((e: Error) =>
+    logger.warn(`Loading step history failed: ${e.message}`, {
+      label: 'Request Progress',
+      server: key,
+    })
+  );
+}
+
+/** Rebuilds the step samples, e.g. after their window settings changed. */
+export async function reloadStepStats(): Promise<void> {
+  await stepStats.load();
+  const settings = getSettings();
+  for (const type of ['radarr', 'sonarr'] as const) {
+    for (const server of settings[type]) refreshStepHistory(type, server.id);
   }
 }
 
@@ -462,6 +475,11 @@ export function restartJellyfinSocket(): void {
 }
 
 export function startProgressEvents(): void {
+  stepStats.load().catch((e: Error) =>
+    logger.warn(`Loading step samples failed: ${e.message}`, {
+      label: 'Request Progress',
+    })
+  );
   servarrSignalR.on('connected', (s) => onSignalRConnected(s, true));
   servarrSignalR.on('reconnected', (s) => onSignalRConnected(s, false));
   servarrSignalR.on('message', onSignalRMessage);
