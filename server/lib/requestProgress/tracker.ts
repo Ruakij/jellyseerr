@@ -30,6 +30,8 @@ export interface TrackedProgress {
   /** StepStats key, e.g. `radarr-0`; absent until the serving Radarr/Sonarr is known. */
   serverKey?: string;
   downloadId?: string;
+  /** Downloads given up on by a re-search; their history no longer applies. */
+  staleDownloadIds: string[];
   searchCompletedAt?: number;
   playUrl?: string;
   steps: Record<ProgressStepKey, StepState>;
@@ -80,6 +82,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       is4k,
       requestId,
       serverKey,
+      staleDownloadIds: [],
       steps,
     };
     this.cancelEviction(key(mediaId, is4k));
@@ -172,6 +175,20 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       finishedAt: at,
       error,
     };
+    this.changed(entry);
+  }
+
+  /** Restarts the search, e.g. after Radarr/Sonarr gave up on a failed download. */
+  public research(mediaId: number, is4k: boolean, at = this.now()): void {
+    const entry = this.entry(mediaId, is4k);
+    if (!entry) return;
+    if (entry.downloadId) entry.staleDownloadIds.push(entry.downloadId);
+    entry.downloadId = undefined;
+    entry.searchCompletedAt = undefined;
+    for (const k of STEP_KEYS.slice(STEP_KEYS.indexOf('grabbed'))) {
+      entry.steps[k] = { status: 'pending' };
+    }
+    entry.steps.searching = { status: 'running', startedAt: at };
     this.changed(entry);
   }
 

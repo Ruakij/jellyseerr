@@ -373,6 +373,11 @@ class SonarrAPI extends ServarrBase<{
     }
   }
 
+  public async getEpisode(id: number): Promise<EpisodeResult> {
+    const response = await this.axios.get<EpisodeResult>(`/episode/${id}`);
+    return response.data;
+  }
+
   public async getEpisodes(seriesId: number): Promise<EpisodeResult[]> {
     try {
       const response = await this.axios.get<EpisodeResult[]>('/episode', {
