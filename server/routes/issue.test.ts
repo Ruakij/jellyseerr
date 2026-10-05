@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { before, beforeEach, describe, it, mock } from 'node:test';
+import { beforeEach, describe, it, mock } from 'node:test';
 
 import { IssueType } from '@server/constants/issue';
 import { MediaStatus, MediaType } from '@server/constants/media';
@@ -12,7 +12,7 @@ import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
 import { IssueSubscriber } from '@server/subscriber/IssueSubscriber';
 import { setupTestDb } from '@server/test/db';
-import type { Express } from 'express';
+import { listenOnLocalhost } from '@server/test/server';
 import express from 'express';
 import session from 'express-session';
 import request from 'supertest';
@@ -26,8 +26,6 @@ const sendIssueNotificationMock = mock.method(
   'sendIssueNotification',
   async () => undefined
 ).mock;
-
-let app: Express;
 
 function createApp() {
   const app = express();
@@ -58,9 +56,7 @@ function createApp() {
   return app;
 }
 
-before(async () => {
-  app = createApp();
-});
+const app = listenOnLocalhost(createApp());
 
 beforeEach(() => {
   sendIssueNotificationMock.resetCalls();

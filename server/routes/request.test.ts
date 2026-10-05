@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { before, beforeEach, describe, it, mock } from 'node:test';
+import { beforeEach, describe, it, mock } from 'node:test';
 
 import TheMovieDb from '@server/api/themoviedb';
 import type {
@@ -22,7 +22,7 @@ import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
-import type { Express } from 'express';
+import { listenOnLocalhost } from '@server/test/server';
 import express from 'express';
 import session from 'express-session';
 import request from 'supertest';
@@ -131,8 +131,6 @@ function configureSonarr(overrides: Partial<SonarrSettings>[]): void {
   })) as SonarrSettings[];
 }
 
-let app: Express;
-
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -162,9 +160,7 @@ function createApp() {
   return app;
 }
 
-before(async () => {
-  app = createApp();
-});
+const app = listenOnLocalhost(createApp());
 
 beforeEach(() => {
   sendNotificationMock.resetCalls();

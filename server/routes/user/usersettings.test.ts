@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { before, beforeEach, describe, it, mock } from 'node:test';
+import { beforeEach, describe, it, mock } from 'node:test';
 
 import JellyfinAPI from '@server/api/jellyfin';
 import { MediaServerType } from '@server/constants/server';
@@ -10,7 +10,7 @@ import { getSettings } from '@server/lib/settings';
 import { checkUser, isAuthenticated } from '@server/middleware/auth';
 import authRoutes from '@server/routes/auth';
 import { setupTestDb } from '@server/test/db';
-import type { Express } from 'express';
+import { listenOnLocalhost } from '@server/test/server';
 import express from 'express';
 import session from 'express-session';
 import request from 'supertest';
@@ -31,8 +31,6 @@ const authenticateQCMock = mock.method(
   'authenticateQuickConnect',
   async () => ({ ...defaultAuthenticateResponse })
 );
-
-let app: Express;
 
 function createApp() {
   const app = express();
@@ -63,9 +61,7 @@ function createApp() {
   return app;
 }
 
-before(async () => {
-  app = createApp();
-});
+const app = listenOnLocalhost(createApp());
 
 setupTestDb();
 
