@@ -13,6 +13,9 @@ export type ProgressStep = (typeof PROGRESS_STEPS)[number];
 
 export const MAX_SAMPLES = 200;
 
+/** Below this many end-to-end samples, the total estimate is the sum of the step p90s. */
+export const MIN_TOTAL_SAMPLES = 20;
+
 export interface Sample {
   /** When the step finished, ms since epoch; orders the sample window. */
   at: number;
@@ -84,6 +87,8 @@ type HistorySource = Pick<ServarrBase<unknown>, 'getHistory'>;
 interface ServerSamples {
   history: Sample[];
   recorded: Record<ProgressStep, Sample[]>;
+  /** Requested -> playable durations of tracked runs. */
+  totals: Sample[];
 }
 
 /**
@@ -101,6 +106,7 @@ export class StepStats {
         recorded: Object.fromEntries(
           PROGRESS_STEPS.map((step) => [step, []])
         ) as unknown as Record<ProgressStep, Sample[]>,
+        totals: [],
       };
       this.servers.set(serverKey, entry);
     }
@@ -131,6 +137,22 @@ export class StepStats {
       ...recorded[step],
       { at, durationMs, downloadId },
     ]);
+  }
+
+  public recordTotal(serverKey: string, durationMs: number, at = Date.now()) {
+    const server = this.server(serverKey);
+    server.totals = newest([...server.totals, { at, durationMs }]);
+  }
+
+  /** p90 of the end-to-end durations; undefined until there are enough of them. */
+  public totalP90(serverKey: string): number | undefined {
+    const totals = this.server(serverKey).totals;
+    return totals.length >= MIN_TOTAL_SAMPLES
+      ? percentile(
+          totals.map((s) => s.durationMs),
+          90
+        )
+      : undefined;
   }
 
   public get(serverKey: string): Record<ProgressStep, StepEstimate> {
