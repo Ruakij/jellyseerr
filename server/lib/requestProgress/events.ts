@@ -9,7 +9,11 @@ import type {
 } from '@server/api/servarr/signalr';
 import { servarrSignalR } from '@server/api/servarr/signalr';
 import SonarrAPI from '@server/api/servarr/sonarr';
-import { MediaStatus, MediaType } from '@server/constants/media';
+import {
+  MediaRequestStatus,
+  MediaStatus,
+  MediaType,
+} from '@server/constants/media';
 import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
@@ -17,6 +21,7 @@ import { MediaRequest } from '@server/entity/MediaRequest';
 import type { ProgressDownload } from '@server/interfaces/api/progressInterfaces';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
+import type { RequestStart } from '@server/lib/requestProgress/stepStats';
 import stepStats from '@server/lib/requestProgress/stepStats';
 import type {
   ProgressTracker,
@@ -29,7 +34,7 @@ import {
 } from '@server/lib/scanners/jellyfin';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
-import { In } from 'typeorm';
+import { In, MoreThanOrEqual } from 'typeorm';
 
 const serverKey = (type: ServarrType, serverId: number) =>
   `${type}-${serverId}`;
@@ -425,16 +430,57 @@ function onSignalRConnected(source: SignalRSource, first: boolean): void {
   if (first) refreshStepHistory(source.type, source.serverId);
 }
 
+/**
+ * Requests sent to a server since a date. Only auto-approved ones: for the others, the time until
+ * an admin approved them is not part of the search.
+ */
+export async function requestStarts(
+  type: ServarrType,
+  serverId: number,
+  since: Date
+): Promise<RequestStart[]> {
+  const server = getSettings()[type].find((s) => s.id === serverId);
+  if (!server) return [];
+  // An undefined condition would match both variants.
+  const is4k = server.is4k === true;
+  const requests = await getRepository(MediaRequest).find({
+    where: {
+      type: type === 'radarr' ? MediaType.MOVIE : MediaType.TV,
+      is4k,
+      status: In([MediaRequestStatus.APPROVED, MediaRequestStatus.COMPLETED]),
+      createdAt: MoreThanOrEqual(since),
+      media: is4k ? { serviceId4k: serverId } : { serviceId: serverId },
+    },
+  });
+  return requests.flatMap((request) => {
+    const arrId = externalId(request.media, is4k);
+    return arrId && request.modifiedBy?.id === request.requestedBy?.id
+      ? [
+          {
+            at: request.createdAt.getTime(),
+            arrId,
+            seasons:
+              type === 'sonarr'
+                ? request.seasons.map((s) => s.seasonNumber)
+                : undefined,
+          },
+        ]
+      : [];
+  });
+}
+
 function refreshStepHistory(type: ServarrType, serverId: number): void {
   const key = serverKey(type, serverId);
   const api = servarrApi(type, serverId);
   if (!api) return;
-  stepStats.refresh(key, api).catch((e: Error) =>
-    logger.warn(`Loading step history failed: ${e.message}`, {
-      label: 'Request Progress',
-      server: key,
-    })
-  );
+  stepStats
+    .refresh(key, api, (since) => requestStarts(type, serverId, since))
+    .catch((e: Error) =>
+      logger.warn(`Loading step history failed: ${e.message}`, {
+        label: 'Request Progress',
+        server: key,
+      })
+    );
 }
 
 /** Rebuilds the step samples, e.g. after their window settings changed. */
