@@ -5,16 +5,18 @@ import RequestBlock from '@app/components/RequestBlock';
 import { downloadFraction } from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
+import useToasts from '@app/hooks/useToasts';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
-import { PlayIcon } from '@heroicons/react/24/solid';
+import { MagnifyingGlassIcon, PlayIcon } from '@heroicons/react/24/solid';
 import type { MediaRequest } from '@server/entity/MediaRequest';
 import type {
   ProgressStep,
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
+import axios from 'axios';
 import { useEffect, useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR from 'swr';
@@ -33,7 +35,28 @@ const messages = defineMessages('components.RequestProgressModal', {
   total: 'Total',
   watch: 'Watch',
   failed: 'Something went wrong at this step.',
+  searchAgain: 'Search again',
+  searchAvailableIn: 'Available again in {duration}',
+  lastSearched: 'Last searched {duration} ago',
+  searchStarted: 'Search started.',
+  searchCooldown: 'Searched too recently, try again later.',
+  searchFailed: 'Something went wrong while starting the search.',
 });
+
+// TODO remove once RequestProgress.search lands from the backend merge
+type ProgressWithSearch = RequestProgress & {
+  search?: { allowed: boolean; retryAfter?: string; lastSearchedAt?: string };
+};
+
+// Step errors that are not technical and shown to every user
+const PUBLIC_ERRORS = [
+  'Request declined',
+  'Request failed',
+  'Removed from Sonarr',
+  'Removed from Radarr',
+  'Not monitored in Sonarr',
+  'Not monitored in Radarr',
+];
 
 const formatDuration = (ms: number): string => {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -87,7 +110,7 @@ const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
 
 interface RequestProgressModalProps {
   show: boolean;
-  progress?: RequestProgress;
+  progress?: ProgressWithSearch;
   subTitle?: string;
   onClose: () => void;
 }
@@ -104,8 +127,19 @@ const RequestProgressModal = ({
   const { data: request } = useSWR<MediaRequest>(
     show && progress?.requestId ? `/api/v1/request/${progress.requestId}` : null
   );
+  const { addToast } = useToasts();
   const [now, setNow] = useState(Date.now());
-  const ticking = show && !!progress?.steps.some((s) => s.status === 'running');
+  const [searching, setSearching] = useState(false);
+  const retryAt = progress?.search?.retryAfter
+    ? Date.parse(progress.search.retryAfter)
+    : undefined;
+  const step = progress && currentStep(progress.steps);
+  const running = !!progress?.steps.some((s) => s.status === 'running');
+  const lastSearchedAt =
+    step?.key === 'searching' ? progress?.search?.lastSearchedAt : undefined;
+  const ticking =
+    show &&
+    (running || !!lastSearchedAt || (retryAt !== undefined && retryAt > now));
 
   // Capture phase on window runs before React's handlers, so an enclosing
   // slide-over never sees this Escape (React bubbles through portals)
@@ -133,7 +167,7 @@ const RequestProgressModal = ({
     .filter((f): f is string => !!f)
     .pop();
   const totalMs = firstStart
-    ? (ticking || !lastEnd ? now : Date.parse(lastEnd)) - Date.parse(firstStart)
+    ? (running || !lastEnd ? now : Date.parse(lastEnd)) - Date.parse(firstStart)
     : undefined;
 
   const formatEstimate = (est: Estimate) =>
@@ -155,7 +189,6 @@ const RequestProgressModal = ({
         : messages[s.key]
     );
 
-  const step = progress && currentStep(progress.steps);
   const downloads =
     step?.key === 'grabbed' && step.status === 'running'
       ? (progress?.downloads ?? [])
@@ -163,12 +196,42 @@ const RequestProgressModal = ({
   const detail = canManage ? step?.detail : undefined;
   const error =
     step?.status === 'failed'
-      ? // errors of the requested step (declined, failed) are not technical
-        (canManage || step.key === 'requested') && step.error
+      ? step.error && (canManage || PUBLIC_ERRORS.includes(step.error))
         ? step.error
         : intl.formatMessage(messages.failed)
       : undefined;
   const playUrl = step?.key === 'playable' ? progress?.playUrl : undefined;
+  const canSearch =
+    !!progress?.search?.allowed &&
+    step?.key === 'searching' &&
+    (step.status === 'running' ||
+      (step.status === 'failed' && step.error === 'No results'));
+  const cooldownMs = retryAt !== undefined ? retryAt - now : 0;
+
+  const searchAgain = async () => {
+    if (!progress) return;
+    setSearching(true);
+    try {
+      await axios.post(
+        `/api/v1/media/${progress.mediaId}/progress/search?is4k=${progress.is4k}`
+      );
+      addToast(intl.formatMessage(messages.searchStarted), {
+        autoDismiss: true,
+        appearance: 'success',
+      });
+    } catch (e) {
+      addToast(
+        intl.formatMessage(
+          axios.isAxiosError(e) && e.response?.status === 429
+            ? messages.searchCooldown
+            : messages.searchFailed
+        ),
+        { autoDismiss: true, appearance: 'error' }
+      );
+    } finally {
+      setSearching(false);
+    }
+  };
 
   const stats = (s: ProgressStep) => {
     if (!progress) return {};
@@ -244,7 +307,12 @@ const RequestProgressModal = ({
             )}
           </>
         )}
-        {(detail || error || downloads.length > 0 || playUrl) && (
+        {(detail ||
+          error ||
+          downloads.length > 0 ||
+          playUrl ||
+          canSearch ||
+          lastSearchedAt) && (
           <div className="mt-4 space-y-3 rounded-lg bg-gray-900/40 p-4">
             {detail && (
               <p className="break-words text-sm text-gray-400">{detail}</p>
@@ -283,6 +351,37 @@ const RequestProgressModal = ({
                 </div>
               </div>
             ))}
+            {(canSearch || lastSearchedAt) && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-400">
+                {canSearch && (
+                  <Button
+                    buttonType="primary"
+                    buttonSize="sm"
+                    disabled={searching || cooldownMs > 0}
+                    onClick={searchAgain}
+                  >
+                    <MagnifyingGlassIcon />
+                    <span>{intl.formatMessage(messages.searchAgain)}</span>
+                  </Button>
+                )}
+                {canSearch && cooldownMs > 0 && (
+                  <span>
+                    {intl.formatMessage(messages.searchAvailableIn, {
+                      duration: formatDuration(cooldownMs),
+                    })}
+                  </span>
+                )}
+                {lastSearchedAt && (
+                  <span>
+                    {intl.formatMessage(messages.lastSearched, {
+                      duration: formatDuration(
+                        now - Date.parse(lastSearchedAt)
+                      ),
+                    })}
+                  </span>
+                )}
+              </div>
+            )}
             {playUrl && (
               <Button
                 as="a"
