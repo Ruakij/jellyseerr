@@ -23,6 +23,7 @@ import type {
 import BaseScanner from '@server/lib/scanners/baseScanner';
 import type { Library } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
+import logger from '@server/logger';
 import { getHostname } from '@server/utils/getHostname';
 import { uniqWith } from 'lodash';
 
@@ -551,18 +552,16 @@ class JellyfinScanner
     const sessionId = this.startRun();
     try {
       if (!(await this.createClient())) return;
-      const enabled = new Set(
-        getSettings()
-          .jellyfin.libraries.filter((library) => library.enabled)
-          .map((library) => library.id)
-      );
+      const locations = await enabledLocations(this.jfClient);
       const items = await Promise.all(
         ids.map(async (id) => {
-          const ancestors = await this.jfClient
-            .getAncestors(id)
-            .catch(() => []);
-          if (!ancestors.some((a) => enabled.has(a.Id))) return undefined;
-          return this.jfClient.getItemData(id).catch(() => undefined);
+          const item = await this.jfClient
+            .getItemData(id)
+            .catch(() => undefined);
+          // Undecidable membership scans the item rather than missing it.
+          if (!item?.Path || !locations) return item;
+          const path = withSlash(item.Path);
+          return locations.some((l) => path.startsWith(l)) ? item : undefined;
         })
       );
       this.items = uniqWith(
@@ -592,6 +591,44 @@ class JellyfinScanner
       currentLibrary: this.currentLibrary,
       libraries: this.libraries,
     };
+  }
+}
+
+const withSlash = (path: string) => `${path.replace(/[\\/]+$/, '')}/`;
+
+const LOCATIONS_TTL_MS = 10 * 60 * 1000;
+let locationCache: { key: string; at: number; locations: string[] } | undefined;
+
+/**
+ * Folder paths of the enabled libraries. An item's ancestors in Jellyfin end at its physical
+ * folder and the root, never the library, so library membership goes by path.
+ */
+async function enabledLocations(
+  client: JellyfinAPI
+): Promise<string[] | undefined> {
+  const jellyfin = getSettings().jellyfin;
+  const key = JSON.stringify(jellyfin);
+  if (
+    locationCache?.key === key &&
+    Date.now() - locationCache.at < LOCATIONS_TTL_MS
+  ) {
+    return locationCache.locations;
+  }
+  const enabled = new Set(
+    jellyfin.libraries.filter((l) => l.enabled).map((l) => l.id)
+  );
+  try {
+    const folders = await client.getVirtualFolders();
+    const locations = folders
+      .filter((f) => enabled.has(f.ItemId))
+      .flatMap((f) => f.Locations.map(withSlash));
+    locationCache = { key, at: Date.now(), locations };
+    return locations;
+  } catch (e) {
+    logger.warn(`Loading Jellyfin library locations failed: ${e.message}`, {
+      label: 'Jellyfin Sync',
+    });
+    return undefined;
   }
 }
 

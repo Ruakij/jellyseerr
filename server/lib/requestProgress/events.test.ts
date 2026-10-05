@@ -1,17 +1,29 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import type { HistoryRecord } from '@server/api/servarr/base';
 import RadarrAPI from '@server/api/servarr/radarr';
 import type { CommandEvent } from '@server/api/servarr/signalr';
-import { MediaStatus, MediaType } from '@server/constants/media';
+import SonarrAPI from '@server/api/servarr/sonarr';
+import {
+  MediaRequestStatus,
+  MediaStatus,
+  MediaType,
+} from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
+import { MediaRequest } from '@server/entity/MediaRequest';
+import SeasonRequest from '@server/entity/SeasonRequest';
+import { User } from '@server/entity/User';
 import {
   handleCommand,
+  queueEtaMs,
   reconcileJellyfin,
+  reconstructProgress,
   refreshServer,
   rememberEpisode,
+  requestProgressStats,
+  requestStarts,
 } from '@server/lib/requestProgress/events';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
 import { ProgressTracker } from '@server/lib/requestProgress/tracker';
@@ -21,17 +33,27 @@ import { setupTestDb } from '@server/test/db';
 
 let history: Partial<HistoryRecord>[] = [];
 let queue: Record<string, unknown>[] = [];
-for (const [name, impl] of [
-  ['getHistory', async () => history],
-  ['getQueue', async () => queue],
-] as const) {
-  // Instance arrow properties: the getter shadows them, the setter swallows the constructor's.
-  Object.defineProperty(RadarrAPI.prototype, name, {
-    set() {},
-    get: () => impl,
-    configurable: true,
-  });
+let hasFile = false;
+Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
+  set() {},
+  get: () => async () => ({ hasFile }),
+  configurable: true,
+});
+for (const Api of [RadarrAPI, SonarrAPI]) {
+  for (const [name, impl] of [
+    ['getHistory', async () => history],
+    ['getQueue', async () => queue],
+  ] as const) {
+    // Instance arrow properties: the getter shadows them, the setter swallows the constructor's.
+    Object.defineProperty(Api.prototype, name, {
+      set() {},
+      get: () => impl,
+      configurable: true,
+    });
+  }
 }
+
+mock.method(MediaRequest, 'sendNotification', async () => undefined);
 
 setupTestDb();
 
@@ -51,6 +73,7 @@ async function setup(overrides: Partial<Media> = {}) {
   const tracker = new ProgressTracker(new StepStats());
   history = [];
   queue = [];
+  hasFile = false;
   return { media, tracker };
 }
 
@@ -78,6 +101,119 @@ describe('refreshServer', () => {
     assert.equal(statusOf(tracker, media.id, 'importing').finishedAt, imported);
     assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
     assert.equal(tracker.entry(media.id, false)!.downloadId, 'D');
+  });
+
+  it('ignores history from before the request', async () => {
+    const { media, tracker } = await setup();
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    history = [
+      { eventType: 'grabbed', date: earlier, movieId: 42, downloadId: 'D' },
+      { eventType: 'downloadFolderImported', date: earlier, movieId: 42 },
+    ];
+
+    await refreshServer('radarr-0', tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'pending');
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'pending');
+  });
+
+  it('counts only episodes of the requested seasons', async () => {
+    getSettings().sonarr = [
+      { id: 0, name: 'Sonarr', hostname: 'localhost', port: 8989, apiKey: 'k' },
+    ] as SonarrSettings[];
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 1,
+        tvdbId: 2,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 34,
+      })
+    );
+    const request = await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: await getRepository(User).findOneByOrFail({ id: 1 }),
+        seasons: [new SeasonRequest({ seasonNumber: 2 })],
+      })
+    );
+    const tracker = new ProgressTracker(new StepStats());
+    tracker.start({
+      mediaId: media.id,
+      is4k: false,
+      requestId: request.id,
+      serverKey: 'sonarr-0',
+    });
+    const now = Date.now();
+    const at = (s: number) => new Date(now + s * 1000).toISOString();
+    const episode = (seasonNumber: number) => ({
+      seasonNumber,
+      episodeNumber: 1,
+    });
+    history = [
+      {
+        eventType: 'grabbed',
+        date: at(1),
+        seriesId: 34,
+        downloadId: 'S1',
+        sourceTitle: 'Show.S01E01',
+        episode: episode(1),
+      },
+      {
+        eventType: 'downloadFolderImported',
+        date: at(2),
+        seriesId: 34,
+        downloadId: 'S1',
+        episode: episode(1),
+      },
+      {
+        eventType: 'grabbed',
+        date: at(3),
+        seriesId: 34,
+        downloadId: 'S2',
+        sourceTitle: 'Show.S02',
+        episode: episode(2),
+      },
+    ];
+    queue = [
+      {
+        seriesId: 34,
+        downloadId: 'S1',
+        title: 'Show.S01E01',
+        episode: episode(1),
+      },
+      ...[1, 2].map((episodeNumber) => ({
+        seriesId: 34,
+        downloadId: 'S2',
+        title: 'Show.S02',
+        indexer: 'NZBgeek',
+        size: 1000,
+        sizeleft: 400,
+        timeleft: '00:01:30',
+        episode: { seasonNumber: 2, episodeNumber },
+      })),
+    ];
+
+    await refreshServer('sonarr-0', tracker);
+
+    const progress = tracker.get(media.id, false)!;
+    const grabbed = statusOf(tracker, media.id, 'grabbed');
+    assert.equal(grabbed.finishedAt, at(3));
+    assert.equal(grabbed.detail, 'Show.S02');
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'running');
+    assert.deepEqual(progress.downloads, [
+      {
+        title: 'Show.S02',
+        indexer: 'NZBgeek',
+        size: 1000,
+        sizeLeft: 400,
+        etaMs: 90_000,
+      },
+    ]);
   });
 
   it('fails a blocked import as manual interaction', async () => {
@@ -140,6 +276,35 @@ const search = (
 });
 
 describe('handleCommand', () => {
+  it('shows the messages of the running search as searching detail', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    const id = commandId++;
+    await handleCommand(
+      radarr,
+      search('started', { id, message: 'Searching indexers' }),
+      tracker
+    );
+    assert.equal(
+      statusOf(tracker, media.id, 'searching').detail,
+      'Searching indexers'
+    );
+
+    tracker.advance(media.id, false, 'grabbed');
+    const done = 'Completed search for 1 movies. 1 reports downloaded.';
+    await handleCommand(
+      radarr,
+      search('completed', { id, message: done, reportsDownloaded: 1 }),
+      tracker
+    );
+    await handleCommand(
+      radarr,
+      search('started', { trigger: 'unspecified', message: 'Other search' }),
+      tracker
+    );
+    assert.equal(statusOf(tracker, media.id, 'searching').detail, done);
+  });
+
   it('fails with no results on a completed search with 0 reports', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
@@ -310,5 +475,217 @@ describe('reconcileJellyfin', () => {
     const progress = tracker.get(media.id, false)!;
     assert.ok(progress.steps.every((s) => s.status === 'done'));
     assert.match(progress.playUrl ?? '', /id=abc/);
+  });
+});
+
+describe('reconstructProgress', () => {
+  const requestedAt = '2026-10-05T10:00:00.000Z';
+  async function setupRequest(status: MediaRequestStatus) {
+    const { media } = await setup();
+    const stats = new StepStats();
+    const record = mock.method(stats, 'record');
+    const tracker = new ProgressTracker(stats);
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status,
+        media,
+        requestedBy: user,
+        modifiedBy: user,
+        createdAt: new Date(requestedAt),
+      })
+    );
+    return { media, tracker, record };
+  }
+
+  it('rebuilds an approved request from history without measuring it', async () => {
+    const { media, tracker, record } = await setupRequest(
+      MediaRequestStatus.APPROVED
+    );
+    history = [
+      {
+        eventType: 'grabbed',
+        date: '2026-10-05T10:05:00.000Z',
+        movieId: 42,
+        downloadId: 'D',
+        sourceTitle: 'Movie',
+      },
+      {
+        eventType: 'downloadFolderImported',
+        date: '2026-10-05T10:30:00.000Z',
+        movieId: 42,
+      },
+    ];
+
+    await reconstructProgress([{ mediaId: media.id, is4k: false }], tracker);
+
+    const requested = statusOf(tracker, media.id, 'requested');
+    assert.equal(requested.startedAt, requestedAt);
+    assert.equal(requested.finishedAt, requestedAt);
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'done');
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+    assert.equal(record.mock.callCount(), 0);
+  });
+
+  it('waits for a release when nothing was grabbed', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.APPROVED);
+
+    await reconstructProgress(undefined, tracker);
+
+    const searching = statusOf(tracker, media.id, 'searching');
+    assert.equal(searching.status, 'running');
+    assert.equal(searching.startedAt, requestedAt);
+    assert.equal(searching.detail, 'No release found yet, waiting for one');
+  });
+
+  it('takes a file in Radarr as imported', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.APPROVED);
+    hasFile = true;
+
+    await reconstructProgress(undefined, tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'done');
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+  });
+
+  it('shows a pending request as awaiting approval', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.PENDING);
+
+    await reconstructProgress(undefined, tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'requested').status, 'running');
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'pending');
+  });
+
+  it('fails a declined request', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.DECLINED);
+
+    await reconstructProgress([{ mediaId: media.id, is4k: false }], tracker);
+
+    const requested = statusOf(tracker, media.id, 'requested');
+    assert.equal(requested.status, 'failed');
+    assert.equal(requested.error, 'Request declined');
+  });
+
+  it('leaves media with a tracked run alone', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.APPROVED);
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    const before = tracker.get(media.id, false);
+
+    await reconstructProgress(undefined, tracker);
+
+    assert.deepEqual(tracker.get(media.id, false), before);
+  });
+});
+
+describe('requestStarts', () => {
+  it('lists auto-approved requests sent to the server since a date', async () => {
+    getSettings().sonarr = [
+      { id: 0, name: 'Sonarr', hostname: 'localhost', port: 8989, apiKey: 'k' },
+      {
+        id: 1,
+        name: 'Sonarr 4K',
+        hostname: 'localhost',
+        port: 8990,
+        apiKey: 'k',
+        is4k: true,
+      },
+    ] as SonarrSettings[];
+    const users = getRepository(User);
+    const admin = await users.findOneByOrFail({ id: 1 });
+    const friend = await users.findOneByOrFail({ email: 'friend@seerr.dev' });
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 1,
+        tvdbId: 2,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 34,
+        serviceId4k: 1,
+        externalServiceId4k: 56,
+      })
+    );
+    const request = (
+      createdAt: string,
+      status: MediaRequestStatus,
+      modifiedBy: User,
+      is4k = false
+    ) =>
+      new MediaRequest({
+        type: MediaType.TV,
+        status,
+        media,
+        is4k,
+        requestedBy: friend,
+        modifiedBy,
+        createdAt: new Date(createdAt),
+        seasons: [new SeasonRequest({ seasonNumber: 2 })],
+      });
+    await getRepository(MediaRequest).save([
+      request('2026-10-05T10:00:00Z', MediaRequestStatus.APPROVED, friend),
+      request('2026-10-05T11:00:00Z', MediaRequestStatus.COMPLETED, friend),
+      request('2026-10-04T10:00:00Z', MediaRequestStatus.APPROVED, friend),
+      request('2026-10-05T12:00:00Z', MediaRequestStatus.APPROVED, admin),
+      request('2026-10-05T13:00:00Z', MediaRequestStatus.PENDING, friend),
+      request(
+        '2026-10-05T14:00:00Z',
+        MediaRequestStatus.APPROVED,
+        friend,
+        true
+      ),
+    ]);
+
+    const since = new Date('2026-10-05T00:00:00Z');
+    const starts = (await requestStarts('sonarr', 0, since)).sort(
+      (a, b) => a.at - b.at
+    );
+    assert.deepEqual(starts, [
+      { at: Date.parse('2026-10-05T10:00:00Z'), arrId: 34, seasons: [2] },
+      { at: Date.parse('2026-10-05T11:00:00Z'), arrId: 34, seasons: [2] },
+    ]);
+    assert.deepEqual(await requestStarts('sonarr', 1, since), [
+      { at: Date.parse('2026-10-05T14:00:00Z'), arrId: 56, seasons: [2] },
+    ]);
+  });
+});
+
+describe('requestProgressStats', () => {
+  it('lists every configured server with its steps and total', () => {
+    getSettings().radarr = [
+      { id: 0, name: 'Radarr', hostname: 'localhost', port: 7878, apiKey: 'k' },
+    ] as RadarrSettings[];
+    getSettings().sonarr = [];
+    const [server, ...others] = requestProgressStats().servers;
+    assert.equal(others.length, 0);
+    assert.equal(server.serverKey, 'radarr-0');
+    assert.equal(server.name, 'Radarr');
+    assert.deepEqual(Object.keys(server.steps), [
+      'searching',
+      'grabbed',
+      'importing',
+      'inJellyfin',
+      'playable',
+    ]);
+    assert.equal(server.total.historyCount, 0);
+  });
+});
+
+describe('queueEtaMs', () => {
+  it('prefers the estimated completion time over timeleft', () => {
+    const now = Date.parse('2026-10-05T10:00:00Z');
+    assert.equal(
+      queueEtaMs(
+        {
+          estimatedCompletionTime: '2026-10-05T10:00:30Z',
+          timeleft: '1:00:00',
+        },
+        now
+      ),
+      30_000
+    );
+    assert.equal(queueEtaMs({ timeleft: '1.02:00:05' }, now), 93_605_000);
+    assert.equal(queueEtaMs({}, now), undefined);
   });
 });

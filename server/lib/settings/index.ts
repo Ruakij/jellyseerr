@@ -1,4 +1,5 @@
 import { MediaServerType } from '@server/constants/server';
+import type { EstimatePercentile } from '@server/interfaces/api/progressInterfaces';
 import { Permission } from '@server/lib/permissions';
 import { runMigrations } from '@server/lib/settings/migrator';
 import type { AvailableLocale } from '@server/types/languages';
@@ -193,6 +194,20 @@ export interface ProxySettings {
   password: string;
   bypassFilter: string;
   bypassLocalAddresses: boolean;
+}
+
+/** Sample windows of the request progress estimates; 0 means no limit. */
+export interface RequestProgressSettings {
+  /** Samples derived from Radarr/Sonarr history and Seerr requests. */
+  historyMaxAgeDays: number;
+  historyMaxSamples: number;
+  /** Samples the progress tracker measured, kept in the database. */
+  localMaxAgeDays: number;
+  localMaxSamples: number;
+  /** Percentile the progress pop-up shows as estimate. */
+  estimatePercentile: EstimatePercentile;
+  /** Adds the 95% confidence interval to the estimates. */
+  showConfidenceInterval: boolean;
 }
 
 export interface DnsCacheSettings {
@@ -416,6 +431,7 @@ export interface AllSettings {
   jobs: Record<JobId, JobSettings>;
   network: NetworkSettings;
   metadataSettings: MetadataSettings;
+  requestProgress: RequestProgressSettings;
   migrations: string[];
 }
 
@@ -574,6 +590,14 @@ class Settings {
 
   set network(data: NetworkSettings) {
     this.data.network = mergeSettings(this.data.network, data);
+  }
+
+  get requestProgress(): RequestProgressSettings {
+    return this.data.requestProgress;
+  }
+
+  set requestProgress(data: RequestProgressSettings) {
+    this.data.requestProgress = mergeSettings(this.data.requestProgress, data);
   }
 
   get migrations(): string[] {
@@ -948,6 +972,14 @@ class Settings {
           forceMaxTtl: -1,
         },
         apiRequestTimeout: 10000,
+      },
+      requestProgress: {
+        historyMaxAgeDays: 30,
+        historyMaxSamples: 100,
+        localMaxAgeDays: 90,
+        localMaxSamples: 200,
+        estimatePercentile: 90,
+        showConfidenceInterval: false,
       },
       migrations: [],
     };

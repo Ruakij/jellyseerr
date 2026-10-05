@@ -3,12 +3,21 @@ import { once } from 'node:events';
 import type { IncomingMessage } from 'node:http';
 import { get } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
-import { MediaStatus, MediaType } from '@server/constants/media';
+import RadarrAPI from '@server/api/servarr/radarr';
+import {
+  MediaRequestStatus,
+  MediaStatus,
+  MediaType,
+} from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
+import { MediaRequest } from '@server/entity/MediaRequest';
+import { User } from '@server/entity/User';
 import progressTracker from '@server/lib/requestProgress/tracker';
+import type { RadarrSettings } from '@server/lib/settings';
+import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
 import express from 'express';
 import mediaRoutes from './media';
@@ -25,7 +34,9 @@ async function openStream(path: string) {
   const [res] = (await once(req, 'response')) as [IncomingMessage];
   res.setEncoding('utf8');
   const events: string[] = [];
-  res.on('data', (chunk: string) => events.push(chunk));
+  res.on('data', (chunk: string) =>
+    events.push(...chunk.split('\n\n').filter((e) => e.startsWith('event:')))
+  );
   const next = async () => {
     while (events.length === 0) await once(res, 'data');
     return events.shift()!;
@@ -74,6 +85,91 @@ describe('GET /media/:mediaId/progress', () => {
     await stream.close();
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(progressTracker.listenerCount('change'), listeners);
+  });
+
+  it('reconstructs a request the tracker never saw from Radarr', async () => {
+    const requestedAt = Date.parse('2026-10-05T10:00:00Z');
+    for (const [name, impl] of [
+      [
+        'getHistory',
+        async () => [
+          {
+            id: 1,
+            date: '2026-10-05T09:00:00Z',
+            eventType: 'grabbed',
+            downloadId: 'OLD',
+            movieId: 42,
+            sourceTitle: 'Old',
+            data: {},
+          },
+          {
+            id: 2,
+            date: '2026-10-05T10:05:00Z',
+            eventType: 'grabbed',
+            downloadId: 'D',
+            movieId: 42,
+            sourceTitle: 'Movie.2026.1080p',
+            data: {},
+          },
+        ],
+      ],
+      ['getQueue', async () => []],
+      ['getMovie', async () => ({ hasFile: false })],
+    ] as const) {
+      Object.defineProperty(RadarrAPI.prototype, name, {
+        set() {},
+        get: () => impl,
+        configurable: true,
+      });
+    }
+    mock.method(MediaRequest, 'sendNotification', async () => undefined);
+    getSettings().radarr = [
+      { id: 0, name: 'Radarr', hostname: 'localhost', port: 7878, apiKey: 'k' },
+    ] as RadarrSettings[];
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    // The database restarts its ids per test, the global tracker keeps the entries of media 1.
+    await getRepository(Media).save(
+      Object.assign(new Media(), { tmdbId: 3, mediaType: MediaType.MOVIE })
+    );
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 2,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 42,
+      })
+    );
+    await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy: user,
+        modifiedBy: user,
+        createdAt: new Date(requestedAt),
+      })
+    );
+
+    assert.equal(progressTracker.entry(media.id, false), undefined);
+    const stream = await openStream(`/media/${media.id}/progress?is4k=false`);
+    let progress = parse(await stream.next());
+    while (
+      !progress.steps.find((s: { key: string }) => s.key === 'grabbed').detail
+    ) {
+      progress = parse(await stream.next());
+    }
+    await stream.close();
+
+    const step = (key: string) =>
+      progress.steps.find((s: { key: string }) => s.key === key);
+    assert.equal(
+      step('requested').startedAt,
+      new Date(requestedAt).toISOString()
+    );
+    assert.equal(step('searching').finishedAt, '2026-10-05T10:05:00.000Z');
+    assert.equal(step('grabbed').detail, 'Movie.2026.1080p');
+    assert.equal(step('importing').status, 'running');
   });
 
   it('returns 404 for unknown media', async () => {

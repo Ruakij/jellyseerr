@@ -9,12 +9,22 @@ import type {
 } from '@server/api/servarr/signalr';
 import { servarrSignalR } from '@server/api/servarr/signalr';
 import SonarrAPI from '@server/api/servarr/sonarr';
-import { MediaStatus, MediaType } from '@server/constants/media';
+import {
+  MediaRequestStatus,
+  MediaStatus,
+  MediaType,
+} from '@server/constants/media';
 import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
+import { MediaRequest } from '@server/entity/MediaRequest';
+import type {
+  ProgressDownload,
+  RequestProgressStatsResponse,
+} from '@server/interfaces/api/progressInterfaces';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
+import type { RequestStart } from '@server/lib/requestProgress/stepStats';
 import stepStats from '@server/lib/requestProgress/stepStats';
 import type {
   ProgressTracker,
@@ -27,7 +37,7 @@ import {
 } from '@server/lib/scanners/jellyfin';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
-import { In } from 'typeorm';
+import { In, MoreThanOrEqual } from 'typeorm';
 
 const serverKey = (type: ServarrType, serverId: number) =>
   `${type}-${serverId}`;
@@ -79,6 +89,10 @@ async function loadMedia(entries: TrackedProgress[]) {
 
 const isWaiting = (status: MediaStatus) =>
   status === MediaStatus.PENDING || status === MediaStatus.PROCESSING;
+
+const isAvailable = (status: MediaStatus) =>
+  status === MediaStatus.AVAILABLE ||
+  status === MediaStatus.PARTIALLY_AVAILABLE;
 
 const SEARCH_FAILED = ['failed', 'aborted', 'cancelled', 'orphaned'];
 const IMPORT_BLOCKED = 'Manual interaction required';
@@ -168,28 +182,83 @@ export async function handleCommand(
         // Covers requests sent before a restart or added in Radarr/Sonarr directly.
         tracker.ensure({ mediaId: media.id, is4k, serverKey: key });
       }
-    } else if (entry?.steps.searching.status !== 'running') {
-      continue;
-    } else if (event.status === 'completed') {
-      if (event.reportsDownloaded === 0) {
-        tracker.fail(media.id, is4k, NO_RESULTS);
-      } else if (event.reportsDownloaded === undefined) {
-        tracker.searchCompleted(media.id, is4k);
+    } else if (entry?.steps.searching.status === 'running') {
+      if (event.status === 'completed') {
+        if (event.reportsDownloaded === 0) {
+          tracker.fail(media.id, is4k, NO_RESULTS);
+        } else if (event.reportsDownloaded === undefined) {
+          tracker.searchCompleted(media.id, is4k);
+        }
+      } else if (SEARCH_FAILED.includes(event.status)) {
+        tracker.fail(
+          media.id,
+          is4k,
+          `Search failed${event.message ? `: ${event.message}` : ''}`
+        );
       }
-    } else if (SEARCH_FAILED.includes(event.status)) {
-      tracker.fail(
-        media.id,
-        is4k,
-        `Search failed${event.message ? `: ${event.message}` : ''}`
-      );
+    }
+
+    // The search that runs while searching owns the detail, up to its final report count.
+    const current = tracker.entry(media.id, is4k);
+    if (
+      event.message &&
+      current &&
+      (current.steps.searching.status === 'running' ||
+        current.searchCommandId === event.id)
+    ) {
+      current.searchCommandId = event.id;
+      tracker.setDetail(media.id, is4k, 'searching', event.message);
     }
   }
   if (event.status === 'completed') serverRefresh.push(key);
 }
 
+interface ArrItem {
+  movieId?: number;
+  seriesId?: number;
+  episode?: { seasonNumber: number };
+}
+
+/** Seasons of the request behind each tracked series; absent when no request is found. */
+async function requestedSeasons(
+  entries: TrackedProgress[]
+): Promise<Map<TrackedProgress, Set<number>>> {
+  const requests = await getRepository(MediaRequest).find({
+    where: { media: { id: In(entries.map((e) => e.mediaId)) } },
+    order: { id: 'DESC' },
+  });
+  const seasons = new Map<TrackedProgress, Set<number>>();
+  for (const entry of entries) {
+    // Entries started from a search event carry no request id; the newest request stands in.
+    const request = requests.find((r) =>
+      entry.requestId !== undefined
+        ? r.id === entry.requestId
+        : r.media.id === entry.mediaId && r.is4k === entry.is4k
+    );
+    if (request) {
+      seasons.set(entry, new Set(request.seasons.map((s) => s.seasonNumber)));
+    }
+  }
+  return seasons;
+}
+
+/** Milliseconds until a queue item completes, as the download client estimates it. */
+export function queueEtaMs(
+  item: { timeleft?: string; estimatedCompletionTime?: string },
+  now = Date.now()
+): number | undefined {
+  const at = Date.parse(item.estimatedCompletionTime ?? '');
+  if (!Number.isNaN(at)) return Math.max(0, at - now);
+  // [d.]hh:mm:ss
+  const m = item.timeleft?.match(/^(?:(\d+)\.)?(\d+):(\d+):(\d+)/);
+  if (!m) return undefined;
+  const [days, hours, minutes, seconds] = m.slice(1).map((v) => Number(v ?? 0));
+  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+}
+
 /**
  * Brings the tracked media of one Radarr/Sonarr server up to date from its history (grab and
- * import times, download ids) and queue (blocked or failed downloads).
+ * import times, download ids, release titles) and queue (downloads, blocked or failed ones).
  */
 export async function refreshServer(
   key: string,
@@ -212,23 +281,36 @@ export async function refreshServer(
   const since = Math.min(
     ...entries.map((e) => e.steps.requested.startedAt ?? Date.now())
   );
-  const [history, queue] = await Promise.all([
+  const [history, queue, seasons] = await Promise.all([
     api.getHistory({ since: new Date(since) }),
     api.getQueue(),
+    type === 'sonarr' ? requestedSeasons(entries) : undefined,
   ]);
-  const arrIdOf = (r: { movieId?: number; seriesId?: number }) =>
-    type === 'radarr' ? r.movieId : r.seriesId;
+  // Records of the same series can belong to seasons another request asked for.
+  const entriesOf = (item: ArrItem) =>
+    (
+      byArrId.get((type === 'radarr' ? item.movieId : item.seriesId) ?? -1) ??
+      []
+    ).filter((entry) => {
+      const wanted = seasons?.get(entry);
+      const season = item.episode?.seasonNumber;
+      return !wanted || season === undefined || wanted.has(season);
+    });
 
+  const grabbedTitles = new Map<TrackedProgress, Set<string>>();
+  const indexers = new Map<string, string>();
   const ascending = [...history].sort(
     (a, b) => Date.parse(a.date) - Date.parse(b.date)
   );
   for (const record of ascending as HistoryRecord[]) {
     const at = Date.parse(record.date);
-    for (const entry of byArrId.get(arrIdOf(record) ?? -1) ?? []) {
+    for (const entry of entriesOf(record)) {
       const { mediaId, is4k } = entry;
+      // The history window starts at the oldest tracked request, so it holds older records too.
       if (
-        record.downloadId &&
-        entry.staleDownloadIds.includes(record.downloadId)
+        at < (entry.steps.requested.startedAt ?? 0) ||
+        (record.downloadId &&
+          entry.staleDownloadIds.includes(record.downloadId))
       ) {
         continue;
       }
@@ -236,6 +318,13 @@ export async function refreshServer(
         tracker.advance(mediaId, is4k, 'grabbed', at, {
           downloadId: record.downloadId,
         });
+        grabbedTitles.set(
+          entry,
+          (grabbedTitles.get(entry) ?? new Set()).add(record.sourceTitle)
+        );
+        if (record.downloadId && record.data?.indexer) {
+          indexers.set(record.downloadId, record.data.indexer);
+        }
       } else if (record.eventType === 'downloadFolderImported') {
         tracker.advance(mediaId, is4k, 'importing', at);
       } else if (record.eventType === 'downloadFailed') {
@@ -243,11 +332,18 @@ export async function refreshServer(
       }
     }
   }
+  for (const [entry, titles] of grabbedTitles) {
+    tracker.setDetail(
+      entry.mediaId,
+      entry.is4k,
+      'grabbed',
+      [...titles].join(', ')
+    );
+  }
 
-  for (const item of queue as ((typeof queue)[number] & {
-    movieId?: number;
-    seriesId?: number;
-  })[]) {
+  // Keyed by downloadId: Sonarr lists a season pack once per episode.
+  const downloads = new Map<TrackedProgress, Map<string, ProgressDownload>>();
+  for (const item of queue as ((typeof queue)[number] & ArrItem)[]) {
     const state = item.trackedDownloadState;
     const reason =
       (state === 'importBlocked' || state === 'importPending') &&
@@ -256,15 +352,29 @@ export async function refreshServer(
         : state === 'failedPending' || state === 'failed'
           ? DOWNLOAD_FAILED
           : undefined;
-    if (!reason) continue;
-    for (const entry of byArrId.get(arrIdOf(item) ?? -1) ?? []) {
-      if (
-        entry.steps.importing.status !== 'done' &&
-        !entry.staleDownloadIds.includes(item.downloadId)
-      ) {
+    for (const entry of entriesOf(item)) {
+      if (entry.staleDownloadIds.includes(item.downloadId)) continue;
+      const own = downloads.get(entry) ?? new Map();
+      own.set(item.downloadId, {
+        title: item.title,
+        indexer: item.indexer || indexers.get(item.downloadId),
+        size: item.size,
+        sizeLeft: item.sizeleft,
+        etaMs: queueEtaMs(item),
+      });
+      downloads.set(entry, own);
+      if (reason && entry.steps.importing.status !== 'done') {
         tracker.fail(entry.mediaId, entry.is4k, reason);
       }
     }
+  }
+  for (const entry of entries) {
+    const own = downloads.get(entry);
+    tracker.setDownloads(
+      entry.mediaId,
+      entry.is4k,
+      own ? [...own.values()] : undefined
+    );
   }
 
   for (const entry of entries) {
@@ -300,6 +410,145 @@ export async function reconcileJellyfin(
   }
 }
 
+const REQUEST_DECLINED = 'Request declined';
+const REQUEST_FAILED = 'Request failed';
+const WAITING_FOR_RELEASE = 'No release found yet, waiting for one';
+
+/** Whether Radarr/Sonarr holds a file for the media, for requested seasons only. */
+async function hasFiles(
+  entry: TrackedProgress,
+  arrId: number,
+  seasons: Set<number> | undefined
+): Promise<boolean> {
+  const [type, id] = entry.serverKey?.split('-') ?? [];
+  const api = servarrApi(type as ServarrType, Number(id));
+  if (api instanceof RadarrAPI)
+    return (await api.getMovie({ id: arrId })).hasFile;
+  if (!(api instanceof SonarrAPI)) return false;
+  const series = await api.getSeriesById(arrId);
+  return series.seasons.some(
+    (s) =>
+      (!seasons || seasons.has(s.seasonNumber)) &&
+      (s.statistics?.episodeFileCount ?? 0) > 0
+  );
+}
+
+/**
+ * Starts entries for media whose newest request the tracker never saw, e.g. one sent before a
+ * restart, and fills them in from Radarr/Sonarr history, queue and files and from Jellyfin, as a
+ * run would have. Without `targets`, covers every open request. Their times are not measured.
+ */
+export async function reconstructProgress(
+  targets?: { mediaId: number; is4k: boolean }[],
+  tracker: ProgressTracker = progressTracker
+): Promise<void> {
+  const requests = await getRepository(MediaRequest).find({
+    where: targets
+      ? { media: { id: In(targets.map((t) => t.mediaId)) } }
+      : {
+          status: In([MediaRequestStatus.PENDING, MediaRequestStatus.APPROVED]),
+        },
+    order: { id: 'DESC' },
+  });
+  const settings = getSettings();
+  const seen = new Set<string>();
+  const created: TrackedProgress[] = [];
+  for (const request of requests) {
+    const { media, is4k } = request;
+    const variant = `${media.id}:${is4k}`;
+    if (seen.has(variant)) continue;
+    seen.add(variant);
+    if (
+      (targets &&
+        !targets.some((t) => t.mediaId === media.id && t.is4k === is4k)) ||
+      tracker.entry(media.id, is4k)
+    ) {
+      continue;
+    }
+    const mediaStatus = is4k ? media.status4k : media.status;
+    const open =
+      request.status === MediaRequestStatus.PENDING ||
+      request.status === MediaRequestStatus.APPROVED;
+    const failed =
+      request.status === MediaRequestStatus.DECLINED ||
+      request.status === MediaRequestStatus.FAILED;
+    if (
+      !(open && isWaiting(mediaStatus)) &&
+      !(failed && !isAvailable(mediaStatus))
+    ) {
+      continue;
+    }
+
+    const type = request.type === MediaType.MOVIE ? 'radarr' : 'sonarr';
+    const serverId =
+      (is4k ? media.serviceId4k : media.serviceId) ??
+      request.serverId ??
+      settings[type].find((s) => !!s.is4k === is4k && s.isDefault)?.id;
+    const entry = tracker.start({
+      mediaId: media.id,
+      is4k,
+      requestId: request.id,
+      serverKey:
+        serverId === undefined || serverId === null
+          ? undefined
+          : serverKey(type, serverId),
+      at: request.createdAt.getTime(),
+      awaitingApproval:
+        request.status === MediaRequestStatus.PENDING ||
+        request.status === MediaRequestStatus.DECLINED,
+      reconstructed: true,
+    });
+    if (failed) {
+      tracker.fail(
+        media.id,
+        is4k,
+        request.status === MediaRequestStatus.DECLINED
+          ? REQUEST_DECLINED
+          : REQUEST_FAILED,
+        request.updatedAt.getTime()
+      );
+    } else if (request.status === MediaRequestStatus.APPROVED) {
+      created.push(entry);
+    }
+  }
+  if (created.length === 0) return;
+
+  for (const key of new Set(created.flatMap((e) => e.serverKey ?? []))) {
+    await refreshServer(key, tracker);
+  }
+  const media = await loadMedia(created);
+  const seasons = await requestedSeasons(created);
+  for (const entry of created) {
+    const m = media.get(entry.mediaId);
+    const arrId = m && externalId(m, entry.is4k);
+    if (!arrId || entry.steps.importing.status === 'done') continue;
+    try {
+      if (await hasFiles(entry, arrId, seasons.get(entry))) {
+        tracker.advance(entry.mediaId, entry.is4k, 'importing');
+      }
+    } catch (e) {
+      logger.warn(`Looking up files failed: ${e.message}`, {
+        label: 'Request Progress',
+        server: entry.serverKey,
+      });
+    }
+  }
+  await reconcileJellyfin(undefined, tracker);
+  for (const entry of created) {
+    if (
+      entry.steps.searching.status === 'running' &&
+      !entry.steps.searching.detail
+    ) {
+      tracker.setDetail(
+        entry.mediaId,
+        entry.is4k,
+        'searching',
+        WAITING_FOR_RELEASE
+      );
+    }
+  }
+}
+
 const serverRefresh = new KeyedDebouncer((key) => refreshServer(key));
 
 // Full polls, run once after a connection (re)starts since neither socket replays missed events.
@@ -324,14 +573,86 @@ function onSignalRConnected(source: SignalRSource, first: boolean): void {
   const key = serverKey(source.type, source.serverId);
   polls.push('downloads');
   serverRefresh.push(key);
-  const api = servarrApi(source.type, source.serverId);
-  if (first && api) {
-    stepStats.refresh(key, api).catch((e: Error) =>
+  if (first) refreshStepHistory(source.type, source.serverId);
+}
+
+/**
+ * Requests sent to a server since a date. Only auto-approved ones: for the others, the time until
+ * an admin approved them is not part of the search.
+ */
+export async function requestStarts(
+  type: ServarrType,
+  serverId: number,
+  since: Date
+): Promise<RequestStart[]> {
+  const server = getSettings()[type].find((s) => s.id === serverId);
+  if (!server) return [];
+  // An undefined condition would match both variants.
+  const is4k = server.is4k === true;
+  const requests = await getRepository(MediaRequest).find({
+    where: {
+      type: type === 'radarr' ? MediaType.MOVIE : MediaType.TV,
+      is4k,
+      status: In([MediaRequestStatus.APPROVED, MediaRequestStatus.COMPLETED]),
+      createdAt: MoreThanOrEqual(since),
+      media: is4k ? { serviceId4k: serverId } : { serviceId: serverId },
+    },
+  });
+  return requests.flatMap((request) => {
+    const arrId = externalId(request.media, is4k);
+    return arrId && request.modifiedBy?.id === request.requestedBy?.id
+      ? [
+          {
+            at: request.createdAt.getTime(),
+            arrId,
+            seasons:
+              type === 'sonarr'
+                ? request.seasons.map((s) => s.seasonNumber)
+                : undefined,
+          },
+        ]
+      : [];
+  });
+}
+
+function refreshStepHistory(type: ServarrType, serverId: number): void {
+  const key = serverKey(type, serverId);
+  const api = servarrApi(type, serverId);
+  if (!api) return;
+  stepStats
+    .refresh(key, api, (since) => requestStarts(type, serverId, since))
+    .catch((e: Error) =>
       logger.warn(`Loading step history failed: ${e.message}`, {
         label: 'Request Progress',
         server: key,
       })
     );
+}
+
+/** Sample counts and percentiles per Radarr/Sonarr server, for the settings page. */
+export function requestProgressStats(): RequestProgressStatsResponse {
+  const settings = getSettings();
+  return {
+    servers: (['radarr', 'sonarr'] as const).flatMap((type) =>
+      settings[type].map((server) => {
+        const key = serverKey(type, server.id);
+        return {
+          serverKey: key,
+          name: server.name,
+          steps: stepStats.get(key),
+          total: stepStats.total(key),
+        };
+      })
+    ),
+  };
+}
+
+/** Rebuilds the step samples, e.g. after their window settings changed. */
+export async function reloadStepStats(): Promise<void> {
+  await stepStats.load();
+  const settings = getSettings();
+  for (const type of ['radarr', 'sonarr'] as const) {
+    for (const server of settings[type]) refreshStepHistory(type, server.id);
   }
 }
 
@@ -364,6 +685,16 @@ export function restartJellyfinSocket(): void {
 }
 
 export function startProgressEvents(): void {
+  stepStats.load().catch((e: Error) =>
+    logger.warn(`Loading step samples failed: ${e.message}`, {
+      label: 'Request Progress',
+    })
+  );
+  reconstructProgress().catch((e: Error) =>
+    logger.warn(`Reconstructing open requests failed: ${e.message}`, {
+      label: 'Request Progress',
+    })
+  );
   servarrSignalR.on('connected', (s) => onSignalRConnected(s, true));
   servarrSignalR.on('reconnected', (s) => onSignalRConnected(s, false));
   servarrSignalR.on('message', onSignalRMessage);
