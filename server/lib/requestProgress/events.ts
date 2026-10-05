@@ -23,6 +23,7 @@ import type {
   ProgressDownload,
   RequestProgressStatsResponse,
 } from '@server/interfaces/api/progressInterfaces';
+import availabilitySync from '@server/lib/availabilitySync';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
 import type { RequestStart } from '@server/lib/requestProgress/stepStats';
@@ -691,6 +692,23 @@ const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
   }
 );
 
+const jellyfinRemoved = new KeyedDebouncer(async (key) => {
+  await availabilitySync.syncMedia(Number(key));
+  await reconcileJellyfin();
+});
+
+/**
+ * Runs the availability check for the movies and series behind removed Jellyfin items. Other
+ * items, like episodes and seasons, are left to the periodic availability sync.
+ */
+export async function onJellyfinRemoved(ids: string[]): Promise<void> {
+  const media = await getRepository(Media).find({
+    select: { id: true },
+    where: [{ jellyfinMediaId: In(ids) }, { jellyfinMediaId4k: In(ids) }],
+  });
+  for (const { id } of media) jellyfinRemoved.push(String(id));
+}
+
 function onSignalRConnected(source: SignalRSource, first: boolean): void {
   const key = serverKey(source.type, source.serverId);
   polls.push('downloads');
@@ -841,6 +859,13 @@ export function startProgressEvents(): void {
   jellyfinSocket.on('libraryChanged', (event) => {
     if (event.itemsAdded.length > 0) {
       jellyfinAdded.push('added', { ids: event.itemsAdded, at: Date.now() });
+    }
+    if (event.itemsRemoved.length > 0) {
+      onJellyfinRemoved(event.itemsRemoved).catch((e: Error) =>
+        logger.error(`Handling removed Jellyfin items failed: ${e.message}`, {
+          label: 'Request Progress',
+        })
+      );
     }
   });
 
