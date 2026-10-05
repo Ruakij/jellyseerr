@@ -18,6 +18,7 @@ import { MediaRequest } from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import notificationManager, { Notification } from '@server/lib/notifications';
+import progressTracker from '@server/lib/requestProgress/tracker';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { withNestedTransaction } from '@server/utils/nestedTransaction';
@@ -377,6 +378,13 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           searchNow: !radarrSettings.preventSearch,
         };
 
+        progressTracker.start({
+          mediaId: entity.media.id,
+          is4k: entity.is4k,
+          requestId: entity.id,
+          serverKey: `radarr-${radarrSettings.id}`,
+        });
+
         // Run entity asynchronously so we don't wait for it on the UI side
         radarr
           .addMovie(radarrMovieOptions)
@@ -419,6 +427,12 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
                     : String(saveError),
               });
             }
+
+            progressTracker.fail(
+              entity.media.id,
+              entity.is4k,
+              'Sending the request to Radarr failed'
+            );
 
             logger.warn(
               'Something went wrong sending movie request to Radarr, marking status as FAILED',
@@ -725,6 +739,13 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           searchNow: !sonarrSettings.preventSearch,
         };
 
+        progressTracker.start({
+          mediaId: entity.media.id,
+          is4k: entity.is4k,
+          requestId: entity.id,
+          serverKey: `sonarr-${sonarrSettings.id}`,
+        });
+
         // Run entity asynchronously so we don't wait for it on the UI side
         sonarr
           .addSeries(sonarrSeriesOptions)
@@ -767,6 +788,12 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
                     : String(saveError),
               });
             }
+
+            progressTracker.fail(
+              entity.media.id,
+              entity.is4k,
+              'Sending the request to Sonarr failed'
+            );
 
             logger.warn(
               'Something went wrong sending series request to Sonarr, marking status as FAILED',
