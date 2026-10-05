@@ -7,6 +7,7 @@ import {
   StepStats,
 } from '@server/lib/requestProgress/stepStats';
 import { ProgressTracker } from '@server/lib/requestProgress/tracker';
+import { getSettings } from '@server/lib/settings';
 
 function setup() {
   let now = Date.now();
@@ -59,16 +60,16 @@ describe('ProgressTracker', () => {
     assert.ok(progress.steps.every((s) => s.status === 'done'));
     assert.equal(progress.playUrl, 'http://jf');
     const estimates = stats.get('radarr-0');
-    assert.equal(estimates.searching.p90, 5_000);
-    assert.equal(estimates.grabbed.p90, 0);
-    assert.equal(estimates.importing.p90, 7_000);
-    assert.equal(estimates.inJellyfin.p90, 10_000);
-    assert.equal(estimates.playable.p90, 2_000);
-    assert.equal(progress.totalP90Ms, 24_000);
-    assert.equal(
-      progress.steps.find((s) => s.key === 'importing')!.p90Ms,
-      7_000
-    );
+    assert.equal(estimates.searching.percentiles[90]?.valueMs, 5_000);
+    assert.equal(estimates.grabbed.percentiles[90]?.valueMs, 0);
+    assert.equal(estimates.importing.percentiles[90]?.valueMs, 7_000);
+    assert.equal(estimates.inJellyfin.percentiles[90]?.valueMs, 10_000);
+    assert.equal(estimates.playable.percentiles[90]?.valueMs, 2_000);
+    assert.equal(progress.totalEstimateMs, 24_000);
+    assert.equal(progress.estimatePercentile, 90);
+    const importing = progress.steps.find((s) => s.key === 'importing')!;
+    assert.equal(importing.estimateMs, 7_000);
+    assert.equal(importing.estimateRangeMs, undefined);
   });
 
   it('closes skipped steps when a later one is reached', () => {
@@ -137,10 +138,41 @@ describe('ProgressTracker', () => {
       tick(i % 2 ? 50_000 : 1_000);
       tracker.advance(1, false, 'playable');
       if (i === MIN_TOTAL_SAMPLES - 2) {
-        assert.equal(tracker.get(1, false)!.totalP90Ms, 100_000);
+        assert.equal(tracker.get(1, false)!.totalEstimateMs, 100_000);
       }
     }
-    assert.equal(stats.totalP90('radarr-0'), 51_000);
-    assert.equal(tracker.get(1, false)!.totalP90Ms, 51_000);
+    assert.equal(stats.total('radarr-0').percentiles[90]?.valueMs, 51_000);
+    assert.equal(tracker.get(1, false)!.totalEstimateMs, 51_000);
+  });
+
+  it('estimates at the configured percentile, with its interval when enabled', () => {
+    const { tracker, stats } = setup();
+    const settings = getSettings().requestProgress;
+    const defaults = { ...settings };
+    try {
+      for (let i = 1; i <= 20; i++) {
+        stats.record('radarr-0', 'searching', i * 1_000);
+        stats.recordTotal('radarr-0', i * 10_000);
+      }
+      Object.assign(settings, {
+        estimatePercentile: 50,
+        showConfidenceInterval: true,
+      });
+      tracker.start({ mediaId: 1, is4k: false, serverKey: 'radarr-0' });
+      const progress = tracker.get(1, false)!;
+      const searching = progress.steps.find((s) => s.key === 'searching')!;
+      assert.equal(progress.estimatePercentile, 50);
+      assert.equal(searching.estimateMs, 10_000);
+      assert.deepEqual(searching.estimateRangeMs, [6_000, 15_000]);
+      assert.equal(progress.totalEstimateMs, 100_000);
+      assert.deepEqual(progress.totalEstimateRangeMs, [60_000, 150_000]);
+
+      settings.estimatePercentile = 90;
+      const p90 = tracker.get(1, false)!;
+      assert.equal(p90.totalEstimateMs, 180_000);
+      assert.equal(p90.totalEstimateRangeMs, undefined);
+    } finally {
+      Object.assign(settings, defaults);
+    }
   });
 });

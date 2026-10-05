@@ -2,6 +2,10 @@ import type ServarrBase from '@server/api/servarr/base';
 import type { HistoryRecord } from '@server/api/servarr/base';
 import { getRepository } from '@server/datasource';
 import { StepSample } from '@server/entity/StepSample';
+import type {
+  EstimatePercentile,
+  ProgressSampleStats,
+} from '@server/interfaces/api/progressInterfaces';
 import {
   PROGRESS_STEPS,
   type ProgressStep,
@@ -25,7 +29,7 @@ export interface SampleWindow {
 
 const TOTAL = 'total';
 
-/** Below this many end-to-end samples, the total estimate is the sum of the step p90s. */
+/** Below this many end-to-end samples, the total estimate is the sum of the step estimates. */
 export const MIN_TOTAL_SAMPLES = 20;
 
 export interface Sample {
@@ -36,11 +40,11 @@ export interface Sample {
   downloadId?: string;
 }
 
-export interface StepEstimate {
-  count: number;
-  p50?: number;
-  p90?: number;
-}
+export const ESTIMATE_PERCENTILES: readonly EstimatePercentile[] = [
+  50, 90, 95, 99,
+];
+
+export type StepEstimate = ProgressSampleStats;
 
 /**
  * Nearest-rank percentile: the smallest value with at least p% of all values at or below it.
@@ -51,6 +55,62 @@ export function percentile(values: number[], p: number): number | undefined {
   const sorted = [...values].sort((a, b) => a - b);
   const rank = Math.max(1, Math.ceil((p / 100) * sorted.length));
   return sorted[Math.min(rank, sorted.length) - 1];
+}
+
+const CONFIDENCE = 0.95;
+
+/**
+ * Distribution-free confidence interval of the q quantile from n samples: 1-based ranks l < u of
+ * the sorted samples with P(l <= B < u) >= 95% for B ~ Binomial(n, q), the number of samples below
+ * the quantile. u is the smallest rank with at most 2.5% above it (or n), l the largest that keeps
+ * the coverage. Undefined when even ranks 1 and n do not reach it.
+ */
+export function quantileCiRanks(
+  n: number,
+  q: number
+): [number, number] | undefined {
+  if (n < 1 || q <= 0 || q >= 1) return undefined;
+  const pmf: number[] = [];
+  let log = n * Math.log(1 - q);
+  for (let k = 0; k <= n; k++) {
+    pmf.push(Math.exp(log));
+    log += Math.log((n - k) / (k + 1)) + Math.log(q / (1 - q));
+  }
+  let u = n;
+  let above = 0; // P(B >= u)
+  for (let k = n; k >= 1; k--) {
+    above += pmf[k];
+    if (above > (1 - CONFIDENCE) / 2) break;
+    u = k;
+  }
+  // P(l <= B < u) for l = 1, then raising l while it holds.
+  let coverage = pmf.slice(1, u).reduce((a, b) => a + b, 0);
+  if (coverage < CONFIDENCE) return undefined;
+  let l = 1;
+  while (l + 1 < u && coverage - pmf[l] >= CONFIDENCE) {
+    coverage -= pmf[l];
+    l++;
+  }
+  return [l, u];
+}
+
+function estimate(
+  values: number[],
+  historyCount: number,
+  localCount: number
+): StepEstimate {
+  const sorted = [...values].sort((a, b) => a - b);
+  const percentiles: StepEstimate['percentiles'] = {};
+  if (sorted.length > 0) {
+    for (const p of ESTIMATE_PERCENTILES) {
+      const ranks = quantileCiRanks(sorted.length, p / 100);
+      percentiles[p] = {
+        valueMs: percentile(sorted, p) as number,
+        rangeMs: ranks && [sorted[ranks[0] - 1], sorted[ranks[1] - 1]],
+      };
+    }
+  }
+  return { historyCount, localCount, percentiles };
 }
 
 /**
@@ -340,15 +400,14 @@ export class StepStats {
     return this.save(serverKey, TOTAL, sample);
   }
 
-  /** p90 of the end-to-end durations; undefined until there are enough of them. */
-  public totalP90(serverKey: string): number | undefined {
+  /** Estimate of the end-to-end durations, requested -> playable. */
+  public total(serverKey: string): StepEstimate {
     const totals = this.server(serverKey).totals;
-    return totals.length >= MIN_TOTAL_SAMPLES
-      ? percentile(
-          totals.map((s) => s.durationMs),
-          90
-        )
-      : undefined;
+    return estimate(
+      totals.map((s) => s.durationMs),
+      0,
+      totals.length
+    );
   }
 
   public get(serverKey: string): Record<ProgressStep, StepEstimate> {
@@ -357,17 +416,16 @@ export class StepStats {
       PROGRESS_STEPS.map((step) => {
         const own = recorded[step];
         const tracked = new Set(own.map((s) => s.downloadId).filter(Boolean));
-        const samples = [
-          ...(history[step] ?? []).filter((s) => !tracked.has(s.downloadId)),
-          ...own,
-        ].map((s) => s.durationMs);
+        const fromHistory = (history[step] ?? []).filter(
+          (s) => !tracked.has(s.downloadId)
+        );
         return [
           step,
-          {
-            count: samples.length,
-            p50: percentile(samples, 50),
-            p90: percentile(samples, 90),
-          },
+          estimate(
+            [...fromHistory, ...own].map((s) => s.durationMs),
+            fromHistory.length,
+            own.length
+          ),
         ];
       })
     ) as Record<ProgressStep, StepEstimate>;

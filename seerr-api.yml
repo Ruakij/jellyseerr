@@ -356,6 +356,40 @@ components:
           minimum: 0
           description: Newest measured samples kept per step; 0 for no limit
           example: 200
+        estimatePercentile:
+          type: integer
+          enum: [50, 90, 95, 99]
+          example: 90
+        showConfidenceInterval:
+          type: boolean
+          example: false
+    PercentileStat:
+      type: object
+      properties:
+        valueMs:
+          type: number
+          description: Nearest-rank percentile, a measured duration
+        rangeMs:
+          type: array
+          description: 95% confidence interval; absent when too few samples for one
+          minItems: 2
+          maxItems: 2
+          items:
+            type: number
+    ProgressSampleStats:
+      type: object
+      properties:
+        historyCount:
+          type: integer
+          description: Samples derived from the Radarr/Sonarr history
+        localCount:
+          type: integer
+          description: Samples measured by Seerr
+        percentiles:
+          type: object
+          description: Keyed by percentile (50, 90, 95, 99); empty without samples
+          additionalProperties:
+            $ref: '#/components/schemas/PercentileStat'
     PlexLibrary:
       type: object
       properties:
@@ -2356,6 +2390,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RequestProgressSettings'
+  /settings/request-progress/stats:
+    get:
+      summary: Get request progress sample statistics
+      description: |
+        Sample counts by source and the p50, p90, p95 and p99 durations with their 95% confidence
+        intervals, per Radarr/Sonarr server, for every progress step and for the end-to-end runs.
+        The body is a `RequestProgressStatsResponse`.
+      tags:
+        - settings
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        serverKey:
+                          type: string
+                          example: radarr-0
+                        name:
+                          type: string
+                        steps:
+                          type: object
+                          description: Keyed by step (searching, grabbed, importing, inJellyfin, playable)
+                          additionalProperties:
+                            $ref: '#/components/schemas/ProgressSampleStats'
+                        total:
+                          $ref: '#/components/schemas/ProgressSampleStats'
   /settings/main/regenerate:
     post:
       summary: Get main settings with newly-generated API key

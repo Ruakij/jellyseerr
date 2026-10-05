@@ -21,6 +21,7 @@ import {
   reconcileJellyfin,
   refreshServer,
   rememberEpisode,
+  requestProgressStats,
   requestStarts,
 } from '@server/lib/requestProgress/events';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
@@ -538,6 +539,27 @@ describe('requestStarts', () => {
     assert.deepEqual(await requestStarts('sonarr', 1, since), [
       { at: Date.parse('2026-10-05T14:00:00Z'), arrId: 56, seasons: [2] },
     ]);
+  });
+});
+
+describe('requestProgressStats', () => {
+  it('lists every configured server with its steps and total', () => {
+    getSettings().radarr = [
+      { id: 0, name: 'Radarr', hostname: 'localhost', port: 7878, apiKey: 'k' },
+    ] as RadarrSettings[];
+    getSettings().sonarr = [];
+    const [server, ...others] = requestProgressStats().servers;
+    assert.equal(others.length, 0);
+    assert.equal(server.serverKey, 'radarr-0');
+    assert.equal(server.name, 'Radarr');
+    assert.deepEqual(Object.keys(server.steps), [
+      'searching',
+      'grabbed',
+      'importing',
+      'inJellyfin',
+      'playable',
+    ]);
+    assert.equal(server.total.historyCount, 0);
   });
 });
 
