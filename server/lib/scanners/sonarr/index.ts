@@ -187,6 +187,16 @@ class SonarrScanner
         tvShow = await this.tmdb.getTvShowForScan({ tvId: media.tmdbId });
       }
 
+      if (media) {
+        await this.failUnfulfillableRequests(media, server4k, {
+          seasons: sonarrSeries.seasons.map((s) => ({
+            seasonNumber: s.seasonNumber,
+            monitored: s.monitored,
+            episodeFileCount: s.statistics?.episodeFileCount ?? 0,
+          })),
+        });
+      }
+
       const tmdbId = tvShow.id;
       const metadataProvider = tvShow.keywords.results.some(
         (keyword: TmdbKeyword) => keyword.id === ANIME_KEYWORD_ID
@@ -298,7 +308,7 @@ class SonarrScanner
     if (this.didScanStandard) {
       const processingShows = await mediaRepository.find({
         where: { mediaType: MediaType.TV, status: MediaStatus.PROCESSING },
-        relations: { seasons: true, requests: true },
+        relations: { seasons: true },
       });
 
       for (const media of processingShows) {
@@ -307,6 +317,7 @@ class SonarrScanner
             continue;
           }
 
+          await this.failUnfulfillableRequests(media, false, null);
           media.status = MediaStatus.UNKNOWN;
           for (const season of media.seasons) {
             if (season.status === MediaStatus.PROCESSING) {
@@ -314,7 +325,6 @@ class SonarrScanner
             }
           }
           await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, false);
           this.log(
             `Show ${media.tmdbId} (tvdb: ${media.tvdbId}) not found in any Sonarr server. Status reset to UNKNOWN.`,
             'info'
@@ -331,7 +341,7 @@ class SonarrScanner
     if (this.didScan4k) {
       const processing4kShows = await mediaRepository.find({
         where: { mediaType: MediaType.TV, status4k: MediaStatus.PROCESSING },
-        relations: { seasons: true, requests: true },
+        relations: { seasons: true },
       });
 
       for (const media of processing4kShows) {
@@ -340,6 +350,7 @@ class SonarrScanner
             continue;
           }
 
+          await this.failUnfulfillableRequests(media, true, null);
           media.status4k = MediaStatus.UNKNOWN;
           for (const season of media.seasons) {
             if (season.status4k === MediaStatus.PROCESSING) {
@@ -347,7 +358,6 @@ class SonarrScanner
             }
           }
           await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, true);
           this.log(
             `Show ${media.tmdbId} (tvdb: ${media.tvdbId}) not found in any 4K Sonarr server. 4K status reset to UNKNOWN.`,
             'info'
