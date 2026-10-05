@@ -1,10 +1,15 @@
+import Button from '@app/components/Common/Button';
 import ButtonWithDropdown from '@app/components/Common/ButtonWithDropdown';
 import RequestModal from '@app/components/RequestModal';
+import RequestProgressModal, {
+  isProgressActive,
+} from '@app/components/RequestProgressModal';
+import useRequestProgress from '@app/hooks/useRequestProgress';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
-import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
+import { ArrowDownTrayIcon, PlayIcon } from '@heroicons/react/24/outline';
 import {
   CheckIcon,
   InformationCircleIcon,
@@ -19,6 +24,9 @@ import { useIntl } from 'react-intl';
 import { mutate } from 'swr';
 
 const messages = defineMessages('components.RequestButton', {
+  requestandwatch: 'Request & Watch',
+  requestonly: 'Request only',
+  showprogress: 'Show Progress',
   viewrequest: 'View Request',
   viewrequest4k: 'View 4K Request',
   requestmore: 'Request More',
@@ -67,6 +75,16 @@ const RequestButton = ({
   const [showRequestModal, setShowRequestModal] = useState(false);
   const [showRequest4kModal, setShowRequest4kModal] = useState(false);
   const [editRequest, setEditRequest] = useState(false);
+  const [watchAfterRequest, setWatchAfterRequest] = useState(false);
+  const [trackProgress, setTrackProgress] = useState(false);
+  const [showProgress, setShowProgress] = useState(false);
+  const progress = useRequestProgress(
+    media?.id,
+    false,
+    trackProgress ||
+      media?.status === MediaStatus.PENDING ||
+      media?.status === MediaStatus.PROCESSING
+  );
 
   // All pending requests
   const activeRequests = media?.requests.filter(
@@ -282,15 +300,28 @@ const RequestButton = ({
       { type: 'or' }
     )
   ) {
-    buttons.push({
-      id: 'request',
-      text: intl.formatMessage(globalMessages.request),
-      action: () => {
-        setEditRequest(false);
-        setShowRequestModal(true);
+    buttons.push(
+      {
+        id: 'request-watch',
+        text: intl.formatMessage(messages.requestandwatch),
+        action: () => {
+          setEditRequest(false);
+          setWatchAfterRequest(true);
+          setShowRequestModal(true);
+        },
+        svg: <PlayIcon />,
       },
-      svg: <ArrowDownTrayIcon />,
-    });
+      {
+        id: 'request',
+        text: intl.formatMessage(messages.requestonly),
+        action: () => {
+          setEditRequest(false);
+          setWatchAfterRequest(false);
+          setShowRequestModal(true);
+        },
+        svg: <ArrowDownTrayIcon />,
+      }
+    );
   } else if (
     mediaType === 'tv' &&
     (!activeRequest || activeRequest.requestedBy.id !== user?.id) &&
@@ -306,6 +337,7 @@ const RequestButton = ({
       text: intl.formatMessage(messages.requestmore),
       action: () => {
         setEditRequest(false);
+        setWatchAfterRequest(false);
         setShowRequestModal(true);
       },
       svg: <ArrowDownTrayIcon />,
@@ -362,12 +394,23 @@ const RequestButton = ({
 
   const [buttonOne, ...others] = buttons;
 
-  if (!buttonOne) {
-    return null;
-  }
-
   return (
     <>
+      <RequestProgressModal
+        show={showProgress}
+        progress={progress}
+        onClose={() => setShowProgress(false)}
+      />
+      {isProgressActive(progress) && (
+        <Button
+          buttonType="ghost"
+          className="ml-2"
+          onClick={() => setShowProgress(true)}
+        >
+          <PlayIcon />
+          <span>{intl.formatMessage(messages.showprogress)}</span>
+        </Button>
+      )}
       <RequestModal
         tmdbId={tmdbId}
         show={showRequestModal}
@@ -376,6 +419,10 @@ const RequestButton = ({
         onComplete={() => {
           onUpdate();
           setShowRequestModal(false);
+          if (watchAfterRequest) {
+            setTrackProgress(true);
+            setShowProgress(true);
+          }
         }}
         onCancel={() => setShowRequestModal(false)}
       />
@@ -391,28 +438,30 @@ const RequestButton = ({
         }}
         onCancel={() => setShowRequest4kModal(false)}
       />
-      <ButtonWithDropdown
-        text={
-          <>
-            {buttonOne.svg}
-            <span>{buttonOne.text}</span>
-          </>
-        }
-        onClick={buttonOne.action}
-        className="ml-2"
-      >
-        {others && others.length > 0
-          ? others.map((button) => (
-              <ButtonWithDropdown.Item
-                onClick={button.action}
-                key={`request-option-${button.id}`}
-              >
-                {button.svg}
-                <span>{button.text}</span>
-              </ButtonWithDropdown.Item>
-            ))
-          : null}
-      </ButtonWithDropdown>
+      {buttonOne && (
+        <ButtonWithDropdown
+          text={
+            <>
+              {buttonOne.svg}
+              <span>{buttonOne.text}</span>
+            </>
+          }
+          onClick={buttonOne.action}
+          className="ml-2"
+        >
+          {others && others.length > 0
+            ? others.map((button) => (
+                <ButtonWithDropdown.Item
+                  onClick={button.action}
+                  key={`request-option-${button.id}`}
+                >
+                  {button.svg}
+                  <span>{button.text}</span>
+                </ButtonWithDropdown.Item>
+              ))
+            : null}
+        </ButtonWithDropdown>
+      )}
     </>
   );
 };
