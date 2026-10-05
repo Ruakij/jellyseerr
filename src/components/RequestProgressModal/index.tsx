@@ -2,9 +2,7 @@ import Button from '@app/components/Common/Button';
 import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestBlock from '@app/components/RequestBlock';
-import StepGraphic, {
-  downloadFraction,
-} from '@app/components/RequestProgressModal/ProgressScene';
+import { downloadFraction } from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
 import { Permission, useUser } from '@app/hooks/useUser';
@@ -30,6 +28,8 @@ const messages = defineMessages('components.RequestProgressModal', {
   inJellyfin: 'Adding to Jellyfin',
   playable: 'Ready',
   estimate: '~{duration}',
+  estimateRange: '~{duration} ({low}-{high})',
+  awaitingApproval: 'Waiting for approval',
   total: 'Total',
   watch: 'Watch',
   failed: 'Something went wrong at this step.',
@@ -48,19 +48,34 @@ const stepElapsed = (step: ProgressStep, now: number): number | undefined => {
   return undefined;
 };
 
+interface Estimate {
+  ms: number;
+  rangeMs?: [number, number];
+}
+
 // The only reads of the estimate fields of the API: a step's, or the total
-const estimateMs = (
+const estimateOf = (
   progress: RequestProgress,
   step?: ProgressStep
-): number | undefined => {
-  if (!step) return progress.totalP90Ms;
-  // p90 of a download says nothing before its size is known; the client ETA does
+): Estimate | undefined => {
+  if (!step) {
+    return progress.totalEstimateMs === undefined
+      ? undefined
+      : {
+          ms: progress.totalEstimateMs,
+          rangeMs: progress.totalEstimateRangeMs,
+        };
+  }
+  // A download estimate says nothing before its size is known; the client ETA does
   const etas = (progress.downloads ?? [])
     .map((d) => d.etaMs)
     .filter((eta): eta is number => eta !== undefined);
-  return step.key === 'grabbed' && etas.length > 0
-    ? Math.max(...etas)
-    : step.p90Ms;
+  if (step.key === 'grabbed' && etas.length > 0) {
+    return { ms: Math.max(...etas) };
+  }
+  return step.estimateMs === undefined
+    ? undefined
+    : { ms: step.estimateMs, rangeMs: step.estimateRangeMs };
 };
 
 // The step the detail panel shows: a failure, else what runs, else the latest
@@ -69,13 +84,6 @@ const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
   steps.find((s) => s.status === 'running') ??
   [...steps].reverse().find((s) => s.status === 'done') ??
   steps[0];
-
-const sceneColor: Record<ProgressStep['status'], string> = {
-  done: 'text-green-400',
-  running: 'text-indigo-300',
-  failed: 'text-red-400',
-  pending: 'text-gray-600',
-};
 
 interface RequestProgressModalProps {
   show: boolean;
@@ -128,47 +136,71 @@ const RequestProgressModal = ({
     ? (ticking || !lastEnd ? now : Date.parse(lastEnd)) - Date.parse(firstStart)
     : undefined;
 
-  const estimate = (ms?: number) =>
-    ms !== undefined && (
-      <span className="text-gray-500">
-        {intl.formatMessage(messages.estimate, {
-          duration: formatDuration(ms),
-        })}
-      </span>
+  const formatEstimate = (est: Estimate) =>
+    est.rangeMs
+      ? intl.formatMessage(messages.estimateRange, {
+          duration: formatDuration(est.ms),
+          low: formatDuration(est.rangeMs[0]),
+          high: formatDuration(est.rangeMs[1]),
+        })
+      : intl.formatMessage(messages.estimate, {
+          duration: formatDuration(est.ms),
+        });
+  const estimate = (est?: Estimate) =>
+    est && <span className="text-gray-500">{formatEstimate(est)}</span>;
+  const label = (s: ProgressStep) =>
+    intl.formatMessage(
+      s.key === 'requested' && s.status === 'running'
+        ? messages.awaitingApproval
+        : messages[s.key]
     );
 
   const step = progress && currentStep(progress.steps);
-  const stepMs = step && stepElapsed(step, now);
   const downloads =
     step?.key === 'grabbed' && step.status === 'running'
       ? (progress?.downloads ?? [])
       : [];
+  const detail = canManage ? step?.detail : undefined;
+  const error =
+    step?.status === 'failed'
+      ? // errors of the requested step (declined, failed) are not technical
+        (canManage || step.key === 'requested') && step.error
+        ? step.error
+        : intl.formatMessage(messages.failed)
+      : undefined;
+  const playUrl = step?.key === 'playable' ? progress?.playUrl : undefined;
 
   const stats = (s: ProgressStep) => {
     if (!progress) return {};
     const elapsed = stepElapsed(s, now);
-    const est = estimateMs(progress, s);
+    const est = estimateOf(progress, s);
     const fraction =
       s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
     const percent =
-      s.status === 'done'
-        ? 100
-        : s.status !== 'running'
-          ? undefined
-          : fraction !== undefined
-            ? Math.round(fraction * 100)
-            : elapsed !== undefined && est
-              ? Math.min(99, Math.round((elapsed / est) * 100))
-              : undefined;
+      s.status !== 'running'
+        ? undefined
+        : fraction !== undefined
+          ? Math.round(fraction * 100)
+          : elapsed !== undefined && est?.ms
+            ? Math.min(99, Math.round((elapsed / est.ms) * 100))
+            : undefined;
     return {
       percent,
-      time: elapsed === undefined ? undefined : formatDuration(elapsed),
+      // a step finished within a second (usually requested) has no time worth showing
+      time:
+        elapsed === undefined || (s.status === 'done' && elapsed < 1000)
+          ? undefined
+          : formatDuration(elapsed),
       estimate:
         est === undefined || s.status === 'done'
           ? undefined
           : intl.formatMessage(messages.estimate, {
-              duration: formatDuration(est),
+              duration: formatDuration(est.ms),
             }),
+      range:
+        est?.rangeMs === undefined || s.status === 'done'
+          ? undefined
+          : `${formatDuration(est.rangeMs[0])}-${formatDuration(est.rangeMs[1])}`,
     };
   };
 
@@ -201,101 +233,68 @@ const RequestProgressModal = ({
             <ProgressStepper
               steps={progress.steps}
               downloads={progress.downloads}
-              label={(key) => intl.formatMessage(messages[key])}
+              label={label}
               stats={stats}
             />
             {totalMs !== undefined && (
               <div className="mt-2 text-center text-xs tabular-nums text-gray-300">
                 {intl.formatMessage(messages.total)} {formatDuration(totalMs)}{' '}
-                {estimate(estimateMs(progress))}
+                {estimate(estimateOf(progress))}
               </div>
             )}
           </>
         )}
-        {step && progress && (
-          <div className="mt-4 flex flex-col items-center gap-4 rounded-lg bg-gray-900/40 p-4 sm:flex-row sm:items-start">
-            <div
-              className={`flex h-24 w-24 flex-shrink-0 items-center justify-center ${
-                sceneColor[step.status]
-              }`}
-            >
-              <StepGraphic
-                step={step}
-                downloads={progress.downloads}
-                className={
-                  step.status === 'running' || step.key === 'playable'
-                    ? 'h-24 w-24'
-                    : 'h-14 w-14'
-                }
-              />
-            </div>
-            <div className="w-full min-w-0 flex-1">
-              <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-                <h3 className="text-lg font-semibold text-white">
-                  {intl.formatMessage(messages[step.key])}
-                </h3>
-                <span className="text-sm tabular-nums text-gray-300">
-                  {stepMs !== undefined && formatDuration(stepMs)}{' '}
-                  {estimate(estimateMs(progress, step))}
-                </span>
-              </div>
-              {canManage && step.detail && (
-                <p className="mt-1 break-words text-sm text-gray-400">
-                  {step.detail}
-                </p>
-              )}
-              {step.status === 'failed' && (
-                <p className="mt-2 break-words text-sm text-red-400">
-                  {canManage && step.error
-                    ? step.error
-                    : intl.formatMessage(messages.failed)}
-                </p>
-              )}
-              {downloads.map((dl, i) => (
-                <div key={`dl-${i}`} className="mt-3 text-xs text-gray-400">
-                  {canManage && (
-                    <div className="mb-1 flex justify-between gap-2">
-                      <Tooltip content={dl.title}>
-                        <span className="truncate text-gray-300">
-                          {dl.title}
-                        </span>
-                      </Tooltip>
-                      {dl.indexer && (
-                        <span className="flex-shrink-0">{dl.indexer}</span>
-                      )}
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-700">
-                      <div
-                        className="h-full bg-indigo-500 transition-all duration-500"
-                        style={{
-                          width: `${
-                            dl.size > 0
-                              ? ((dl.size - dl.sizeLeft) / dl.size) * 100
-                              : 0
-                          }%`,
-                        }}
-                      />
-                    </div>
-                    {estimate(dl.etaMs)}
+        {(detail || error || downloads.length > 0 || playUrl) && (
+          <div className="mt-4 space-y-3 rounded-lg bg-gray-900/40 p-4">
+            {detail && (
+              <p className="break-words text-sm text-gray-400">{detail}</p>
+            )}
+            {error && (
+              <p className="break-words text-sm text-red-400">{error}</p>
+            )}
+            {downloads.map((dl, i) => (
+              <div key={`dl-${i}`} className="text-xs text-gray-400">
+                {canManage && (
+                  <div className="mb-1 flex justify-between gap-2">
+                    <Tooltip content={dl.title}>
+                      <span className="truncate text-gray-300">{dl.title}</span>
+                    </Tooltip>
+                    {dl.indexer && (
+                      <span className="flex-shrink-0">{dl.indexer}</span>
+                    )}
                   </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-700">
+                    <div
+                      className="h-full bg-indigo-500 transition-all duration-500"
+                      style={{
+                        width: `${
+                          dl.size > 0
+                            ? ((dl.size - dl.sizeLeft) / dl.size) * 100
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                  {estimate(
+                    dl.etaMs === undefined ? undefined : { ms: dl.etaMs }
+                  )}
                 </div>
-              ))}
-              {step.key === 'playable' && progress.playUrl && (
-                <Button
-                  as="a"
-                  href={progress.playUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  buttonType="success"
-                  className="mt-3"
-                >
-                  <PlayIcon />
-                  <span>{intl.formatMessage(messages.watch)}</span>
-                </Button>
-              )}
-            </div>
+              </div>
+            ))}
+            {playUrl && (
+              <Button
+                as="a"
+                href={playUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                buttonType="success"
+              >
+                <PlayIcon />
+                <span>{intl.formatMessage(messages.watch)}</span>
+              </Button>
+            )}
           </div>
         )}
       </Modal>

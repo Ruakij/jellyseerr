@@ -4,7 +4,6 @@ import StepGraphic, {
 import type {
   ProgressDownload,
   ProgressStep,
-  ProgressStepKey,
 } from '@server/interfaces/api/progressInterfaces';
 import { Fragment } from 'react';
 
@@ -31,7 +30,7 @@ const Connector = ({
   const shimmer = step.status === 'running' && fraction === undefined;
 
   return (
-    <div className="relative mx-1 mt-[18px] h-1 flex-1 overflow-hidden rounded-full bg-gray-700">
+    <div className="relative mx-1 mt-[26px] h-1 flex-1 overflow-hidden rounded-full bg-gray-700">
       <div
         className="h-full bg-green-600 transition-[width] duration-700 ease-out"
         style={{ width: `${(fraction ?? 0) * 100}%` }}
@@ -46,11 +45,12 @@ const Connector = ({
 interface ProgressStepperProps {
   steps: ProgressStep[];
   downloads?: ProgressDownload[];
-  label: (key: ProgressStepKey) => string;
+  label: (step: ProgressStep) => string;
   stats: (step: ProgressStep) => {
     percent?: number;
     time?: string;
     estimate?: string;
+    range?: string;
   };
 }
 
@@ -62,23 +62,28 @@ const ProgressStepper = ({
 }: ProgressStepperProps) => (
   <ol className="flex items-start">
     {steps.map((step, i) => {
-      const { percent, time, estimate } = stats(step);
+      const { percent, time, estimate, range } = stats(step);
+      const running = step.status === 'running';
       return (
         <Fragment key={step.key}>
           <li
-            className="flex w-12 flex-shrink-0 flex-col items-center sm:w-16"
-            title={label(step.key)}
+            className={`flex flex-shrink-0 flex-col items-center ${
+              running ? 'w-14 sm:w-20' : 'w-12 sm:w-16'
+            }`}
+            title={label(step)}
           >
-            <div
-              className={`flex h-10 w-10 items-center justify-center overflow-hidden rounded-full transition-colors duration-500 ${
-                circleClass[step.status]
-              }`}
-            >
-              <StepGraphic
-                step={step}
-                downloads={downloads}
-                className={step.status === 'running' ? 'h-8 w-8' : 'h-5 w-5'}
-              />
+            <div className="flex h-14 items-center">
+              <div
+                className={`flex items-center justify-center overflow-hidden rounded-full transition-all duration-500 ${
+                  running ? 'h-14 w-14' : 'h-10 w-10'
+                } ${circleClass[step.status]}`}
+              >
+                <StepGraphic
+                  step={step}
+                  downloads={downloads}
+                  className={running ? 'h-12 w-12' : 'h-5 w-5'}
+                />
+              </div>
             </div>
             <span
               className={`sr-only mt-1 text-center text-xs leading-tight sm:not-sr-only ${
@@ -89,7 +94,7 @@ const ProgressStepper = ({
                     : 'text-gray-200'
               }`}
             >
-              {label(step.key)}
+              {label(step)}
             </span>
             <span className="mt-0.5 flex flex-col items-center whitespace-nowrap text-[10px] tabular-nums leading-tight">
               {percent !== undefined && (
@@ -97,6 +102,9 @@ const ProgressStepper = ({
               )}
               {time && <span className="text-gray-400">{time}</span>}
               {estimate && <span className="text-gray-500">{estimate}</span>}
+              {range && (
+                <span className="hidden text-gray-600 sm:inline">{range}</span>
+              )}
             </span>
           </li>
           {i < steps.length - 1 && (

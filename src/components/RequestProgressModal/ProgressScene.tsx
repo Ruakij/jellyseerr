@@ -5,6 +5,7 @@ import {
   FolderArrowDownIcon,
   MagnifyingGlassIcon,
   PlayIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/solid';
 import type {
   ProgressDownload,
@@ -38,20 +39,49 @@ const scenes: Record<
   ProgressStepKey,
   (props: { fraction?: number }) => React.ReactNode
 > = {
+  // only runs while the request waits for approval
   requested: () => (
     <>
-      <path
-        className="ps-trail"
-        d="M4 44q8-12 16-12"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        opacity=".5"
+      <rect
+        x="6"
+        y="4"
+        width="22"
+        height="30"
+        rx="2"
+        fill="currentColor"
+        opacity=".45"
       />
-      <g className="ps-fly">
-        <path d="M8 26 42 10 32 40 24 30z" fill="currentColor" />
-        <path d="M24 30 42 10" stroke={DARK} strokeOpacity=".4" />
-      </g>
+      <path
+        d="M11 12h12m-12 6h12m-12 6h7"
+        stroke={DARK}
+        strokeOpacity=".5"
+        strokeWidth="2"
+      />
+      {[0, 1, 2].map((i) => (
+        <circle
+          key={i}
+          className="ps-card"
+          style={delay(i, 0.8)}
+          cx={10 + i * 7}
+          cy="42"
+          r="2"
+          fill="currentColor"
+        />
+      ))}
+      <circle cx="34" cy="31" r="11" fill="currentColor" />
+      <path
+        d="M34 31h5"
+        stroke={DARK}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+      <path
+        className="ps-hand"
+        d="M34 31v-8"
+        stroke={DARK}
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </>
   ),
   searching: () => (
@@ -247,7 +277,7 @@ const StepGraphic = ({ step, downloads, className }: StepGraphicProps) => {
       </svg>
     );
   }
-  const Icon = stepIcons[step.key];
+  const Icon = step.status === 'failed' ? XMarkIcon : stepIcons[step.key];
   return <Icon className={className} />;
 };
 

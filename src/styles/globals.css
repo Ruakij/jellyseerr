@@ -600,12 +600,9 @@
   }
 }
 
-.ps-fly {
-  animation: ps-fly 1.8s ease-in infinite;
-}
-.ps-trail {
-  stroke-dasharray: 3 3;
-  animation: ps-dash 0.6s linear infinite;
+.ps-hand {
+  transform-origin: 50% 100%;
+  animation: ps-spin 3s linear infinite;
 }
 .ps-glide {
   animation: ps-glide 2.4s ease-in-out infinite;
@@ -649,26 +646,6 @@
   animation: ps-shimmer 1.5s linear infinite;
 }
 
-@keyframes ps-fly {
-  0% {
-    transform: translate(-8px, 8px) scale(0.8);
-    opacity: 0;
-  }
-  25%,
-  55% {
-    transform: none;
-    opacity: 1;
-  }
-  100% {
-    transform: translate(14px, -14px) scale(0.6);
-    opacity: 0;
-  }
-}
-@keyframes ps-dash {
-  to {
-    stroke-dashoffset: -6;
-  }
-}
 @keyframes ps-glide {
   0%,
   100% {
