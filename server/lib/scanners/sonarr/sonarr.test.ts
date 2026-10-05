@@ -915,9 +915,12 @@ describe('Sonarr Scanner', () => {
 
       await sonarrScanner.run();
 
+      const updated = await reload(request);
+      assert.strictEqual(updated.status, MediaRequestStatus.FAILED);
+      assert.strictEqual(updated.failureKind, 'permanent');
       assert.strictEqual(
-        (await reload(request)).status,
-        MediaRequestStatus.FAILED
+        updated.failureReason,
+        'Season(s) 1 not monitored in Sonarr'
       );
     });
 
