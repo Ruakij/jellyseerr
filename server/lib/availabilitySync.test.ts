@@ -1298,6 +1298,58 @@ describe('AvailabilitySync', () => {
     });
   });
 
+  describe('single media check', () => {
+    async function removedMovie(): Promise<Media> {
+      configureJellyfin();
+      configureRadarr();
+      const media = Object.assign(new Media(), {
+        tmdbId: 6000,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.AVAILABLE,
+        jellyfinMediaId: 'jf-removed',
+      });
+      return getRepository(Media).save(media);
+    }
+
+    it('marks a movie gone from Jellyfin and Radarr as DELETED', async () => {
+      const media = await removedMovie();
+
+      await availabilitySync.syncMedia(media.id);
+
+      const updated = await getRepository(Media).findOneByOrFail({
+        id: media.id,
+      });
+      assert.strictEqual(updated.status, MediaStatus.DELETED);
+    });
+
+    it('keeps a movie that Jellyfin still has', async () => {
+      const media = await removedMovie();
+      getItemDataImpl = async (id) =>
+        ({ Id: id, Name: 'Movie' }) as JellyfinLibraryItemExtended;
+
+      await availabilitySync.syncMedia(media.id);
+
+      const updated = await getRepository(Media).findOneByOrFail({
+        id: media.id,
+      });
+      assert.strictEqual(updated.status, MediaStatus.AVAILABLE);
+    });
+
+    it('keeps the movie when Jellyfin is unreachable', async () => {
+      const media = await removedMovie();
+      getSystemInfoImpl = async () => {
+        throw new Error('ECONNREFUSED');
+      };
+
+      await availabilitySync.syncMedia(media.id);
+
+      const updated = await getRepository(Media).findOneByOrFail({
+        id: media.id,
+      });
+      assert.strictEqual(updated.status, MediaStatus.AVAILABLE);
+    });
+  });
+
   describe('movie availability - Radarr', () => {
     it('should mark a deleted movie as DELETED when a second standard Radarr instance has a colliding externalServiceId', async () => {
       configurePlex();
