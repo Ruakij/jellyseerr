@@ -18,12 +18,59 @@ export interface ProgressStep {
   error?: string; // set when status is 'failed'
   detail?: string; // searching while running: 'Searching (N indexers)' or the waiting text; grabbed: release title(s)
   episodes?: ProgressEpisodes; // importing of a series request only
+  counts?: ProgressCounts; // units per step; absent on `requested`
+  progress?: number; // 0..1: done / total, byte-weighted for grabbed
+  // searching only: search time without waiting
+  searchMs?: number; // time finished searches ran
+  searchStartedAt?: string; // ISO; start of the search running now
+  waiting?: 'release' | 'rss'; // no search runs and units still lack a release
+  waitingSince?: string; // ISO; set with `waiting`
 }
 
-// Requested seasons: episodes with a file against monitored aired ones, as Sonarr counts them
+// Units (the movie, or the requested episodes) at a step
+export interface ProgressCounts {
+  done: number; // past the step
+  active: number; // in the step
+  failed: number; // last attempt failed at this step
+  total: number; // units of the request
+}
+
+// Units of a series request with a file against all its units
 export interface ProgressEpisodes {
   imported: number;
-  total: number;
+  total: number; // monitored aired episodes of the requested seasons and those with a file
+}
+
+export type ProgressTimelineKind =
+  | 'searchStarted'
+  | 'searchFinished'
+  | 'searchFailed'
+  | 'grabbed'
+  | 'downloaded'
+  | 'downloadFailed'
+  | 'importBlocked'
+  | 'imported'
+  | 'fileDeleted'
+  | 'inJellyfin'
+  | 'leftJellyfin'
+  | 'playable'
+  | 'requestFailed';
+
+export type ProgressTimelineSource =
+  | 'request'
+  | 'search'
+  | 'history'
+  | 'queue'
+  | 'files'
+  | 'jellyfin';
+
+export interface ProgressTimelineEntry {
+  at: string; // ISO
+  step: ProgressStepKey;
+  kind: ProgressTimelineKind;
+  units?: string[]; // episodes as 'S01E07' or ranges 'S01E01-E24'; absent for a movie or the whole request
+  detail?: string; // e.g. release title and indexer, failure reason
+  source: ProgressTimelineSource;
 }
 
 export interface ProgressDownload {
@@ -44,7 +91,8 @@ export interface RequestProgress {
   totalEstimateRangeMs?: [number, number]; // only when enabled and taken from end-to-end runs
   estimatePercentile: EstimatePercentile;
   playUrl?: string; // Jellyfin deep link once playable
-  downloads?: ProgressDownload[]; // queue items of this request while grabbed
+  downloads?: ProgressDownload[]; // queue items of units without a file
+  timeline?: ProgressTimelineEntry[]; // last 100 events, oldest first; on the stream only when changed
   search?: ProgressSearch; // computed per viewer
 }
 
