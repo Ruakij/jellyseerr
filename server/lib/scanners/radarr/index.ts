@@ -1,3 +1,4 @@
+import { isNotFound } from '@server/api/servarr/base';
 import type { RadarrMovie } from '@server/api/servarr/radarr';
 import RadarrAPI from '@server/api/servarr/radarr';
 import { MediaStatus, MediaType } from '@server/constants/media';
@@ -78,10 +79,7 @@ class RadarrScanner
             'info'
           );
 
-          this.radarrApi = new RadarrAPI({
-            apiKey: server.apiKey,
-            url: RadarrAPI.buildUrl(server, '/api/v3'),
-          });
+          this.radarrApi = radarrApi(server);
 
           this.items = await this.radarrApi.getMovies();
 
@@ -153,8 +151,74 @@ class RadarrScanner
     }
   }
 
-  private async processRadarrMovie(radarrMovie: RadarrMovie): Promise<void> {
-    const server4k = this.enable4kMovie && this.currentServer.is4k;
+  /**
+   * Processes one movie Seerr links to a Radarr movie, as the scan would, e.g. after a Radarr
+   * event. A movie that no server of its profile type downloads any more, gone or unmonitored
+   * without a file, is handled as the scan handles it.
+   */
+  public async syncMovie(serverId: number, radarrMovieId: number) {
+    const settings = getSettings();
+    const server = settings.radarr.find((s) => s.id === serverId);
+    if (!server?.syncEnabled) return;
+    this.enable4kMovie = settings.radarr.some((s) => s.is4k);
+    const is4k = this.enable4kMovie && server.is4k;
+    const media = await getRepository(Media).findOneBy(
+      is4k
+        ? {
+            mediaType: MediaType.MOVIE,
+            serviceId4k: serverId,
+            externalServiceId4k: radarrMovieId,
+          }
+        : {
+            mediaType: MediaType.MOVIE,
+            serviceId: serverId,
+            externalServiceId: radarrMovieId,
+          }
+    );
+    if (!media) return;
+
+    // Whether a server has the movie, unmonitored and without a file
+    let abandonedEntry = false;
+    try {
+      const movie = await radarrApi(server).getMovie({ id: radarrMovieId });
+      await this.processRadarrMovie(movie, server);
+      if (movie.monitored || movie.hasFile) return;
+      abandonedEntry = true;
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+    }
+
+    const others = settings.radarr.filter(
+      (s) => s.id !== serverId && (this.enable4kMovie && s.is4k) === is4k
+    );
+    // As in the orphan cleanup: a server not synced may hold the movie.
+    if (others.some((s) => !s.syncEnabled)) return;
+    for (const other of others) {
+      const movie = await radarrApi(other)
+        .getMovieByTmdbId(media.tmdbId)
+        .catch((e: Error) => {
+          if (e.message === 'Movie not found') return undefined;
+          throw e;
+        });
+      if (!movie?.id) continue;
+      await this.processRadarrMovie(movie, other);
+      if (movie.monitored || movie.hasFile) return;
+      abandonedEntry = true;
+    }
+    if (abandonedEntry) {
+      await this.resolveStatusResets(
+        (m, mIs4k) => m.id === media.id && mIs4k === is4k
+      );
+    } else {
+      await this.resetOrphanedMovie(media, is4k);
+    }
+  }
+
+  private async processRadarrMovie(
+    radarrMovie: RadarrMovie,
+    server = this.currentServer
+  ): Promise<void> {
+    const server4k = this.enable4kMovie && server.is4k;
     if (server4k) {
       this.scanned4kTmdbIds.add(radarrMovie.tmdbId);
     } else {
@@ -173,7 +237,7 @@ class RadarrScanner
     try {
       await this.processMovie(radarrMovie.tmdbId, {
         is4k: server4k,
-        serviceId: this.currentServer.id,
+        serviceId: server.id,
         externalServiceId: radarrMovie.id,
         externalServiceSlug: radarrMovie.titleSlug,
         title: radarrMovie.title,
@@ -221,13 +285,25 @@ class RadarrScanner
     return false;
   }
 
+  /** For a movie no Radarr server of its profile type has. */
+  private async resetOrphanedMovie(media: Media, is4k: boolean) {
+    const statusKey = is4k ? 'status4k' : 'status';
+    if (media[statusKey] !== MediaStatus.PROCESSING) return;
+    await this.failUnfulfillableRequests(media, is4k, null);
+    media[statusKey] = MediaStatus.UNKNOWN;
+    await getRepository(Media).save(media);
+    this.log(
+      `Movie ${media.tmdbId} not found in any ${is4k ? '4K ' : ''}Radarr server. ${is4k ? '4K status' : 'Status'} reset to UNKNOWN.`,
+      'info'
+    );
+  }
+
   private async cleanupOrphanedMovies(): Promise<void> {
     const mediaRepository = getRepository(Media);
 
     if (this.didScanStandard) {
       const processingMovies = await mediaRepository.find({
         where: { mediaType: MediaType.MOVIE, status: MediaStatus.PROCESSING },
-        relations: { requests: true },
       });
 
       for (const media of processingMovies) {
@@ -236,13 +312,7 @@ class RadarrScanner
             continue;
           }
 
-          media.status = MediaStatus.UNKNOWN;
-          await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, false);
-          this.log(
-            `Movie ${media.tmdbId} not found in any Radarr server. Status reset to UNKNOWN.`,
-            'info'
-          );
+          await this.resetOrphanedMovie(media, false);
         }
       }
     } else {
@@ -258,7 +328,6 @@ class RadarrScanner
           mediaType: MediaType.MOVIE,
           status4k: MediaStatus.PROCESSING,
         },
-        relations: { requests: true },
       });
 
       for (const media of processing4kMovies) {
@@ -267,13 +336,7 @@ class RadarrScanner
             continue;
           }
 
-          media.status4k = MediaStatus.UNKNOWN;
-          await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, true);
-          this.log(
-            `Movie ${media.tmdbId} not found in any 4K Radarr server. 4K status reset to UNKNOWN.`,
-            'info'
-          );
+          await this.resetOrphanedMovie(media, true);
         }
       }
     } else if (this.enable4kMovie) {
@@ -284,5 +347,11 @@ class RadarrScanner
     }
   }
 }
+
+const radarrApi = (server: RadarrSettings) =>
+  new RadarrAPI({
+    apiKey: server.apiKey,
+    url: RadarrAPI.buildUrl(server, '/api/v3'),
+  });
 
 export const radarrScanner = new RadarrScanner();

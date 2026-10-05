@@ -1,5 +1,6 @@
 import jellyfinSocket from '@server/api/jellyfin-socket';
 import type { HistoryRecord } from '@server/api/servarr/base';
+import { isNotFound } from '@server/api/servarr/base';
 import RadarrAPI from '@server/api/servarr/radarr';
 import type {
   CommandEvent,
@@ -37,6 +38,8 @@ import {
   jellyfinItemScanner,
   jellyfinRecentScanner,
 } from '@server/lib/scanners/jellyfin';
+import { radarrScanner } from '@server/lib/scanners/radarr';
+import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { In, MoreThanOrEqual } from 'typeorm';
@@ -277,10 +280,6 @@ interface ArrState {
   monitored: boolean;
   lastSearchedAt?: number;
 }
-
-const isNotFound = (e: Error) =>
-  (e.cause as { response?: { status?: number } } | undefined)?.response
-    ?.status === 404;
 
 const latest = (times: (string | undefined)[]) => {
   const ms = times.flatMap((t) => (t ? [Date.parse(t)] : []));
@@ -523,7 +522,14 @@ export async function refreshServer(
 
   entries.forEach((entry, i) => {
     const state = states[i];
-    if (state) applyArrState(entry, state, type, tracker);
+    if (!state) return;
+    applyArrState(entry, state, type, tracker);
+    // The scanner decides what this means for the media and request status.
+    const m = media.get(entry.mediaId);
+    const arrId = m && externalId(m, entry.is4k);
+    if (entry.arrError && arrId) {
+      syncItem({ type, serverId: Number(id) }, arrId);
+    }
   });
 }
 
@@ -649,6 +655,24 @@ export async function reconstructProgress(
 
 const serverRefresh = new KeyedDebouncer((key) => refreshServer(key));
 
+const itemSyncs = new KeyedDebouncer<{ source: SignalRSource; arrId: number }>(
+  (_key, [{ source, arrId }]) =>
+    source.type === 'radarr'
+      ? radarrScanner.syncMovie(source.serverId, arrId)
+      : sonarrScanner.syncSeries(source.serverId, arrId)
+);
+
+/**
+ * Updates the media and request status of one Radarr movie or Sonarr series through the scanner,
+ * once its events settle. The full scans remain the backstop for missed events.
+ */
+export function syncItem(source: SignalRSource, arrId: number): void {
+  itemSyncs.push(`${serverKey(source.type, source.serverId)}:${arrId}`, {
+    source,
+    arrId,
+  });
+}
+
 // Full polls, run once after a connection (re)starts since neither socket replays missed events.
 const polls = new KeyedDebouncer(async (key) => {
   if (key === 'downloads') return downloadTracker.updateDownloads();
@@ -754,10 +778,28 @@ export async function reloadStepStats(): Promise<void> {
   }
 }
 
-function onSignalRMessage(
+/** The Radarr movie or Sonarr series whose state an event changed, if any. */
+function changedItem(event: ServarrSignalREvent): number | undefined {
+  switch (event.type) {
+    case 'movie':
+    case 'series':
+      return event.id;
+    case 'movieFile':
+      return event.movieId;
+    case 'episodeFile':
+      return event.seriesId;
+    default:
+      return undefined;
+  }
+}
+
+export function onSignalRMessage(
   source: SignalRSource,
   event: ServarrSignalREvent
 ): void {
+  const arrId = changedItem(event);
+  if (arrId !== undefined) syncItem(source, arrId);
+
   if (event.type === 'command') {
     handleCommand(source, event).catch((e: Error) =>
       logger.error(`Handling a command event failed: ${e.message}`, {
@@ -766,11 +808,7 @@ function onSignalRMessage(
     );
   } else if (event.type === 'episode' && event.seriesId !== undefined) {
     rememberEpisode(source.serverId, event.id, event.seriesId);
-  } else if (
-    event.type === 'queue' ||
-    event.type === 'movieFile' ||
-    event.type === 'episodeFile'
-  ) {
+  } else if (event.type !== 'episode') {
     serverRefresh.push(serverKey(source.type, source.serverId));
   }
 }
