@@ -1,4 +1,5 @@
 import { MediaServerType } from '@server/constants/server';
+import type { EstimatePercentile } from '@server/interfaces/api/progressInterfaces';
 import { Permission } from '@server/lib/permissions';
 import { runMigrations } from '@server/lib/settings/migrator';
 import type { AvailableLocale } from '@server/types/languages';
@@ -203,6 +204,10 @@ export interface RequestProgressSettings {
   /** Samples the progress tracker measured, kept in the database. */
   localMaxAgeDays: number;
   localMaxSamples: number;
+  /** Percentile the progress pop-up shows as estimate. */
+  estimatePercentile: EstimatePercentile;
+  /** Adds the 95% confidence interval to the estimates. */
+  showConfidenceInterval: boolean;
 }
 
 export interface DnsCacheSettings {
@@ -973,6 +978,8 @@ class Settings {
         historyMaxSamples: 100,
         localMaxAgeDays: 90,
         localMaxSamples: 200,
+        estimatePercentile: 90,
+        showConfidenceInterval: false,
       },
       migrations: [],
     };

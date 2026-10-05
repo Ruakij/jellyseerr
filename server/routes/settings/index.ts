@@ -9,6 +9,7 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import { User } from '@server/entity/User';
 import type { PlexConnection } from '@server/interfaces/api/plexInterfaces';
+import type { EstimatePercentile } from '@server/interfaces/api/progressInterfaces';
 import type {
   LogMessage,
   LogsResultsResponse,
@@ -21,11 +22,18 @@ import ImageProxy from '@server/lib/imageproxy';
 import { Permission } from '@server/lib/permissions';
 import {
   reloadStepStats,
+  requestProgressStats,
   restartJellyfinSocket,
 } from '@server/lib/requestProgress/events';
+import { ESTIMATE_PERCENTILES } from '@server/lib/requestProgress/stepStats';
 import { jellyfinFullScanner } from '@server/lib/scanners/jellyfin';
 import { plexFullScanner } from '@server/lib/scanners/plex';
-import type { JobId, Library, MainSettings } from '@server/lib/settings';
+import type {
+  JobId,
+  Library,
+  MainSettings,
+  RequestProgressSettings,
+} from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
@@ -111,12 +119,35 @@ settingsRoutes.get('/request-progress', (_req, res) => {
   res.status(200).json(getSettings().requestProgress);
 });
 
+settingsRoutes.get('/request-progress/stats', (_req, res) => {
+  res.status(200).json(requestProgressStats());
+});
+
+const isCount = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+const requestProgressValid: Record<
+  keyof RequestProgressSettings,
+  (v: unknown) => boolean
+> = {
+  historyMaxAgeDays: isCount,
+  historyMaxSamples: isCount,
+  localMaxAgeDays: isCount,
+  localMaxSamples: isCount,
+  estimatePercentile: (v) =>
+    ESTIMATE_PERCENTILES.includes(v as EstimatePercentile),
+  showConfidenceInterval: (v) => typeof v === 'boolean',
+};
+
 settingsRoutes.post('/request-progress', async (req, res, next) => {
-  const settings = getSettings();
-  settings.requestProgress = merge(
-    settings.requestProgress,
-    pick(req.body, Object.keys(settings.requestProgress))
+  const update = pick(req.body, Object.keys(requestProgressValid));
+  const invalid = Object.entries(update).find(
+    ([key, value]) =>
+      !requestProgressValid[key as keyof RequestProgressSettings](value)
   );
+  if (invalid) {
+    return next({ status: 400, message: `Invalid ${invalid[0]}.` });
+  }
+  const settings = getSettings();
+  settings.requestProgress = merge(settings.requestProgress, update);
   await settings.save();
   try {
     await reloadStepStats();

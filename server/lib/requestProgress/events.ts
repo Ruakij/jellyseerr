@@ -18,7 +18,10 @@ import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
-import type { ProgressDownload } from '@server/interfaces/api/progressInterfaces';
+import type {
+  ProgressDownload,
+  RequestProgressStatsResponse,
+} from '@server/interfaces/api/progressInterfaces';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
 import type { RequestStart } from '@server/lib/requestProgress/stepStats';
@@ -481,6 +484,24 @@ function refreshStepHistory(type: ServarrType, serverId: number): void {
         server: key,
       })
     );
+}
+
+/** Sample counts and percentiles per Radarr/Sonarr server, for the settings page. */
+export function requestProgressStats(): RequestProgressStatsResponse {
+  const settings = getSettings();
+  return {
+    servers: (['radarr', 'sonarr'] as const).flatMap((type) =>
+      settings[type].map((server) => {
+        const key = serverKey(type, server.id);
+        return {
+          serverKey: key,
+          name: server.name,
+          steps: stepStats.get(key),
+          total: stepStats.total(key),
+        };
+      })
+    ),
+  };
 }
 
 /** Rebuilds the step samples, e.g. after their window settings changed. */
