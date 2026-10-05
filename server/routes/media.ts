@@ -13,6 +13,7 @@ import type {
 } from '@server/interfaces/api/mediaInterfaces';
 import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
 import { Permission } from '@server/lib/permissions';
+import { reconstructProgress } from '@server/lib/requestProgress/events';
 import progressTracker, {
   STEP_KEYS,
 } from '@server/lib/requestProgress/tracker';
@@ -334,6 +335,7 @@ mediaRoutes.get<{ mediaId: string }>(
         key,
         status: key === 'playable' && available ? 'done' : 'pending',
       })),
+      estimatePercentile: getSettings().requestProgress.estimatePercentile,
       playUrl: available
         ? is4k
           ? media.mediaUrl4k
@@ -358,6 +360,14 @@ mediaRoutes.get<{ mediaId: string }>(
       }
     };
     progressTracker.on('change', onChange);
+    if (!progressTracker.entry(mediaId, is4k)) {
+      reconstructProgress([{ mediaId, is4k }]).catch((e: Error) =>
+        logger.warn(`Reconstructing the progress failed: ${e.message}`, {
+          label: 'Request Progress',
+          mediaId,
+        })
+      );
+    }
     // Proxies close idle connections; a comment line keeps it busy without an event.
     const heartbeat = setInterval(
       () => res.write(': heartbeat\n\n'),

@@ -5,8 +5,10 @@ import type {
 } from '@server/interfaces/api/progressInterfaces';
 import type { StepStats } from '@server/lib/requestProgress/stepStats';
 import stepStats, {
-  PROGRESS_STEPS,
+  MIN_TOTAL_SAMPLES,
 } from '@server/lib/requestProgress/stepStats';
+import { PROGRESS_STEPS } from '@server/lib/requestProgress/steps';
+import { getSettings } from '@server/lib/settings';
 import { EventEmitter } from 'node:events';
 
 export const STEP_KEYS: readonly ProgressStepKey[] = [
@@ -39,6 +41,8 @@ export interface TrackedProgress {
   searchCommandId?: number;
   downloads?: ProgressDownload[];
   playUrl?: string;
+  /** Rebuilt after the fact, so its step times are not durations worth measuring. */
+  reconstructed?: boolean;
   steps: Record<ProgressStepKey, StepState>;
 }
 
@@ -55,15 +59,20 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   private evictions = new Map<string, NodeJS.Timeout>();
 
   constructor(
-    private readonly stats: Pick<
+    private readonly injectedStats?: Pick<
       StepStats,
-      'get' | 'record' | 'recordTotal' | 'totalP90'
-    > = stepStats,
+      'get' | 'record' | 'recordTotal' | 'total'
+    >,
     private readonly now: () => number = Date.now
   ) {
     super();
     // One listener per open progress stream.
     this.setMaxListeners(0);
+  }
+
+  // Resolved on use: stepStats loads the database entities, whose subscribers import this module.
+  private get stats() {
+    return this.injectedStats ?? stepStats;
   }
 
   /** Starts a fresh run, replacing any previous one of the same media. */
@@ -72,24 +81,35 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     is4k,
     requestId,
     serverKey,
+    at = this.now(),
+    awaitingApproval,
+    reconstructed,
   }: {
     mediaId: number;
     is4k: boolean;
     requestId?: number;
     serverKey?: string;
+    /** When the request was made, for a run rebuilt later. */
+    at?: number;
+    awaitingApproval?: boolean;
+    reconstructed?: boolean;
   }): TrackedProgress {
-    const at = this.now();
     const steps = Object.fromEntries(
       STEP_KEYS.map((k) => [k, { status: 'pending' }])
     ) as Record<ProgressStepKey, StepState>;
-    steps.requested = { status: 'done', startedAt: at, finishedAt: at };
-    // Requests go out with searchNow, so the search runs from the request on.
-    steps.searching = { status: 'running', startedAt: at };
+    if (awaitingApproval) {
+      steps.requested = { status: 'running', startedAt: at };
+    } else {
+      steps.requested = { status: 'done', startedAt: at, finishedAt: at };
+      // Requests go out with searchNow, so the search runs from the request on.
+      steps.searching = { status: 'running', startedAt: at };
+    }
     const entry: TrackedProgress = {
       mediaId,
       is4k,
       requestId,
       serverKey,
+      reconstructed,
       staleDownloadIds: [],
       steps,
     };
@@ -155,7 +175,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           finishedAt: at,
           detail: state.detail,
         };
-        if (k !== 'requested' && entry.serverKey) {
+        if (k !== 'requested' && entry.serverKey && !entry.reconstructed) {
           this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
             at,
             downloadId: entry.downloadId,
@@ -164,7 +184,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       }
       previousEnd = entry.steps[k].finishedAt;
     }
-    if (step === 'playable' && entry.serverKey) {
+    if (step === 'playable' && entry.serverKey && !entry.reconstructed) {
       const requestedAt = entry.steps.requested.startedAt ?? at;
       this.stats.recordTotal(
         entry.serverKey,
@@ -256,30 +276,44 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   public snapshot(entry: TrackedProgress): RequestProgress {
+    const { estimatePercentile: p, showConfidenceInterval } =
+      getSettings().requestProgress;
     const estimates = entry.serverKey
       ? this.stats.get(entry.serverKey)
       : undefined;
     const steps = STEP_KEYS.map((k) => {
       const state = entry.steps[k];
+      const estimate =
+        k === 'requested' ? undefined : estimates?.[k].percentiles[p];
       return {
         key: k,
         status: state.status,
         startedAt: iso(state.startedAt),
         finishedAt: iso(state.finishedAt),
-        p90Ms: k === 'requested' ? undefined : estimates?.[k].p90,
+        estimateMs: estimate?.valueMs,
+        estimateRangeMs: showConfidenceInterval ? estimate?.rangeMs : undefined,
         error: state.error,
         detail: state.detail,
       };
     });
-    const p90s = steps.flatMap((s) => (s.p90Ms === undefined ? [] : s.p90Ms));
+    const totals = entry.serverKey
+      ? this.stats.total(entry.serverKey)
+      : undefined;
+    const total =
+      totals && totals.localCount >= MIN_TOTAL_SAMPLES
+        ? totals.percentiles[p]
+        : undefined;
+    const stepSum = steps.flatMap((s) => s.estimateMs ?? []);
     return {
       mediaId: entry.mediaId,
       is4k: entry.is4k,
       requestId: entry.requestId,
       steps,
-      totalP90Ms:
-        (entry.serverKey ? this.stats.totalP90(entry.serverKey) : undefined) ??
-        (p90s.length ? p90s.reduce((a, b) => a + b, 0) : undefined),
+      totalEstimateMs:
+        total?.valueMs ??
+        (stepSum.length ? stepSum.reduce((a, b) => a + b, 0) : undefined),
+      totalEstimateRangeMs: showConfidenceInterval ? total?.rangeMs : undefined,
+      estimatePercentile: p,
       playUrl: entry.playUrl,
       // Queue items of later episodes stop being refreshed once playable.
       downloads:
