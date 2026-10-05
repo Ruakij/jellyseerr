@@ -1,5 +1,6 @@
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
+import { getAppVersion } from '@server/utils/appVersion';
 import { getHostname } from '@server/utils/getHostname';
 import { EventEmitter } from 'node:events';
 
@@ -66,11 +67,21 @@ export const parseMessage = (raw: string): JellyfinSocketMessage | null => {
   }
 };
 
-const settingsUrl = (): string | undefined => {
+export interface SocketTarget {
+  url: string;
+  headers: Record<string, string>;
+}
+
+// Header auth: Jellyfin rejects the api_key query parameter while legacy authorization is disabled.
+const settingsTarget = (): SocketTarget | undefined => {
   const apiKey = getSettings().jellyfin.apiKey;
   if (!apiKey) return undefined;
-  const base = getHostname().replace(/^http/, 'ws');
-  return `${base}/socket?api_key=${encodeURIComponent(apiKey)}&deviceId=${encodeURIComponent(DEVICE_ID)}`;
+  return {
+    url: `${getHostname().replace(/^http/, 'ws')}/socket`,
+    headers: {
+      Authorization: `MediaBrowser Client="Seerr", Device="Seerr", DeviceId="${DEVICE_ID}", Version="${getAppVersion()}", Token="${apiKey}"`,
+    },
+  };
 };
 
 export class JellyfinSocket extends EventEmitter<JellyfinSocketEvents> {
@@ -81,7 +92,9 @@ export class JellyfinSocket extends EventEmitter<JellyfinSocketEvents> {
   private running = false;
   private everConnected = false;
 
-  constructor(private readonly getUrl: () => string | undefined = settingsUrl) {
+  constructor(
+    private readonly getTarget: () => SocketTarget | undefined = settingsTarget
+  ) {
     super();
   }
 
@@ -99,8 +112,8 @@ export class JellyfinSocket extends EventEmitter<JellyfinSocketEvents> {
   }
 
   private connect(): void {
-    const url = this.getUrl();
-    if (!url) {
+    const target = this.getTarget();
+    if (!target) {
       logger.warn('No Jellyfin API key configured, websocket not started', {
         label: 'Jellyfin Socket',
       });
@@ -108,7 +121,10 @@ export class JellyfinSocket extends EventEmitter<JellyfinSocketEvents> {
       return;
     }
 
-    const socket = new WebSocket(url);
+    // Node's WebSocket (undici) takes headers in a second argument the DOM typings do not know.
+    const socket = new WebSocket(target.url, {
+      headers: target.headers,
+    } as unknown as string[]);
     this.socket = socket;
     let opened = false;
 
