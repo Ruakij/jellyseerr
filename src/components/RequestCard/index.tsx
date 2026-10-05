@@ -3,6 +3,7 @@ import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
 import Tooltip from '@app/components/Common/Tooltip';
+import RequestFailedBadge from '@app/components/RequestFailedBadge';
 import RequestModal from '@app/components/RequestModal';
 import StatusBadge from '@app/components/StatusBadge';
 import useDeepLinks from '@app/hooks/useDeepLinks';
@@ -147,13 +148,12 @@ const RequestCardError = ({ requestData }: RequestCardErrorProps) => {
                   <span className="mr-2 hidden font-bold sm:block">
                     {intl.formatMessage(globalMessages.status)}
                   </span>
-                  {requestData.status === MediaRequestStatus.DECLINED ||
-                  requestData.status === MediaRequestStatus.FAILED ? (
+                  {requestData.status === MediaRequestStatus.DECLINED ? (
                     <Badge badgeType="danger">
-                      {requestData.status === MediaRequestStatus.DECLINED
-                        ? intl.formatMessage(globalMessages.declined)
-                        : intl.formatMessage(globalMessages.failed)}
+                      {intl.formatMessage(globalMessages.declined)}
                     </Badge>
+                  ) : requestData.status === MediaRequestStatus.FAILED ? (
+                    <RequestFailedBadge request={requestData} />
                   ) : (
                     <StatusBadge
                       status={
@@ -442,12 +442,10 @@ const RequestCard = ({ request, onTitleData }: RequestCardProps) => {
                 {intl.formatMessage(globalMessages.declined)}
               </Badge>
             ) : requestData.status === MediaRequestStatus.FAILED ? (
-              <Badge
-                badgeType="danger"
+              <RequestFailedBadge
+                request={requestData}
                 href={`/${requestData.type}/${requestData.media.tmdbId}?manage=1`}
-              >
-                {intl.formatMessage(globalMessages.failed)}
-              </Badge>
+              />
             ) : requestData.status === MediaRequestStatus.PENDING &&
               requestData.media[requestData.is4k ? 'status4k' : 'status'] ===
                 MediaStatus.DELETED ? (
