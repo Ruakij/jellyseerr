@@ -174,3 +174,20 @@ describe('ServarrBase getHistory', () => {
     ]);
   });
 });
+
+describe('ServarrBase getItemHistory', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('requests the history of one movie', async () => {
+    const radarr = buildRadarr();
+    const get = mock.method(getAxios(radarr), 'get', async () => ({
+      data: [{ id: 1 }],
+    }));
+
+    assert.deepEqual(await radarr.getItemHistory(42), [{ id: 1 }]);
+    assert.deepEqual(get.mock.calls[0].arguments, [
+      '/history/movie',
+      { params: { movieId: 42, includeEpisode: true } },
+    ]);
+  });
+});

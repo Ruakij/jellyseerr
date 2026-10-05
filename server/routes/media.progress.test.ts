@@ -91,7 +91,7 @@ describe('GET /media/:mediaId/progress', () => {
     const requestedAt = Date.parse('2026-10-05T10:00:00Z');
     for (const [name, impl] of [
       [
-        'getHistory',
+        'getItemHistory',
         async () => [
           {
             id: 1,

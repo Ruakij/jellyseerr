@@ -278,14 +278,24 @@ export async function refreshServer(
   }
   if (byArrId.size === 0) return;
 
-  const since = Math.min(
-    ...entries.map((e) => e.steps.requested.startedAt ?? Date.now())
-  );
-  const [history, queue, seasons] = await Promise.all([
-    api.getHistory({ since: new Date(since) }),
+  // Per item: the history of a whole server since an old request can be too large to load.
+  const [histories, queue, seasons] = await Promise.all([
+    Promise.all(
+      [...byArrId.keys()].map((arrId) =>
+        api.getItemHistory(arrId).catch((e: Error) => {
+          logger.warn(`Loading item history failed: ${e.message}`, {
+            label: 'Request Progress',
+            server: key,
+            arrId,
+          });
+          return [];
+        })
+      )
+    ),
     api.getQueue(),
     type === 'sonarr' ? requestedSeasons(entries) : undefined,
   ]);
+  const history = histories.flat();
   // Records of the same series can belong to seasons another request asked for.
   const entriesOf = (item: ArrItem) =>
     (
@@ -306,7 +316,7 @@ export async function refreshServer(
     const at = Date.parse(record.date);
     for (const entry of entriesOf(record)) {
       const { mediaId, is4k } = entry;
-      // The history window starts at the oldest tracked request, so it holds older records too.
+      // The item history holds the records of earlier requests too.
       if (
         at < (entry.steps.requested.startedAt ?? 0) ||
         (record.downloadId &&
