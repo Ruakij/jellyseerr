@@ -41,6 +41,8 @@ export interface TrackedProgress {
   searchCommandId?: number;
   downloads?: ProgressDownload[];
   playUrl?: string;
+  /** Rebuilt after the fact, so its step times are not durations worth measuring. */
+  reconstructed?: boolean;
   steps: Record<ProgressStepKey, StepState>;
 }
 
@@ -79,24 +81,35 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     is4k,
     requestId,
     serverKey,
+    at = this.now(),
+    awaitingApproval,
+    reconstructed,
   }: {
     mediaId: number;
     is4k: boolean;
     requestId?: number;
     serverKey?: string;
+    /** When the request was made, for a run rebuilt later. */
+    at?: number;
+    awaitingApproval?: boolean;
+    reconstructed?: boolean;
   }): TrackedProgress {
-    const at = this.now();
     const steps = Object.fromEntries(
       STEP_KEYS.map((k) => [k, { status: 'pending' }])
     ) as Record<ProgressStepKey, StepState>;
-    steps.requested = { status: 'done', startedAt: at, finishedAt: at };
-    // Requests go out with searchNow, so the search runs from the request on.
-    steps.searching = { status: 'running', startedAt: at };
+    if (awaitingApproval) {
+      steps.requested = { status: 'running', startedAt: at };
+    } else {
+      steps.requested = { status: 'done', startedAt: at, finishedAt: at };
+      // Requests go out with searchNow, so the search runs from the request on.
+      steps.searching = { status: 'running', startedAt: at };
+    }
     const entry: TrackedProgress = {
       mediaId,
       is4k,
       requestId,
       serverKey,
+      reconstructed,
       staleDownloadIds: [],
       steps,
     };
@@ -162,7 +175,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           finishedAt: at,
           detail: state.detail,
         };
-        if (k !== 'requested' && entry.serverKey) {
+        if (k !== 'requested' && entry.serverKey && !entry.reconstructed) {
           this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
             at,
             downloadId: entry.downloadId,
@@ -171,7 +184,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       }
       previousEnd = entry.steps[k].finishedAt;
     }
-    if (step === 'playable' && entry.serverKey) {
+    if (step === 'playable' && entry.serverKey && !entry.reconstructed) {
       const requestedAt = entry.steps.requested.startedAt ?? at;
       this.stats.recordTotal(
         entry.serverKey,
