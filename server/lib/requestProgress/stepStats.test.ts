@@ -69,8 +69,16 @@ describe('pairGrabToImport', () => {
       rec('grabbed', '2026-10-05T10:00:00Z', 'A'),
     ]);
     assert.deepEqual(samples, [
-      { at: Date.parse('2026-10-05T10:01:00Z'), durationMs: 30_000 },
-      { at: Date.parse('2026-10-05T10:00:07Z'), durationMs: 7_000 },
+      {
+        at: Date.parse('2026-10-05T10:01:00Z'),
+        durationMs: 30_000,
+        downloadId: 'B',
+      },
+      {
+        at: Date.parse('2026-10-05T10:00:07Z'),
+        durationMs: 7_000,
+        downloadId: 'A',
+      },
     ]);
   });
 
@@ -101,7 +109,11 @@ describe('pairGrabToImport', () => {
       rec('downloadFolderImported', '2026-10-05T10:00:11Z', 'pack'),
     ]);
     assert.deepEqual(samples, [
-      { at: Date.parse('2026-10-05T10:00:10Z'), durationMs: 10_000 },
+      {
+        at: Date.parse('2026-10-05T10:00:10Z'),
+        durationMs: 10_000,
+        downloadId: 'pack',
+      },
     ]);
   });
 });
@@ -131,12 +143,23 @@ describe('StepStats', () => {
   it('keeps only the newest samples per step', () => {
     const stats = new StepStats();
     for (let i = 0; i < MAX_SAMPLES + 50; i++) {
-      stats.record('s', 'searching', i < 50 ? 1_000_000 : 1, i);
+      stats.record('s', 'searching', i < 50 ? 1_000_000 : 1, { at: i });
     }
     assert.deepEqual(stats.get('s').searching, {
       count: MAX_SAMPLES,
       p50: 1,
       p90: 1,
+    });
+  });
+
+  it('skips a history sample whose download the tracker recorded', async () => {
+    const stats = new StepStats();
+    await stats.refresh('s', sevenSecondGrab);
+    stats.record('s', 'importing', 9_000, { downloadId: 'A' });
+    assert.deepEqual(stats.get('s').importing, {
+      count: 1,
+      p50: 9_000,
+      p90: 9_000,
     });
   });
 

@@ -17,6 +17,8 @@ export interface Sample {
   /** When the step finished, ms since epoch; orders the sample window. */
   at: number;
   durationMs: number;
+  /** Lets a recorded sample replace the history sample of the same download. */
+  downloadId?: string;
 }
 
 export interface StepEstimate {
@@ -62,13 +64,13 @@ export function pairGrabToImport(records: HistoryRecord[]): Sample[] {
   }
 
   const samples: Sample[] = [];
-  for (const { grabs, imports } of byDownload.values()) {
+  for (const [downloadId, { grabs, imports }] of byDownload) {
     if (grabs.length === 0) continue;
     const grab = Math.min(...grabs);
     const imported = imports.filter((at) => at >= grab);
     if (imported.length === 0) continue;
     const at = Math.min(...imported);
-    samples.push({ at, durationMs: at - grab });
+    samples.push({ at, durationMs: at - grab, downloadId });
   }
   return newest(samples);
 }
@@ -118,26 +120,29 @@ export class StepStats {
     this.server(serverKey).history = pairGrabToImport([...grabs, ...imports]);
   }
 
-  // ponytail: a tracked download recorded here is also in history after the next refresh and
-  // counts twice for `importing`; dedupe by downloadId if that skews the estimate.
   public record(
     serverKey: string,
     step: ProgressStep,
     durationMs: number,
-    at = Date.now()
+    { at = Date.now(), downloadId }: { at?: number; downloadId?: string } = {}
   ): void {
     const recorded = this.server(serverKey).recorded;
-    recorded[step] = newest([...recorded[step], { at, durationMs }]);
+    recorded[step] = newest([
+      ...recorded[step],
+      { at, durationMs, downloadId },
+    ]);
   }
 
   public get(serverKey: string): Record<ProgressStep, StepEstimate> {
     const { history, recorded } = this.server(serverKey);
     return Object.fromEntries(
       PROGRESS_STEPS.map((step) => {
+        const own = recorded[step];
+        const tracked = new Set(own.map((s) => s.downloadId).filter(Boolean));
         const samples = newest(
           step === 'importing'
-            ? [...history, ...recorded[step]]
-            : recorded[step]
+            ? [...history.filter((s) => !tracked.has(s.downloadId)), ...own]
+            : own
         ).map((s) => s.durationMs);
         return [
           step,
