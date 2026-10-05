@@ -334,6 +334,7 @@ mediaRoutes.get<{ mediaId: string }>(
         key,
         status: key === 'playable' && available ? 'done' : 'pending',
       })),
+      estimatePercentile: getSettings().requestProgress.estimatePercentile,
       playUrl: available
         ? is4k
           ? media.mediaUrl4k
