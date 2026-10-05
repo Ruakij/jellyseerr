@@ -2,9 +2,12 @@ import Button from '@app/components/Common/Button';
 import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestBlock from '@app/components/RequestBlock';
-import StepGraphic from '@app/components/RequestProgressModal/ProgressScene';
+import StepGraphic, {
+  downloadFraction,
+} from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
+import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
@@ -29,6 +32,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   estimate: '~{duration}',
   total: 'Total',
   watch: 'Watch',
+  failed: 'Something went wrong at this step.',
 });
 
 const formatDuration = (ms: number): string => {
@@ -87,6 +91,8 @@ const RequestProgressModal = ({
   onClose,
 }: RequestProgressModalProps) => {
   const intl = useIntl();
+  const { hasPermission } = useUser();
+  const canManage = hasPermission(Permission.MANAGE_REQUESTS);
   const { data: request } = useSWR<MediaRequest>(
     show && progress?.requestId ? `/api/v1/request/${progress.requestId}` : null
   );
@@ -125,6 +131,34 @@ const RequestProgressModal = ({
       ? (progress?.downloads ?? [])
       : [];
 
+  const stats = (s: ProgressStep) => {
+    if (!progress) return {};
+    const elapsed = stepElapsed(s, now);
+    const est = estimateMs(progress, s);
+    const fraction =
+      s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
+    const percent =
+      s.status === 'done'
+        ? 100
+        : s.status !== 'running'
+          ? undefined
+          : fraction !== undefined
+            ? Math.round(fraction * 100)
+            : elapsed !== undefined && est
+              ? Math.min(99, Math.round((elapsed / est) * 100))
+              : undefined;
+    return {
+      percent,
+      time: elapsed === undefined ? undefined : formatDuration(elapsed),
+      estimate:
+        est === undefined || s.status === 'done'
+          ? undefined
+          : intl.formatMessage(messages.estimate, {
+              duration: formatDuration(est),
+            }),
+    };
+  };
+
   return (
     <Transition
       as="div"
@@ -144,16 +178,18 @@ const RequestProgressModal = ({
         onCancel={onClose}
         cancelText={intl.formatMessage(globalMessages.close)}
       >
+        {request && (
+          <div className="-mx-4 mb-4 border-b border-gray-700">
+            <RequestBlock request={request} />
+          </div>
+        )}
         {progress && (
           <>
             <ProgressStepper
               steps={progress.steps}
               downloads={progress.downloads}
               label={(key) => intl.formatMessage(messages[key])}
-              time={(s) => {
-                const ms = stepElapsed(s, now);
-                return ms === undefined ? undefined : formatDuration(ms);
-              }}
+              stats={stats}
             />
             {totalMs !== undefined && (
               <div className="mt-2 text-center text-xs tabular-nums text-gray-300">
@@ -190,27 +226,33 @@ const RequestProgressModal = ({
                   {estimate(estimateMs(progress, step))}
                 </span>
               </div>
-              {step.detail && (
+              {canManage && step.detail && (
                 <p className="mt-1 break-words text-sm text-gray-400">
                   {step.detail}
                 </p>
               )}
-              {step.status === 'failed' && step.error && (
+              {step.status === 'failed' && (
                 <p className="mt-2 break-words text-sm text-red-400">
-                  {step.error}
+                  {canManage && step.error
+                    ? step.error
+                    : intl.formatMessage(messages.failed)}
                 </p>
               )}
               {downloads.map((dl, i) => (
                 <div key={`dl-${i}`} className="mt-3 text-xs text-gray-400">
-                  <div className="flex justify-between gap-2">
-                    <Tooltip content={dl.title}>
-                      <span className="truncate text-gray-300">{dl.title}</span>
-                    </Tooltip>
-                    {dl.indexer && (
-                      <span className="flex-shrink-0">{dl.indexer}</span>
-                    )}
-                  </div>
-                  <div className="mt-1 flex items-center gap-2">
+                  {canManage && (
+                    <div className="mb-1 flex justify-between gap-2">
+                      <Tooltip content={dl.title}>
+                        <span className="truncate text-gray-300">
+                          {dl.title}
+                        </span>
+                      </Tooltip>
+                      {dl.indexer && (
+                        <span className="flex-shrink-0">{dl.indexer}</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-700">
                       <div
                         className="h-full bg-indigo-500 transition-all duration-500"
@@ -243,47 +285,31 @@ const RequestProgressModal = ({
             </div>
           </div>
         )}
-        {request && (
-          <div className="-mx-4 mt-4 border-t border-gray-700">
-            <RequestBlock request={request} />
-          </div>
-        )}
       </Modal>
     </Transition>
   );
 };
 
-interface RequestProgressBadgeProps {
+interface RequestProgressTriggerProps {
   mediaId?: number;
   is4k?: boolean;
   subTitle?: string;
-  children: React.ReactNode;
+  children: (open: () => void) => React.ReactNode;
 }
 
-// Makes a media status badge open the progress pop-up on click
-export const RequestProgressBadge = ({
+// Renders a trigger that opens the progress pop-up for one media variant
+export const RequestProgressTrigger = ({
   mediaId,
   is4k = false,
   subTitle,
   children,
-}: RequestProgressBadgeProps) => {
+}: RequestProgressTriggerProps) => {
   const [show, setShow] = useState(false);
   const progress = useRequestProgress(show ? mediaId : undefined, is4k);
 
   return (
     <>
-      <button
-        type="button"
-        aria-haspopup="dialog"
-        className="inline-flex rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 [&_*]:!cursor-pointer"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          setShow(true);
-        }}
-      >
-        {children}
-      </button>
+      {children(() => setShow(true))}
       <RequestProgressModal
         show={show}
         progress={progress}

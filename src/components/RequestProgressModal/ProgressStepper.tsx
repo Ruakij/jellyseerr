@@ -47,53 +47,64 @@ interface ProgressStepperProps {
   steps: ProgressStep[];
   downloads?: ProgressDownload[];
   label: (key: ProgressStepKey) => string;
-  time: (step: ProgressStep) => string | undefined;
+  stats: (step: ProgressStep) => {
+    percent?: number;
+    time?: string;
+    estimate?: string;
+  };
 }
 
 const ProgressStepper = ({
   steps,
   downloads,
   label,
-  time,
+  stats,
 }: ProgressStepperProps) => (
   <ol className="flex items-start">
-    {steps.map((step, i) => (
-      <Fragment key={step.key}>
-        <li
-          className="flex w-10 flex-shrink-0 flex-col items-center sm:w-16"
-          title={label(step.key)}
-        >
-          <div
-            className={`flex h-10 w-10 items-center justify-center overflow-hidden rounded-full transition-colors duration-500 ${
-              circleClass[step.status]
-            }`}
+    {steps.map((step, i) => {
+      const { percent, time, estimate } = stats(step);
+      return (
+        <Fragment key={step.key}>
+          <li
+            className="flex w-12 flex-shrink-0 flex-col items-center sm:w-16"
+            title={label(step.key)}
           >
-            <StepGraphic
-              step={step}
-              downloads={downloads}
-              className={step.status === 'running' ? 'h-8 w-8' : 'h-5 w-5'}
-            />
-          </div>
-          <span
-            className={`sr-only mt-1 text-center text-xs leading-tight sm:not-sr-only ${
-              step.status === 'pending'
-                ? 'text-gray-500'
-                : step.status === 'failed'
-                  ? 'text-red-400'
-                  : 'text-gray-200'
-            }`}
-          >
-            {label(step.key)}
-          </span>
-          <span className="mt-0.5 whitespace-nowrap text-[10px] tabular-nums text-gray-400">
-            {time(step)}
-          </span>
-        </li>
-        {i < steps.length - 1 && (
-          <Connector step={step} downloads={downloads} />
-        )}
-      </Fragment>
-    ))}
+            <div
+              className={`flex h-10 w-10 items-center justify-center overflow-hidden rounded-full transition-colors duration-500 ${
+                circleClass[step.status]
+              }`}
+            >
+              <StepGraphic
+                step={step}
+                downloads={downloads}
+                className={step.status === 'running' ? 'h-8 w-8' : 'h-5 w-5'}
+              />
+            </div>
+            <span
+              className={`sr-only mt-1 text-center text-xs leading-tight sm:not-sr-only ${
+                step.status === 'pending'
+                  ? 'text-gray-500'
+                  : step.status === 'failed'
+                    ? 'text-red-400'
+                    : 'text-gray-200'
+              }`}
+            >
+              {label(step.key)}
+            </span>
+            <span className="mt-0.5 flex flex-col items-center whitespace-nowrap text-[10px] tabular-nums leading-tight">
+              {percent !== undefined && (
+                <span className="font-semibold text-gray-200">{percent}%</span>
+              )}
+              {time && <span className="text-gray-400">{time}</span>}
+              {estimate && <span className="text-gray-500">{estimate}</span>}
+            </span>
+          </li>
+          {i < steps.length - 1 && (
+            <Connector step={step} downloads={downloads} />
+          )}
+        </Fragment>
+      );
+    })}
   </ol>
 );
 

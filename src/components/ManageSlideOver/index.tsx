@@ -7,12 +7,17 @@ import Tooltip from '@app/components/Common/Tooltip';
 import DownloadBlock from '@app/components/DownloadBlock';
 import IssueBlock from '@app/components/IssueBlock';
 import RequestBlock from '@app/components/RequestBlock';
+import { RequestProgressTrigger } from '@app/components/RequestProgressModal';
 import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
-import { Bars4Icon, ServerIcon } from '@heroicons/react/24/outline';
+import {
+  Bars4Icon,
+  QueueListIcon,
+  ServerIcon,
+} from '@heroicons/react/24/outline';
 import {
   CheckCircleIcon,
   DocumentMinusIcon,
@@ -68,6 +73,8 @@ const messages = defineMessages('components.ManageSlideOver', {
   clearmediadataerror: 'Something went wrong while clearing the media data.',
   removemediaerror: 'Something went wrong while removing the media.',
   downloadstatus: 'Downloads',
+  requestprogress: 'Request Progress',
+  requestprogress4k: '4K Request Progress',
   markavailable: 'Mark as Available',
   mark4kavailable: 'Mark as Available in 4K',
   markallseasonsavailable: 'Mark All Seasons as Available',
@@ -257,6 +264,34 @@ const ManageSlideOver = ({
       subText={isMovie(data) ? data.title : data.name}
     >
       <div className="space-y-6">
+        {[false, true]
+          .filter((is4k) =>
+            [MediaStatus.PENDING, MediaStatus.PROCESSING].includes(
+              data.mediaInfo?.[is4k ? 'status4k' : 'status'] ??
+                MediaStatus.UNKNOWN
+            )
+          )
+          .map((is4k) => (
+            <RequestProgressTrigger
+              key={`progress-${is4k}`}
+              mediaId={data.mediaInfo?.id}
+              is4k={is4k}
+              subTitle={isMovie(data) ? data.title : data.name}
+            >
+              {(open) => (
+                <Button buttonType="ghost" className="w-full" onClick={open}>
+                  <QueueListIcon />
+                  <span>
+                    {intl.formatMessage(
+                      is4k
+                        ? messages.requestprogress4k
+                        : messages.requestprogress
+                    )}
+                  </span>
+                </Button>
+              )}
+            </RequestProgressTrigger>
+          ))}
         {((data?.mediaInfo?.downloadStatus ?? []).length > 0 ||
           (data?.mediaInfo?.downloadStatus4k ?? []).length > 0) && (
           <div>

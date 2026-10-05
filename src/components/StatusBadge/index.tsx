@@ -2,7 +2,7 @@ import Spinner from '@app/assets/spinner.svg';
 import Badge from '@app/components/Common/Badge';
 import Tooltip from '@app/components/Common/Tooltip';
 import DownloadBlock from '@app/components/DownloadBlock';
-import { RequestProgressBadge } from '@app/components/RequestProgressModal';
+import { RequestProgressTrigger } from '@app/components/RequestProgressModal';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
@@ -43,13 +43,26 @@ const showsProgress = ({ mediaId, status }: StatusBadgeProps) =>
 
 const StatusBadge = (props: StatusBadgeProps) =>
   showsProgress(props) ? (
-    <RequestProgressBadge
+    <RequestProgressTrigger
       mediaId={props.mediaId}
       is4k={props.is4k}
       subTitle={Array.isArray(props.title) ? props.title[0] : props.title}
     >
-      <StatusBadgeContent {...props} />
-    </RequestProgressBadge>
+      {(open) => (
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          className="inline-flex rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 [&_*]:!cursor-pointer"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            open();
+          }}
+        >
+          <StatusBadgeContent {...props} />
+        </button>
+      )}
+    </RequestProgressTrigger>
   ) : (
     <StatusBadgeContent {...props} />
   );
