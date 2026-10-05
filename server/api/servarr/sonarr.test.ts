@@ -117,3 +117,66 @@ describe('SonarrAPI getSeriesByTvdbId', () => {
     });
   });
 });
+
+describe('SonarrAPI monitorSeasons', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('monitors the series, the given seasons and their unmonitored episodes', async () => {
+    const sonarr = buildSonarr();
+    mock.method(getAxios(sonarr), 'get', async () => ({
+      data: {
+        id: 9,
+        monitored: false,
+        seasons: [
+          { seasonNumber: 1, monitored: false },
+          { seasonNumber: 2, monitored: false },
+        ],
+      },
+    }));
+    const put = mock.method(getAxios(sonarr), 'put', async () => ({}));
+    const episode = (id: number, seasonNumber: number, monitored: boolean) =>
+      ({ id, seasonNumber, monitored }) as Parameters<
+        SonarrAPI['monitorSeasons']
+      >[2][number];
+
+    await sonarr.monitorSeasons(
+      9,
+      [1],
+      [episode(1, 1, false), episode(2, 1, true), episode(3, 2, false)]
+    );
+
+    assert.deepEqual(
+      put.mock.calls.map((c) => c.arguments),
+      [
+        [
+          '/series',
+          {
+            id: 9,
+            monitored: true,
+            seasons: [
+              { seasonNumber: 1, monitored: true },
+              { seasonNumber: 2, monitored: false },
+            ],
+          },
+        ],
+        ['/episode/monitor', { episodeIds: [1], monitored: true }],
+      ]
+    );
+  });
+
+  it('changes nothing when all is monitored', async () => {
+    const sonarr = buildSonarr();
+    mock.method(getAxios(sonarr), 'get', async () => ({
+      data: {
+        id: 9,
+        monitored: true,
+        seasons: [{ seasonNumber: 1, monitored: true }],
+      },
+    }));
+    const put = mock.method(getAxios(sonarr), 'put', async () => ({}));
+
+    await sonarr.monitorSeasons(9, [1], []);
+
+    assert.equal(put.mock.callCount(), 0);
+  });
+});

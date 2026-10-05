@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { IncomingMessage } from 'node:http';
-import { get } from 'node:http';
+import { get, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it, mock } from 'node:test';
 
+import ServarrBase from '@server/api/servarr/base';
 import RadarrAPI from '@server/api/servarr/radarr';
+import SonarrAPI from '@server/api/servarr/sonarr';
 import {
   MediaRequestStatus,
   MediaStatus,
@@ -14,9 +16,11 @@ import {
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
+import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
+import { Permission } from '@server/lib/permissions';
 import progressTracker from '@server/lib/requestProgress/tracker';
-import type { RadarrSettings } from '@server/lib/settings';
+import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
 import express from 'express';
@@ -24,13 +28,36 @@ import mediaRoutes from './media';
 
 setupTestDb();
 
-async function openStream(path: string) {
+// Stands in for the session middleware: the user id comes from the X-User header.
+function testApp() {
   const app = express();
+  app.use(async (req, _res, next) => {
+    const id = Number(req.headers['x-user']);
+    if (id) {
+      req.user = await getRepository(User).findOneByOrFail({ id });
+    }
+    next();
+  });
   app.use('/media', mediaRoutes);
-  const server = app.listen(0);
+  app.use(
+    (
+      err: { status: number },
+      _req: express.Request,
+      res: express.Response,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      _next: express.NextFunction
+    ) => res.status(err.status).end()
+  );
+  return app;
+}
+
+async function openStream(path: string, user?: number) {
+  const server = testApp().listen(0);
   await once(server, 'listening');
   const { port } = server.address() as AddressInfo;
-  const req = get(`http://127.0.0.1:${port}${path}`);
+  const req = get(`http://127.0.0.1:${port}${path}`, {
+    headers: user ? { 'x-user': String(user) } : {},
+  });
   const [res] = (await once(req, 'response')) as [IncomingMessage];
   res.setEncoding('utf8');
   const events: string[] = [];
@@ -194,5 +221,194 @@ describe('GET /media/:mediaId/progress', () => {
     assert.equal(res.statusCode, 404);
     res.resume();
     server.close();
+  });
+});
+
+async function postSearch(mediaId: number, user: number) {
+  const server = testApp().listen(0);
+  await once(server, 'listening');
+  const { port } = server.address() as AddressInfo;
+  const req = httpRequest(
+    `http://127.0.0.1:${port}/media/${mediaId}/progress/search?is4k=false`,
+    { method: 'POST', headers: { 'x-user': String(user) } }
+  );
+  req.end();
+  const [res] = (await once(req, 'response')) as [IncomingMessage];
+  res.resume();
+  server.close();
+  return res;
+}
+
+describe('POST /media/:mediaId/progress/search', () => {
+  it('lets managers search any time, REQUEST_SEARCH once per cooldown and nobody else', async () => {
+    getSettings().radarr = [
+      { id: 0, name: 'Radarr', hostname: 'localhost', port: 7878, apiKey: 'k' },
+    ] as RadarrSettings[];
+    const commands = mock.method(
+      ServarrBase.prototype,
+      'runCommand',
+      async () => undefined
+    );
+    const monitor = mock.method(
+      RadarrAPI.prototype,
+      'monitorMovie',
+      async () => undefined
+    );
+    const users = getRepository(User);
+    const friend = await users.findOneByOrFail({ email: 'demo@seerr.dev' });
+    const user = (name: string, permissions: number) =>
+      users.save(
+        Object.assign(new User(), {
+          email: `${name}@seerr.dev`,
+          username: name,
+          avatar: '',
+          permissions,
+        })
+      );
+    const searcher = await user(
+      'searcher',
+      Permission.REQUEST | Permission.REQUEST_SEARCH
+    );
+    const manager = await user('manager', Permission.MANAGE_REQUESTS);
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 4,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 42,
+      })
+    );
+    await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy: friend,
+        modifiedBy: friend,
+      })
+    );
+
+    assert.equal((await postSearch(media.id, friend.id)).statusCode, 403);
+    assert.equal((await postSearch(media.id, searcher.id)).statusCode, 204);
+    assert.deepEqual(commands.mock.calls[0].arguments, [
+      'MoviesSearch',
+      { movieIds: [42] },
+    ]);
+    assert.deepEqual(monitor.mock.calls[0].arguments, [42]);
+    const limited = await postSearch(media.id, searcher.id);
+    assert.equal(limited.statusCode, 429);
+    const retryAfter = Number(limited.headers['retry-after']);
+    assert.ok(retryAfter > 890 && retryAfter <= 900, String(retryAfter));
+    assert.equal((await postSearch(media.id, manager.id)).statusCode, 204);
+    assert.equal((await postSearch(media.id, manager.id)).statusCode, 204);
+    assert.equal((await postSearch(media.id, 1)).statusCode, 204);
+    assert.equal(commands.mock.callCount(), 4);
+
+    const searchFor = async (id: number) => {
+      const stream = await openStream(
+        `/media/${media.id}/progress?is4k=false`,
+        id
+      );
+      const { search } = parse(await stream.next());
+      await stream.close();
+      return search;
+    };
+    const limitedSearch = await searchFor(searcher.id);
+    assert.equal(limitedSearch.allowed, true);
+    assert.ok(Date.parse(limitedSearch.retryAfter) > Date.now());
+    const managerSearch = await searchFor(manager.id);
+    assert.equal(managerSearch.allowed, true);
+    assert.equal(managerSearch.retryAfter, undefined);
+    assert.equal(managerSearch.running, false);
+    progressTracker.start({ mediaId: media.id, is4k: false });
+    progressTracker.setSearch(media.id, false, { searchCommandId: 7 });
+    assert.equal((await searchFor(manager.id)).running, true);
+    assert.equal((await searchFor(friend.id)).allowed, false);
+    commands.mock.restore();
+    monitor.mock.restore();
+  });
+
+  it('searches whole seasons without files and the missing aired episodes', async () => {
+    getSettings().sonarr = [
+      { id: 0, name: 'Sonarr', hostname: 'localhost', port: 8989, apiKey: 'k' },
+    ] as SonarrSettings[];
+    const commands = mock.method(
+      ServarrBase.prototype,
+      'runCommand',
+      async () => undefined
+    );
+    const aired = '2026-01-01T00:00:00Z';
+    const episode = (
+      id: number,
+      seasonNumber: number,
+      hasFile: boolean,
+      airDateUtc = aired
+    ) => ({ id, seasonNumber, hasFile, airDateUtc });
+    const episodes = mock.method(
+      SonarrAPI.prototype,
+      'getEpisodes',
+      async () => [
+        episode(1, 1, false),
+        episode(2, 1, false),
+        episode(3, 2, true),
+        episode(4, 2, false),
+        episode(5, 2, false, '2099-01-01T00:00:00Z'),
+        episode(6, 3, false),
+      ]
+    );
+    const monitor = mock.method(
+      SonarrAPI.prototype,
+      'monitorSeasons',
+      async () => undefined
+    );
+    const admin = await getRepository(User).findOneByOrFail({ id: 1 });
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 5,
+        tvdbId: 6,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 34,
+      })
+    );
+    await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy: admin,
+        modifiedBy: admin,
+        seasons: [1, 2].map(
+          (seasonNumber) => new SeasonRequest({ seasonNumber })
+        ),
+      })
+    );
+
+    assert.equal((await postSearch(media.id, admin.id)).statusCode, 204);
+    assert.deepEqual(
+      commands.mock.calls.map((c) => c.arguments),
+      [
+        ['SeasonSearch', { seriesId: 34, seasonNumber: 1 }],
+        ['EpisodeSearch', { episodeIds: [4] }],
+      ]
+    );
+    const [seriesId, seasons] = monitor.mock.calls[0].arguments;
+    assert.deepEqual([seriesId, seasons], [34, [1, 2]]);
+    commands.mock.restore();
+    episodes.mock.restore();
+    monitor.mock.restore();
+  });
+
+  it('returns 404 without an open request', async () => {
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 7,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.PROCESSING,
+      })
+    );
+    assert.equal((await postSearch(media.id, 1)).statusCode, 404);
   });
 });

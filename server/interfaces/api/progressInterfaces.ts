@@ -16,7 +16,7 @@ export interface ProgressStep {
   estimateMs?: number; // duration at RequestProgress.estimatePercentile; absent without samples
   estimateRangeMs?: [number, number]; // 95% confidence interval of estimateMs; only when enabled and enough samples
   error?: string; // set when status is 'failed'
-  detail?: string; // searching: latest Radarr/Sonarr command message; grabbed: release title(s)
+  detail?: string; // searching while running: 'Searching (N indexers)' or the waiting text; grabbed: release title(s)
 }
 
 export interface ProgressDownload {
@@ -38,6 +38,15 @@ export interface RequestProgress {
   estimatePercentile: EstimatePercentile;
   playUrl?: string; // Jellyfin deep link once playable
   downloads?: ProgressDownload[]; // queue items of this request while grabbed
+  search?: ProgressSearch; // computed per viewer
+}
+
+// Manual search via POST /api/v1/media/:mediaId/progress/search
+export interface ProgressSearch {
+  allowed: boolean; // the viewer may search (manager, or the requester) and it is not playable yet
+  retryAfter?: string; // ISO; set while the requester cooldown holds
+  lastSearchedAt?: string; // ISO; last search by Radarr/Sonarr for the requested scope
+  running: boolean; // a Radarr/Sonarr search command for the media is in flight
 }
 
 export type EstimatePercentile = 50 | 90 | 95 | 99;
