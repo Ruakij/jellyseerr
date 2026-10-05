@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import type { HistoryRecord } from '@server/api/servarr/base';
 import RadarrAPI from '@server/api/servarr/radarr';
 import type { CommandEvent } from '@server/api/servarr/signalr';
-import { MediaStatus, MediaType } from '@server/constants/media';
+import SonarrAPI from '@server/api/servarr/sonarr';
+import {
+  MediaRequestStatus,
+  MediaStatus,
+  MediaType,
+} from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
+import { MediaRequest } from '@server/entity/MediaRequest';
+import SeasonRequest from '@server/entity/SeasonRequest';
+import { User } from '@server/entity/User';
 import {
   handleCommand,
   reconcileJellyfin,
@@ -21,17 +29,21 @@ import { setupTestDb } from '@server/test/db';
 
 let history: Partial<HistoryRecord>[] = [];
 let queue: Record<string, unknown>[] = [];
-for (const [name, impl] of [
-  ['getHistory', async () => history],
-  ['getQueue', async () => queue],
-] as const) {
-  // Instance arrow properties: the getter shadows them, the setter swallows the constructor's.
-  Object.defineProperty(RadarrAPI.prototype, name, {
-    set() {},
-    get: () => impl,
-    configurable: true,
-  });
+for (const Api of [RadarrAPI, SonarrAPI]) {
+  for (const [name, impl] of [
+    ['getHistory', async () => history],
+    ['getQueue', async () => queue],
+  ] as const) {
+    // Instance arrow properties: the getter shadows them, the setter swallows the constructor's.
+    Object.defineProperty(Api.prototype, name, {
+      set() {},
+      get: () => impl,
+      configurable: true,
+    });
+  }
 }
+
+mock.method(MediaRequest, 'sendNotification', async () => undefined);
 
 setupTestDb();
 
@@ -78,6 +90,90 @@ describe('refreshServer', () => {
     assert.equal(statusOf(tracker, media.id, 'importing').finishedAt, imported);
     assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
     assert.equal(tracker.entry(media.id, false)!.downloadId, 'D');
+  });
+
+  it('ignores history from before the request', async () => {
+    const { media, tracker } = await setup();
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    history = [
+      { eventType: 'grabbed', date: earlier, movieId: 42, downloadId: 'D' },
+      { eventType: 'downloadFolderImported', date: earlier, movieId: 42 },
+    ];
+
+    await refreshServer('radarr-0', tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'pending');
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'pending');
+  });
+
+  it('counts only episodes of the requested seasons', async () => {
+    getSettings().sonarr = [
+      { id: 0, name: 'Sonarr', hostname: 'localhost', port: 8989, apiKey: 'k' },
+    ] as SonarrSettings[];
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 1,
+        tvdbId: 2,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 34,
+      })
+    );
+    const request = await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: await getRepository(User).findOneByOrFail({ id: 1 }),
+        seasons: [new SeasonRequest({ seasonNumber: 2 })],
+      })
+    );
+    const tracker = new ProgressTracker(new StepStats());
+    tracker.start({
+      mediaId: media.id,
+      is4k: false,
+      requestId: request.id,
+      serverKey: 'sonarr-0',
+    });
+    const now = Date.now();
+    const at = (s: number) => new Date(now + s * 1000).toISOString();
+    const episode = (seasonNumber: number) => ({
+      seasonNumber,
+      episodeNumber: 1,
+    });
+    history = [
+      {
+        eventType: 'grabbed',
+        date: at(1),
+        seriesId: 34,
+        downloadId: 'S1',
+        sourceTitle: 'Show.S01E01',
+        episode: episode(1),
+      },
+      {
+        eventType: 'downloadFolderImported',
+        date: at(2),
+        seriesId: 34,
+        downloadId: 'S1',
+        episode: episode(1),
+      },
+      {
+        eventType: 'grabbed',
+        date: at(3),
+        seriesId: 34,
+        downloadId: 'S2',
+        sourceTitle: 'Show.S02',
+        episode: episode(2),
+      },
+    ];
+
+    await refreshServer('sonarr-0', tracker);
+
+    const grabbed = statusOf(tracker, media.id, 'grabbed');
+    assert.equal(grabbed.finishedAt, at(3));
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'running');
   });
 
   it('fails a blocked import as manual interaction', async () => {

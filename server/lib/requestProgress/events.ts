@@ -13,6 +13,7 @@ import { MediaStatus, MediaType } from '@server/constants/media';
 import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
+import { MediaRequest } from '@server/entity/MediaRequest';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
 import stepStats from '@server/lib/requestProgress/stepStats';
@@ -187,6 +188,35 @@ export async function handleCommand(
   if (event.status === 'completed') serverRefresh.push(key);
 }
 
+interface ArrItem {
+  movieId?: number;
+  seriesId?: number;
+  episode?: { seasonNumber: number };
+}
+
+/** Seasons of the request behind each tracked series; absent when no request is found. */
+async function requestedSeasons(
+  entries: TrackedProgress[]
+): Promise<Map<TrackedProgress, Set<number>>> {
+  const requests = await getRepository(MediaRequest).find({
+    where: { media: { id: In(entries.map((e) => e.mediaId)) } },
+    order: { id: 'DESC' },
+  });
+  const seasons = new Map<TrackedProgress, Set<number>>();
+  for (const entry of entries) {
+    // Entries started from a search event carry no request id; the newest request stands in.
+    const request = requests.find((r) =>
+      entry.requestId !== undefined
+        ? r.id === entry.requestId
+        : r.media.id === entry.mediaId && r.is4k === entry.is4k
+    );
+    if (request) {
+      seasons.set(entry, new Set(request.seasons.map((s) => s.seasonNumber)));
+    }
+  }
+  return seasons;
+}
+
 /**
  * Brings the tracked media of one Radarr/Sonarr server up to date from its history (grab and
  * import times, download ids) and queue (blocked or failed downloads).
@@ -212,23 +242,34 @@ export async function refreshServer(
   const since = Math.min(
     ...entries.map((e) => e.steps.requested.startedAt ?? Date.now())
   );
-  const [history, queue] = await Promise.all([
+  const [history, queue, seasons] = await Promise.all([
     api.getHistory({ since: new Date(since) }),
     api.getQueue(),
+    type === 'sonarr' ? requestedSeasons(entries) : undefined,
   ]);
-  const arrIdOf = (r: { movieId?: number; seriesId?: number }) =>
-    type === 'radarr' ? r.movieId : r.seriesId;
+  // Records of the same series can belong to seasons another request asked for.
+  const entriesOf = (item: ArrItem) =>
+    (
+      byArrId.get((type === 'radarr' ? item.movieId : item.seriesId) ?? -1) ??
+      []
+    ).filter((entry) => {
+      const wanted = seasons?.get(entry);
+      const season = item.episode?.seasonNumber;
+      return !wanted || season === undefined || wanted.has(season);
+    });
 
   const ascending = [...history].sort(
     (a, b) => Date.parse(a.date) - Date.parse(b.date)
   );
   for (const record of ascending as HistoryRecord[]) {
     const at = Date.parse(record.date);
-    for (const entry of byArrId.get(arrIdOf(record) ?? -1) ?? []) {
+    for (const entry of entriesOf(record)) {
       const { mediaId, is4k } = entry;
+      // The history window starts at the oldest tracked request, so it holds older records too.
       if (
-        record.downloadId &&
-        entry.staleDownloadIds.includes(record.downloadId)
+        at < (entry.steps.requested.startedAt ?? 0) ||
+        (record.downloadId &&
+          entry.staleDownloadIds.includes(record.downloadId))
       ) {
         continue;
       }
@@ -244,10 +285,7 @@ export async function refreshServer(
     }
   }
 
-  for (const item of queue as ((typeof queue)[number] & {
-    movieId?: number;
-    seriesId?: number;
-  })[]) {
+  for (const item of queue as ((typeof queue)[number] & ArrItem)[]) {
     const state = item.trackedDownloadState;
     const reason =
       (state === 'importBlocked' || state === 'importPending') &&
@@ -257,7 +295,7 @@ export async function refreshServer(
           ? DOWNLOAD_FAILED
           : undefined;
     if (!reason) continue;
-    for (const entry of byArrId.get(arrIdOf(item) ?? -1) ?? []) {
+    for (const entry of entriesOf(item)) {
       if (
         entry.steps.importing.status !== 'done' &&
         !entry.staleDownloadIds.includes(item.downloadId)
