@@ -1,0 +1,293 @@
+import {
+  ArrowDownIcon,
+  CheckIcon,
+  FilmIcon,
+  FolderArrowDownIcon,
+  MagnifyingGlassIcon,
+  PlayIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/solid';
+import type {
+  ProgressDownload,
+  ProgressStep,
+  ProgressStepKey,
+} from '@server/interfaces/api/progressInterfaces';
+
+// Overall share downloaded, undefined while no size is known
+export const downloadFraction = (downloads?: ProgressDownload[]) => {
+  const size = (downloads ?? []).reduce((sum, d) => sum + d.size, 0);
+  const left = (downloads ?? []).reduce((sum, d) => sum + d.sizeLeft, 0);
+  return size > 0 ? (size - left) / size : undefined;
+};
+
+const stepIcons: Record<ProgressStepKey, typeof CheckIcon> = {
+  requested: CheckIcon,
+  searching: MagnifyingGlassIcon,
+  grabbed: ArrowDownIcon,
+  importing: FolderArrowDownIcon,
+  inJellyfin: FilmIcon,
+  playable: PlayIcon,
+};
+
+const DARK = '#111827';
+const delay = (i: number, step: number) => ({
+  animationDelay: `${i * step}s`,
+});
+
+// One sweep of the search icon over the three indexer blocks, a third per block;
+// ps-glide and ps-light in globals.css are keyed to these thirds
+const SEARCH_CYCLE = 2.4;
+// A negative delay starts every block in phase instead of idle for its offset
+const searchTiming = (i: number) => ({
+  animationDelay: `${(i / 3 - 1) * SEARCH_CYCLE}s`,
+  animationDuration: `${SEARCH_CYCLE}s`,
+});
+
+// Animated scenes; keyframes and the .ps-* classes live in globals.css
+const scenes: Record<
+  ProgressStepKey,
+  (props: { fraction?: number }) => React.ReactNode
+> = {
+  // only runs while the request waits for approval
+  requested: () => (
+    <>
+      <rect
+        x="6"
+        y="4"
+        width="22"
+        height="30"
+        rx="2"
+        fill="currentColor"
+        opacity=".45"
+      />
+      <path
+        d="M11 12h12m-12 6h12m-12 6h7"
+        stroke={DARK}
+        strokeOpacity=".5"
+        strokeWidth="2"
+      />
+      {[0, 1, 2].map((i) => (
+        <circle
+          key={i}
+          className="ps-card"
+          style={delay(i, 0.8)}
+          cx={10 + i * 7}
+          cy="42"
+          r="2"
+          fill="currentColor"
+        />
+      ))}
+      <circle cx="34" cy="31" r="11" fill="currentColor" />
+      <path
+        d="M34 31h5"
+        stroke={DARK}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+      <path
+        className="ps-hand"
+        d="M34 31v-8"
+        stroke={DARK}
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </>
+  ),
+  searching: () => (
+    <>
+      {[0, 1, 2].map((i) => (
+        <g key={i}>
+          <rect
+            className="ps-card"
+            style={searchTiming(i)}
+            x={6 + i * 14}
+            y="24"
+            width="10"
+            height="12"
+            rx="2"
+            fill="currentColor"
+            opacity=".6"
+          />
+          <circle
+            className="ps-fall"
+            style={searchTiming(i)}
+            cx={11 + i * 14}
+            cy="40"
+            r="1.8"
+            fill="currentColor"
+          />
+        </g>
+      ))}
+      <g className="ps-glide" style={searchTiming(0)}>
+        <circle
+          cx="11"
+          cy="12"
+          r="6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+        />
+        <path
+          d="m15.5 16.5 4 4"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      </g>
+    </>
+  ),
+  grabbed: ({ fraction }) => (
+    <>
+      {[0, 1, 2].map((i) => (
+        <rect
+          key={i}
+          className="ps-stream"
+          style={delay(i, 0.4)}
+          x={14 + i * 8}
+          y="6"
+          width="4"
+          height="4"
+          rx="1"
+          fill="currentColor"
+        />
+      ))}
+      <rect
+        x="8"
+        y="26"
+        width="32"
+        height="16"
+        rx="3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+      />
+      {fraction === undefined ? (
+        <rect
+          className="ps-slosh"
+          x="11"
+          y="29"
+          width="26"
+          height="10"
+          fill="currentColor"
+          opacity=".6"
+        />
+      ) : (
+        <rect
+          x="11"
+          y={39 - 10 * fraction}
+          width="26"
+          height={10 * fraction}
+          fill="currentColor"
+          opacity=".6"
+          style={{ transition: 'all .7s ease-out' }}
+        />
+      )}
+    </>
+  ),
+  importing: () => (
+    <>
+      <path d="M6 14h12l4 4h20v22H6z" fill="currentColor" opacity=".45" />
+      <g className="ps-file">
+        <rect
+          x="18"
+          y="6"
+          width="12"
+          height="15"
+          rx="1.5"
+          fill="currentColor"
+        />
+        <path d="M21 11h6m-6 4h6" stroke={DARK} strokeOpacity=".4" />
+      </g>
+      <path className="ps-lid" d="M6 24h36v16H6z" fill="currentColor" />
+      <rect
+        className="ps-tag"
+        x="29"
+        y="29"
+        width="9"
+        height="5"
+        rx="1.5"
+        fill={DARK}
+        opacity=".6"
+      />
+    </>
+  ),
+  inJellyfin: () => (
+    <>
+      <g className="ps-spin">
+        <circle cx="14" cy="22" r="10" fill="currentColor" />
+        {[
+          [14, 17],
+          [19, 22],
+          [14, 27],
+          [9, 22],
+        ].map(([cx, cy]) => (
+          <circle
+            key={`${cx}-${cy}`}
+            cx={cx}
+            cy={cy}
+            r="2.2"
+            fill={DARK}
+            opacity=".7"
+          />
+        ))}
+      </g>
+      <path d="M26 40h18" stroke="currentColor" strokeWidth="2.5" />
+      {[0, 1, 2].map((i) => (
+        <rect
+          key={i}
+          className="ps-slot"
+          style={delay(i, 0.4)}
+          x={27 + i * 6}
+          y="27"
+          width="4.5"
+          height="11"
+          rx=".8"
+          fill="currentColor"
+        />
+      ))}
+    </>
+  ),
+  playable: () => (
+    <>
+      <circle
+        className="ps-ripple"
+        cx="24"
+        cy="24"
+        r="16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        opacity="0"
+      />
+      <g className="ps-grow">
+        <circle cx="24" cy="24" r="16" fill="currentColor" />
+        <path d="M20 16v16l12-8z" fill={DARK} />
+      </g>
+    </>
+  ),
+};
+
+interface StepGraphicProps {
+  step: ProgressStep;
+  downloads?: ProgressDownload[];
+  className?: string;
+}
+
+// Animated scene while a step runs (and once when ready), its icon otherwise
+const StepGraphic = ({ step, downloads, className }: StepGraphicProps) => {
+  if (
+    step.status === 'running' ||
+    (step.key === 'playable' && step.status === 'done')
+  ) {
+    const Scene = scenes[step.key];
+    return (
+      <svg viewBox="0 0 48 48" className={`ps ${className ?? ''}`}>
+        <Scene fraction={downloadFraction(downloads)} />
+      </svg>
+    );
+  }
+  const Icon = step.status === 'failed' ? XMarkIcon : stepIcons[step.key];
+  return <Icon className={className} />;
+};
+
+export default StepGraphic;

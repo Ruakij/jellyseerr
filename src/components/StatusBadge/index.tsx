@@ -2,6 +2,7 @@ import Spinner from '@app/assets/spinner.svg';
 import Badge from '@app/components/Common/Badge';
 import Tooltip from '@app/components/Common/Tooltip';
 import DownloadBlock from '@app/components/DownloadBlock';
+import { RequestProgressTrigger } from '@app/components/RequestProgressModal';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
@@ -32,9 +33,41 @@ interface StatusBadgeProps {
   mediaType?: 'movie' | 'tv';
   title?: string | string[];
   statusLabelOverride?: string;
+  // opens the request progress pop-up while pending or processing
+  mediaId?: number;
 }
 
-const StatusBadge = ({
+const showsProgress = ({ mediaId, status }: StatusBadgeProps) =>
+  !!mediaId &&
+  (status === MediaStatus.PENDING || status === MediaStatus.PROCESSING);
+
+const StatusBadge = (props: StatusBadgeProps) =>
+  showsProgress(props) ? (
+    <RequestProgressTrigger
+      mediaId={props.mediaId}
+      is4k={props.is4k}
+      subTitle={Array.isArray(props.title) ? props.title[0] : props.title}
+    >
+      {(open) => (
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          className="inline-flex rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 [&_*]:!cursor-pointer"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            open();
+          }}
+        >
+          <StatusBadgeContent {...props} />
+        </button>
+      )}
+    </RequestProgressTrigger>
+  ) : (
+    <StatusBadgeContent {...props} />
+  );
+
+const StatusBadgeContent = ({
   status,
   downloadItem = [],
   is4k = false,
@@ -45,6 +78,7 @@ const StatusBadge = ({
   mediaType,
   title,
   statusLabelOverride,
+  mediaId,
 }: StatusBadgeProps) => {
   const intl = useIntl();
   const { hasPermission } = useUser();
@@ -57,7 +91,9 @@ const StatusBadge = ({
     return Math.round(((media?.size - media?.sizeLeft) / media?.size) * 100);
   };
 
-  if (
+  if (showsProgress({ mediaId, status })) {
+    // the click opens the progress pop-up
+  } else if (
     mediaType &&
     plexUrl &&
     hasPermission(
