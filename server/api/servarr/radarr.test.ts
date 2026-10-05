@@ -222,3 +222,34 @@ describe('ServarrBase getItemHistory', () => {
     ]);
   });
 });
+
+describe('RadarrAPI monitorMovie', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('sets an unmonitored movie to monitored', async () => {
+    const radarr = buildRadarr();
+    mock.method(getAxios(radarr), 'get', async () => ({
+      data: { id: 42, monitored: false },
+    }));
+    const put = mock.method(getAxios(radarr), 'put', async () => ({}));
+
+    await radarr.monitorMovie(42);
+
+    assert.deepEqual(put.mock.calls[0].arguments, [
+      '/movie',
+      { id: 42, monitored: true },
+    ]);
+  });
+
+  it('leaves a monitored movie alone', async () => {
+    const radarr = buildRadarr();
+    mock.method(getAxios(radarr), 'get', async () => ({
+      data: { id: 42, monitored: true },
+    }));
+    const put = mock.method(getAxios(radarr), 'put', async () => ({}));
+
+    await radarr.monitorMovie(42);
+
+    assert.equal(put.mock.callCount(), 0);
+  });
+});

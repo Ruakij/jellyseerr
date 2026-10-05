@@ -352,7 +352,7 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
     await this.runCommand('RefreshMonitoredDownloads', {});
   }
 
-  protected async runCommand(
+  public async runCommand(
     commandName: string,
     options: Record<string, unknown>
   ): Promise<void> {

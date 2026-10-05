@@ -104,6 +104,18 @@ describe('ProgressTracker', () => {
     assert.equal(tracker.active().length, 1);
   });
 
+  it('shows the failure reason of a failed request over the send error', () => {
+    const { tracker } = setup();
+    tracker.start({ mediaId: 1, is4k: false });
+    tracker.fail(1, false, 'Sending the request to Radarr failed');
+    tracker.failRequest(1, false, 'connect ECONNREFUSED');
+    const failed = tracker
+      .get(1, false)!
+      .steps.find((s) => s.key === 'searching')!;
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.error, 'connect ECONNREFUSED');
+  });
+
   it('ignores events for untracked media and keeps 4k separate', () => {
     const { tracker, changes } = setup();
     tracker.advance(1, false, 'grabbed');
