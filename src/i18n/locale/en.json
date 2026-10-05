@@ -522,6 +522,7 @@
   "components.RequestCard.tmdbid": "TMDB ID",
   "components.RequestCard.tvdbid": "TheTVDB ID",
   "components.RequestCard.unknowntitle": "Unknown Title",
+  "components.RequestFailedBadge.failedReason": "Failed: {reason}",
   "components.RequestFailedBadge.retryingAt": "Retrying at {time}",
   "components.RequestList.RequestItem.cancelRequest": "Cancel Request",
   "components.RequestList.RequestItem.deleterequest": "Delete Request",
