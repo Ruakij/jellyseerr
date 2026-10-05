@@ -910,13 +910,13 @@ class Settings {
           schedule: '0 0 5 * * *',
         },
         'download-sync': {
-          schedule: '0 * * * * *',
+          schedule: '0 */10 * * * *',
         },
         'download-sync-reset': {
           schedule: '0 0 1 * * *',
         },
         'jellyfin-recently-added-scan': {
-          schedule: '0 */5 * * * *',
+          schedule: '0 */10 * * * *',
         },
         'jellyfin-full-scan': {
           schedule: '0 0 3 * * *',
