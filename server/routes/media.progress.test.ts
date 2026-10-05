@@ -196,7 +196,7 @@ describe('GET /media/:mediaId/progress', () => {
     );
     assert.equal(step('searching').finishedAt, '2026-10-05T10:05:00.000Z');
     assert.equal(step('grabbed').detail, 'Movie.2026.1080p');
-    assert.equal(step('importing').status, 'running');
+    assert.equal(step('grabbed').status, 'running');
   });
 
   it('returns 404 for unknown media', async () => {
