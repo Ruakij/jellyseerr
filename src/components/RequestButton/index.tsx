@@ -1,15 +1,10 @@
-import Button from '@app/components/Common/Button';
 import ButtonWithDropdown from '@app/components/Common/ButtonWithDropdown';
 import RequestModal from '@app/components/RequestModal';
-import RequestProgressModal, {
-  isProgressActive,
-} from '@app/components/RequestProgressModal';
-import useRequestProgress from '@app/hooks/useRequestProgress';
 import useSettings from '@app/hooks/useSettings';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
-import { ArrowDownTrayIcon, PlayIcon } from '@heroicons/react/24/outline';
+import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import {
   CheckIcon,
   InformationCircleIcon,
@@ -24,12 +19,6 @@ import { useIntl } from 'react-intl';
 import { mutate } from 'swr';
 
 const messages = defineMessages('components.RequestButton', {
-  requestandwatch: 'Request & Watch',
-  requestonly: 'Request only',
-  requestmoreandwatch: 'Request More & Watch',
-  request4kandwatch: 'Request in 4K & Watch',
-  requestmore4kandwatch: 'Request More in 4K & Watch',
-  showprogress: 'Show Progress',
   viewrequest: 'View Request',
   viewrequest4k: 'View 4K Request',
   requestmore: 'Request More',
@@ -78,32 +67,6 @@ const RequestButton = ({
   const [showRequestModal, setShowRequestModal] = useState(false);
   const [showRequest4kModal, setShowRequest4kModal] = useState(false);
   const [editRequest, setEditRequest] = useState(false);
-  const [watchAfterRequest, setWatchAfterRequest] = useState(false);
-  const [tracked, setTracked] = useState<{ mediaId?: number; is4k: boolean }>();
-  const [showProgress, setShowProgress] = useState(false);
-  const inFlight = (status?: MediaStatus) =>
-    status === MediaStatus.PENDING || status === MediaStatus.PROCESSING;
-  const progressTarget =
-    tracked ??
-    (inFlight(media?.status)
-      ? { mediaId: media?.id, is4k: false }
-      : inFlight(media?.status4k)
-        ? { mediaId: media?.id, is4k: true }
-        : undefined);
-  const progress = useRequestProgress(
-    progressTarget?.mediaId,
-    progressTarget?.is4k ?? false
-  );
-
-  const requestCompleted =
-    (is4k: boolean) => (_: unknown, mediaId?: number) => {
-      onUpdate();
-      (is4k ? setShowRequest4kModal : setShowRequestModal)(false);
-      if (watchAfterRequest) {
-        setTracked({ mediaId: mediaId ?? media?.id, is4k });
-        setShowProgress(true);
-      }
-    };
 
   // All pending requests
   const activeRequests = media?.requests.filter(
@@ -304,28 +267,6 @@ const RequestButton = ({
     }
   }
 
-  const pushRequest = (
-    id: string,
-    is4k: boolean,
-    watchText: string,
-    onlyText: string
-  ) => {
-    const open = (watch: boolean) => () => {
-      setEditRequest(false);
-      setWatchAfterRequest(watch);
-      (is4k ? setShowRequest4kModal : setShowRequestModal)(true);
-    };
-    buttons.push(
-      {
-        id: `${id}-watch`,
-        text: watchText,
-        action: open(true),
-        svg: <PlayIcon />,
-      },
-      { id, text: onlyText, action: open(false), svg: <ArrowDownTrayIcon /> }
-    );
-  };
-
   // Standard request button
   if (
     (!media ||
@@ -341,12 +282,15 @@ const RequestButton = ({
       { type: 'or' }
     )
   ) {
-    pushRequest(
-      'request',
-      false,
-      intl.formatMessage(messages.requestandwatch),
-      intl.formatMessage(messages.requestonly)
-    );
+    buttons.push({
+      id: 'request',
+      text: intl.formatMessage(globalMessages.request),
+      action: () => {
+        setEditRequest(false);
+        setShowRequestModal(true);
+      },
+      svg: <ArrowDownTrayIcon />,
+    });
   } else if (
     mediaType === 'tv' &&
     (!activeRequest || activeRequest.requestedBy.id !== user?.id) &&
@@ -357,12 +301,15 @@ const RequestButton = ({
     media.status !== MediaStatus.BLOCKLISTED &&
     !isShowComplete
   ) {
-    pushRequest(
-      'request-more',
-      false,
-      intl.formatMessage(messages.requestmoreandwatch),
-      intl.formatMessage(messages.requestmore)
-    );
+    buttons.push({
+      id: 'request-more',
+      text: intl.formatMessage(messages.requestmore),
+      action: () => {
+        setEditRequest(false);
+        setShowRequestModal(true);
+      },
+      svg: <ArrowDownTrayIcon />,
+    });
   }
 
   // 4K request button
@@ -382,12 +329,15 @@ const RequestButton = ({
     ((settings.currentSettings.movie4kEnabled && mediaType === 'movie') ||
       (settings.currentSettings.series4kEnabled && mediaType === 'tv'))
   ) {
-    pushRequest(
-      'request4k',
-      true,
-      intl.formatMessage(messages.request4kandwatch),
-      intl.formatMessage(globalMessages.request4k)
-    );
+    buttons.push({
+      id: 'request4k',
+      text: intl.formatMessage(globalMessages.request4k),
+      action: () => {
+        setEditRequest(false);
+        setShowRequest4kModal(true);
+      },
+      svg: <ArrowDownTrayIcon />,
+    });
   } else if (
     mediaType === 'tv' &&
     (!active4kRequest || active4kRequest.requestedBy.id !== user?.id) &&
@@ -399,39 +349,34 @@ const RequestButton = ({
     !is4kShowComplete &&
     settings.currentSettings.series4kEnabled
   ) {
-    pushRequest(
-      'request-more-4k',
-      true,
-      intl.formatMessage(messages.requestmore4kandwatch),
-      intl.formatMessage(messages.requestmore4k)
-    );
+    buttons.push({
+      id: 'request-more-4k',
+      text: intl.formatMessage(messages.requestmore4k),
+      action: () => {
+        setEditRequest(false);
+        setShowRequest4kModal(true);
+      },
+      svg: <ArrowDownTrayIcon />,
+    });
   }
 
   const [buttonOne, ...others] = buttons;
 
+  if (!buttonOne) {
+    return null;
+  }
+
   return (
     <>
-      <RequestProgressModal
-        show={showProgress}
-        progress={progress}
-        onClose={() => setShowProgress(false)}
-      />
-      {isProgressActive(progress) && (
-        <Button
-          buttonType="ghost"
-          className="ml-2"
-          onClick={() => setShowProgress(true)}
-        >
-          <PlayIcon />
-          <span>{intl.formatMessage(messages.showprogress)}</span>
-        </Button>
-      )}
       <RequestModal
         tmdbId={tmdbId}
         show={showRequestModal}
         type={mediaType}
         editRequest={editRequest ? activeRequest : undefined}
-        onComplete={requestCompleted(false)}
+        onComplete={() => {
+          onUpdate();
+          setShowRequestModal(false);
+        }}
         onCancel={() => setShowRequestModal(false)}
       />
       <RequestModal
@@ -440,33 +385,34 @@ const RequestButton = ({
         type={mediaType}
         editRequest={editRequest ? active4kRequest : undefined}
         is4k
-        onComplete={requestCompleted(true)}
+        onComplete={() => {
+          onUpdate();
+          setShowRequest4kModal(false);
+        }}
         onCancel={() => setShowRequest4kModal(false)}
       />
-      {buttonOne && (
-        <ButtonWithDropdown
-          text={
-            <>
-              {buttonOne.svg}
-              <span>{buttonOne.text}</span>
-            </>
-          }
-          onClick={buttonOne.action}
-          className="ml-2"
-        >
-          {others && others.length > 0
-            ? others.map((button) => (
-                <ButtonWithDropdown.Item
-                  onClick={button.action}
-                  key={`request-option-${button.id}`}
-                >
-                  {button.svg}
-                  <span>{button.text}</span>
-                </ButtonWithDropdown.Item>
-              ))
-            : null}
-        </ButtonWithDropdown>
-      )}
+      <ButtonWithDropdown
+        text={
+          <>
+            {buttonOne.svg}
+            <span>{buttonOne.text}</span>
+          </>
+        }
+        onClick={buttonOne.action}
+        className="ml-2"
+      >
+        {others && others.length > 0
+          ? others.map((button) => (
+              <ButtonWithDropdown.Item
+                onClick={button.action}
+                key={`request-option-${button.id}`}
+              >
+                {button.svg}
+                <span>{button.text}</span>
+              </ButtonWithDropdown.Item>
+            ))
+          : null}
+      </ButtonWithDropdown>
     </>
   );
 };

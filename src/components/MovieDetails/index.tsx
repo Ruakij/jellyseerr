@@ -510,6 +510,7 @@ const MovieDetails = ({ movie }: MovieDetailsProps) => {
           <div className="media-status">
             <StatusBadge
               status={data.mediaInfo?.status}
+              mediaId={data.mediaInfo?.id}
               downloadItem={data.mediaInfo?.downloadStatus}
               title={data.title}
               inProgress={(data.mediaInfo?.downloadStatus ?? []).length > 0}
@@ -531,6 +532,7 @@ const MovieDetails = ({ movie }: MovieDetailsProps) => {
               ) && (
                 <StatusBadge
                   status={data.mediaInfo?.status4k}
+                  mediaId={data.mediaInfo?.id}
                   downloadItem={data.mediaInfo?.downloadStatus4k}
                   title={data.title}
                   is4k
