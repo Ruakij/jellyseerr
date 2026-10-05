@@ -23,6 +23,7 @@ import type {
 import BaseScanner from '@server/lib/scanners/baseScanner';
 import type { Library } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
+import logger from '@server/logger';
 import { getHostname } from '@server/utils/getHostname';
 import { uniqWith } from 'lodash';
 
@@ -469,24 +470,7 @@ class JellyfinScanner
     const sessionId = this.startRun();
 
     try {
-      const userRepository = getRepository(User);
-      const admin = await userRepository.findOne({
-        where: { id: 1 },
-        select: ['id', 'jellyfinUserId', 'jellyfinDeviceId'],
-        order: { id: 'ASC' },
-      });
-
-      if (!admin) {
-        return this.log('No admin configured. Jellyfin sync skipped.', 'warn');
-      }
-
-      this.jfClient = new JellyfinAPI(
-        getHostname(),
-        settings.jellyfin.apiKey,
-        admin.jellyfinDeviceId
-      );
-
-      this.jfClient.setUserId(admin.jellyfinUserId ?? '');
+      if (!(await this.createClient())) return;
 
       this.libraries = settings.jellyfin.libraries.filter(
         (library) => library.enabled
@@ -544,6 +528,66 @@ class JellyfinScanner
     }
   }
 
+  private async createClient(): Promise<boolean> {
+    const admin = await getRepository(User).findOne({
+      where: { id: 1 },
+      select: ['id', 'jellyfinUserId', 'jellyfinDeviceId'],
+      order: { id: 'ASC' },
+    });
+
+    if (!admin) {
+      this.log('No admin configured. Jellyfin sync skipped.', 'warn');
+      return false;
+    }
+
+    this.jfClient = new JellyfinAPI(
+      getHostname(),
+      getSettings().jellyfin.apiKey,
+      admin.jellyfinDeviceId
+    );
+    this.jfClient.setUserId(admin.jellyfinUserId ?? '');
+    return true;
+  }
+
+  /**
+   * Processes the given Jellyfin items only, as reported by the websocket. Episodes and seasons
+   * are processed through their series.
+   */
+  public async runItems(ids: string[]): Promise<void> {
+    const sessionId = this.startRun();
+    try {
+      if (!(await this.createClient())) return;
+      const locations = await enabledLocations(this.jfClient);
+      const items = await Promise.all(
+        ids.map(async (id) => {
+          const item = await this.jfClient
+            .getItemData(id)
+            .catch(() => undefined);
+          // Undecidable membership scans the item rather than missing it.
+          if (!item?.Path || !locations) return item;
+          const path = withSlash(item.Path);
+          return locations.some((l) => path.startsWith(l)) ? item : undefined;
+        })
+      );
+      this.items = uniqWith(
+        items.filter(
+          (item): item is JellyfinLibraryItemExtended =>
+            !!item &&
+            (item.Type === 'Movie' || !!item.SeriesId || item.Type === 'Series')
+        ),
+        (a, b) => (a.SeriesId ?? a.Id) === (b.SeriesId ?? b.Id)
+      ).map((item) =>
+        item.Type === 'Movie' ? item : { ...item, Type: 'Series' as const }
+      );
+      this.processedAnidbSeason = new Map();
+      await this.loop(this.processItem.bind(this), { sessionId });
+    } catch (e) {
+      this.log('Item sync interrupted', 'error', { errorMessage: e.message });
+    } finally {
+      this.endRun(sessionId);
+    }
+  }
+
   public status(): JellyfinSyncStatus {
     return {
       running: this.running,
@@ -555,7 +599,47 @@ class JellyfinScanner
   }
 }
 
+const withSlash = (path: string) => `${path.replace(/[\\/]+$/, '')}/`;
+
+const LOCATIONS_TTL_MS = 10 * 60 * 1000;
+let locationCache: { key: string; at: number; locations: string[] } | undefined;
+
+/**
+ * Folder paths of the enabled libraries. An item's ancestors in Jellyfin end at its physical
+ * folder and the root, never the library, so library membership goes by path.
+ */
+async function enabledLocations(
+  client: JellyfinAPI
+): Promise<string[] | undefined> {
+  const jellyfin = getSettings().jellyfin;
+  const key = JSON.stringify(jellyfin);
+  if (
+    locationCache?.key === key &&
+    Date.now() - locationCache.at < LOCATIONS_TTL_MS
+  ) {
+    return locationCache.locations;
+  }
+  const enabled = new Set(
+    jellyfin.libraries.filter((l) => l.enabled).map((l) => l.id)
+  );
+  try {
+    const folders = await client.getVirtualFolders();
+    const locations = folders
+      .filter((f) => enabled.has(f.ItemId))
+      .flatMap((f) => f.Locations.map(withSlash));
+    locationCache = { key, at: Date.now(), locations };
+    return locations;
+  } catch (e) {
+    logger.warn(`Loading Jellyfin library locations failed: ${e.message}`, {
+      label: 'Jellyfin Sync',
+    });
+    return undefined;
+  }
+}
+
 export const jellyfinFullScanner = new JellyfinScanner();
 export const jellyfinRecentScanner = new JellyfinScanner({
   isRecentOnly: true,
 });
+// Separate instance, as a scanner holds the state of one run at a time.
+export const jellyfinItemScanner = new JellyfinScanner();

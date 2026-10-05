@@ -1,3 +1,4 @@
+import { servarrSignalR } from '@server/api/servarr/signalr';
 import SonarrAPI from '@server/api/servarr/sonarr';
 import type { SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
@@ -32,6 +33,7 @@ sonarrRoutes.post('/', async (req, res) => {
 
   settings.sonarr = [...settings.sonarr, newSonarr];
   await settings.save();
+  servarrSignalR.sync();
 
   return res.status(201).json(newSonarr);
 });
@@ -102,6 +104,7 @@ sonarrRoutes.put<{ id: string }>('/:id', async (req, res) => {
     id: Number(req.params.id),
   } as SonarrSettings;
   await settings.save();
+  servarrSignalR.sync();
 
   return res.status(200).json(settings.sonarr[sonarrIndex]);
 });
@@ -121,6 +124,7 @@ sonarrRoutes.delete<{ id: string }>('/:id', async (req, res) => {
 
   const removed = settings.sonarr.splice(sonarrIndex, 1);
   await settings.save();
+  servarrSignalR.sync();
 
   return res.status(200).json(removed[0]);
 });

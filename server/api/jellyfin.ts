@@ -128,6 +128,7 @@ export interface JellyfinLibraryItemExtended extends JellyfinLibraryItem {
   Height?: number;
   IsHD?: boolean;
   DateCreated?: string;
+  Path?: string;
 }
 
 type EpisodeReturn<T> = T extends { includeMediaInfo: true }
@@ -505,7 +506,7 @@ class JellyfinAPI extends ExternalAPI {
       const itemResponse = await this.get<JellyfinItemsReponse>(`/Items`, {
         params: {
           ids: id,
-          fields: 'ProviderIds,MediaSources,Width,Height,IsHD,DateCreated',
+          fields: 'ProviderIds,MediaSources,Width,Height,IsHD,DateCreated,Path',
         },
       });
 
@@ -527,6 +528,15 @@ class JellyfinAPI extends ExternalAPI {
 
       throw new ApiError(e.response.status, ApiErrorCode.InvalidAuthToken);
     }
+  }
+
+  /** Libraries with their folder paths; needs an admin API key. */
+  public async getVirtualFolders(): Promise<
+    { ItemId: string; Locations: string[] }[]
+  > {
+    return this.get<{ ItemId: string; Locations: string[] }[]>(
+      '/Library/VirtualFolders'
+    );
   }
 
   public async getSeasons(seriesID: string): Promise<JellyfinLibraryItem[]> {

@@ -13,10 +13,15 @@ export type ProgressStep = (typeof PROGRESS_STEPS)[number];
 
 export const MAX_SAMPLES = 200;
 
+/** Below this many end-to-end samples, the total estimate is the sum of the step p90s. */
+export const MIN_TOTAL_SAMPLES = 20;
+
 export interface Sample {
   /** When the step finished, ms since epoch; orders the sample window. */
   at: number;
   durationMs: number;
+  /** Lets a recorded sample replace the history sample of the same download. */
+  downloadId?: string;
 }
 
 export interface StepEstimate {
@@ -62,13 +67,13 @@ export function pairGrabToImport(records: HistoryRecord[]): Sample[] {
   }
 
   const samples: Sample[] = [];
-  for (const { grabs, imports } of byDownload.values()) {
+  for (const [downloadId, { grabs, imports }] of byDownload) {
     if (grabs.length === 0) continue;
     const grab = Math.min(...grabs);
     const imported = imports.filter((at) => at >= grab);
     if (imported.length === 0) continue;
     const at = Math.min(...imported);
-    samples.push({ at, durationMs: at - grab });
+    samples.push({ at, durationMs: at - grab, downloadId });
   }
   return newest(samples);
 }
@@ -82,6 +87,8 @@ type HistorySource = Pick<ServarrBase<unknown>, 'getHistory'>;
 interface ServerSamples {
   history: Sample[];
   recorded: Record<ProgressStep, Sample[]>;
+  /** Requested -> playable durations of tracked runs. */
+  totals: Sample[];
 }
 
 /**
@@ -99,6 +106,7 @@ export class StepStats {
         recorded: Object.fromEntries(
           PROGRESS_STEPS.map((step) => [step, []])
         ) as unknown as Record<ProgressStep, Sample[]>,
+        totals: [],
       };
       this.servers.set(serverKey, entry);
     }
@@ -118,26 +126,45 @@ export class StepStats {
     this.server(serverKey).history = pairGrabToImport([...grabs, ...imports]);
   }
 
-  // ponytail: a tracked download recorded here is also in history after the next refresh and
-  // counts twice for `importing`; dedupe by downloadId if that skews the estimate.
   public record(
     serverKey: string,
     step: ProgressStep,
     durationMs: number,
-    at = Date.now()
+    { at = Date.now(), downloadId }: { at?: number; downloadId?: string } = {}
   ): void {
     const recorded = this.server(serverKey).recorded;
-    recorded[step] = newest([...recorded[step], { at, durationMs }]);
+    recorded[step] = newest([
+      ...recorded[step],
+      { at, durationMs, downloadId },
+    ]);
+  }
+
+  public recordTotal(serverKey: string, durationMs: number, at = Date.now()) {
+    const server = this.server(serverKey);
+    server.totals = newest([...server.totals, { at, durationMs }]);
+  }
+
+  /** p90 of the end-to-end durations; undefined until there are enough of them. */
+  public totalP90(serverKey: string): number | undefined {
+    const totals = this.server(serverKey).totals;
+    return totals.length >= MIN_TOTAL_SAMPLES
+      ? percentile(
+          totals.map((s) => s.durationMs),
+          90
+        )
+      : undefined;
   }
 
   public get(serverKey: string): Record<ProgressStep, StepEstimate> {
     const { history, recorded } = this.server(serverKey);
     return Object.fromEntries(
       PROGRESS_STEPS.map((step) => {
+        const own = recorded[step];
+        const tracked = new Set(own.map((s) => s.downloadId).filter(Boolean));
         const samples = newest(
           step === 'importing'
-            ? [...history, ...recorded[step]]
-            : recorded[step]
+            ? [...history.filter((s) => !tracked.has(s.downloadId)), ...own]
+            : own
         ).map((s) => s.durationMs);
         return [
           step,

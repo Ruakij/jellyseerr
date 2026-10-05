@@ -11,7 +11,11 @@ import type {
   MediaResultsResponse,
   MediaWatchDataResponse,
 } from '@server/interfaces/api/mediaInterfaces';
+import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
 import { Permission } from '@server/lib/permissions';
+import progressTracker, {
+  STEP_KEYS,
+} from '@server/lib/requestProgress/tracker';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
@@ -302,6 +306,67 @@ mediaRoutes.delete(
       });
       next({ status: 500, message: 'Failed to delete media file' });
     }
+  }
+);
+
+const HEARTBEAT_MS = 25_000;
+
+mediaRoutes.get<{ mediaId: string }>(
+  '/:mediaId/progress',
+  async (req, res, next) => {
+    const mediaId = Number(req.params.mediaId);
+    const is4k = req.query.is4k === 'true';
+    const media = Number.isInteger(mediaId)
+      ? await getRepository(Media).findOne({ where: { id: mediaId } })
+      : null;
+    if (!media) {
+      return next({ status: 404, message: 'Media does not exist.' });
+    }
+
+    const status = is4k ? media.status4k : media.status;
+    const available =
+      status === MediaStatus.AVAILABLE ||
+      status === MediaStatus.PARTIALLY_AVAILABLE;
+    const untracked: RequestProgress = {
+      mediaId,
+      is4k,
+      steps: STEP_KEYS.map((key) => ({
+        key,
+        status: key === 'playable' && available ? 'done' : 'pending',
+      })),
+      playUrl: available
+        ? is4k
+          ? media.mediaUrl4k
+          : media.mediaUrl
+        : undefined,
+    };
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      // Stops nginx from buffering the stream.
+      'X-Accel-Buffering': 'no',
+    });
+    const send = (progress: RequestProgress) =>
+      res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);
+
+    send(progressTracker.get(mediaId, is4k) ?? untracked);
+    const onChange = (progress: RequestProgress) => {
+      if (progress.mediaId === mediaId && progress.is4k === is4k) {
+        send(progress);
+      }
+    };
+    progressTracker.on('change', onChange);
+    // Proxies close idle connections; a comment line keeps it busy without an event.
+    const heartbeat = setInterval(
+      () => res.write(': heartbeat\n\n'),
+      HEARTBEAT_MS
+    );
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      progressTracker.off('change', onChange);
+    });
   }
 );
 

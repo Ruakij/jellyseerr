@@ -109,7 +109,7 @@ export const startJobs = (): void => {
     mediaServerType === MediaServerType.JELLYFIN ||
     mediaServerType === MediaServerType.EMBY
   ) {
-    // Run recently added jellyfin sync every 5 minutes
+    // Safety net for missed Jellyfin socket events, see requestProgress/events
     scheduledJobs.push({
       id: 'jellyfin-recently-added-scan',
       name: 'Jellyfin Recently Added Scan',
@@ -194,12 +194,12 @@ export const startJobs = (): void => {
     cancelFn: () => availabilitySync.cancel(),
   });
 
-  // Run download sync every minute
+  // Safety net for missed SignalR events, see requestProgress/events
   scheduledJobs.push({
     id: 'download-sync',
     name: 'Download Sync',
     type: 'command',
-    interval: 'seconds',
+    interval: 'minutes',
     cronSchedule: jobs['download-sync'].schedule,
     job: schedule.scheduleJob(jobs['download-sync'].schedule, () => {
       logger.debug('Starting scheduled job: Download Sync', {
