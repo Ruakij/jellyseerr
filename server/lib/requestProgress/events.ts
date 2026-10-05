@@ -90,6 +90,10 @@ async function loadMedia(entries: TrackedProgress[]) {
 const isWaiting = (status: MediaStatus) =>
   status === MediaStatus.PENDING || status === MediaStatus.PROCESSING;
 
+const isAvailable = (status: MediaStatus) =>
+  status === MediaStatus.AVAILABLE ||
+  status === MediaStatus.PARTIALLY_AVAILABLE;
+
 const SEARCH_FAILED = ['failed', 'aborted', 'cancelled', 'orphaned'];
 const IMPORT_BLOCKED = 'Manual interaction required';
 const DOWNLOAD_FAILED = 'Download failed';
@@ -274,14 +278,24 @@ export async function refreshServer(
   }
   if (byArrId.size === 0) return;
 
-  const since = Math.min(
-    ...entries.map((e) => e.steps.requested.startedAt ?? Date.now())
-  );
-  const [history, queue, seasons] = await Promise.all([
-    api.getHistory({ since: new Date(since) }),
+  // Per item: the history of a whole server since an old request can be too large to load.
+  const [histories, queue, seasons] = await Promise.all([
+    Promise.all(
+      [...byArrId.keys()].map((arrId) =>
+        api.getItemHistory(arrId).catch((e: Error) => {
+          logger.warn(`Loading item history failed: ${e.message}`, {
+            label: 'Request Progress',
+            server: key,
+            arrId,
+          });
+          return [];
+        })
+      )
+    ),
     api.getQueue(),
     type === 'sonarr' ? requestedSeasons(entries) : undefined,
   ]);
+  const history = histories.flat();
   // Records of the same series can belong to seasons another request asked for.
   const entriesOf = (item: ArrItem) =>
     (
@@ -302,7 +316,7 @@ export async function refreshServer(
     const at = Date.parse(record.date);
     for (const entry of entriesOf(record)) {
       const { mediaId, is4k } = entry;
-      // The history window starts at the oldest tracked request, so it holds older records too.
+      // The item history holds the records of earlier requests too.
       if (
         at < (entry.steps.requested.startedAt ?? 0) ||
         (record.downloadId &&
@@ -402,6 +416,145 @@ export async function reconcileJellyfin(
       tracker.advance(mediaId, is4k, 'playable', undefined, {
         playUrl: is4k ? m.mediaUrl4k : m.mediaUrl,
       });
+    }
+  }
+}
+
+const REQUEST_DECLINED = 'Request declined';
+const REQUEST_FAILED = 'Request failed';
+const WAITING_FOR_RELEASE = 'No release found yet, waiting for one';
+
+/** Whether Radarr/Sonarr holds a file for the media, for requested seasons only. */
+async function hasFiles(
+  entry: TrackedProgress,
+  arrId: number,
+  seasons: Set<number> | undefined
+): Promise<boolean> {
+  const [type, id] = entry.serverKey?.split('-') ?? [];
+  const api = servarrApi(type as ServarrType, Number(id));
+  if (api instanceof RadarrAPI)
+    return (await api.getMovie({ id: arrId })).hasFile;
+  if (!(api instanceof SonarrAPI)) return false;
+  const series = await api.getSeriesById(arrId);
+  return series.seasons.some(
+    (s) =>
+      (!seasons || seasons.has(s.seasonNumber)) &&
+      (s.statistics?.episodeFileCount ?? 0) > 0
+  );
+}
+
+/**
+ * Starts entries for media whose newest request the tracker never saw, e.g. one sent before a
+ * restart, and fills them in from Radarr/Sonarr history, queue and files and from Jellyfin, as a
+ * run would have. Without `targets`, covers every open request. Their times are not measured.
+ */
+export async function reconstructProgress(
+  targets?: { mediaId: number; is4k: boolean }[],
+  tracker: ProgressTracker = progressTracker
+): Promise<void> {
+  const requests = await getRepository(MediaRequest).find({
+    where: targets
+      ? { media: { id: In(targets.map((t) => t.mediaId)) } }
+      : {
+          status: In([MediaRequestStatus.PENDING, MediaRequestStatus.APPROVED]),
+        },
+    order: { id: 'DESC' },
+  });
+  const settings = getSettings();
+  const seen = new Set<string>();
+  const created: TrackedProgress[] = [];
+  for (const request of requests) {
+    const { media, is4k } = request;
+    const variant = `${media.id}:${is4k}`;
+    if (seen.has(variant)) continue;
+    seen.add(variant);
+    if (
+      (targets &&
+        !targets.some((t) => t.mediaId === media.id && t.is4k === is4k)) ||
+      tracker.entry(media.id, is4k)
+    ) {
+      continue;
+    }
+    const mediaStatus = is4k ? media.status4k : media.status;
+    const open =
+      request.status === MediaRequestStatus.PENDING ||
+      request.status === MediaRequestStatus.APPROVED;
+    const failed =
+      request.status === MediaRequestStatus.DECLINED ||
+      request.status === MediaRequestStatus.FAILED;
+    if (
+      !(open && isWaiting(mediaStatus)) &&
+      !(failed && !isAvailable(mediaStatus))
+    ) {
+      continue;
+    }
+
+    const type = request.type === MediaType.MOVIE ? 'radarr' : 'sonarr';
+    const serverId =
+      (is4k ? media.serviceId4k : media.serviceId) ??
+      request.serverId ??
+      settings[type].find((s) => !!s.is4k === is4k && s.isDefault)?.id;
+    const entry = tracker.start({
+      mediaId: media.id,
+      is4k,
+      requestId: request.id,
+      serverKey:
+        serverId === undefined || serverId === null
+          ? undefined
+          : serverKey(type, serverId),
+      at: request.createdAt.getTime(),
+      awaitingApproval:
+        request.status === MediaRequestStatus.PENDING ||
+        request.status === MediaRequestStatus.DECLINED,
+      reconstructed: true,
+    });
+    if (failed) {
+      tracker.fail(
+        media.id,
+        is4k,
+        request.status === MediaRequestStatus.DECLINED
+          ? REQUEST_DECLINED
+          : REQUEST_FAILED,
+        request.updatedAt.getTime()
+      );
+    } else if (request.status === MediaRequestStatus.APPROVED) {
+      created.push(entry);
+    }
+  }
+  if (created.length === 0) return;
+
+  for (const key of new Set(created.flatMap((e) => e.serverKey ?? []))) {
+    await refreshServer(key, tracker);
+  }
+  const media = await loadMedia(created);
+  const seasons = await requestedSeasons(created);
+  for (const entry of created) {
+    const m = media.get(entry.mediaId);
+    const arrId = m && externalId(m, entry.is4k);
+    if (!arrId || entry.steps.importing.status === 'done') continue;
+    try {
+      if (await hasFiles(entry, arrId, seasons.get(entry))) {
+        tracker.advance(entry.mediaId, entry.is4k, 'importing');
+      }
+    } catch (e) {
+      logger.warn(`Looking up files failed: ${e.message}`, {
+        label: 'Request Progress',
+        server: entry.serverKey,
+      });
+    }
+  }
+  await reconcileJellyfin(undefined, tracker);
+  for (const entry of created) {
+    if (
+      entry.steps.searching.status === 'running' &&
+      !entry.steps.searching.detail
+    ) {
+      tracker.setDetail(
+        entry.mediaId,
+        entry.is4k,
+        'searching',
+        WAITING_FOR_RELEASE
+      );
     }
   }
 }
@@ -544,6 +697,11 @@ export function restartJellyfinSocket(): void {
 export function startProgressEvents(): void {
   stepStats.load().catch((e: Error) =>
     logger.warn(`Loading step samples failed: ${e.message}`, {
+      label: 'Request Progress',
+    })
+  );
+  reconstructProgress().catch((e: Error) =>
+    logger.warn(`Reconstructing open requests failed: ${e.message}`, {
       label: 'Request Progress',
     })
   );
