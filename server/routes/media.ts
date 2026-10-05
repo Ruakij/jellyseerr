@@ -358,10 +358,8 @@ mediaRoutes.get<{ mediaId: string }>(
     const request = await searchableRequest(mediaId, is4k).catch(() => null);
     const send = (progress: RequestProgress) => {
       const access = searchAccess(req.user, request);
-      const lastSearchedAt = progressTracker.entry(
-        mediaId,
-        is4k
-      )?.lastSearchedAt;
+      const entry = progressTracker.entry(mediaId, is4k);
+      const lastSearchedAt = entry?.lastSearchedAt;
       const playable =
         progress.steps.find((s) => s.key === 'playable')?.status === 'done';
       progress = {
@@ -376,6 +374,7 @@ mediaRoutes.get<{ mediaId: string }>(
             lastSearchedAt !== undefined
               ? new Date(lastSearchedAt).toISOString()
               : undefined,
+          running: entry?.searchCommandId !== undefined,
         },
       };
       res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);

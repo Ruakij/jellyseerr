@@ -53,6 +53,7 @@ export interface ProgressSearch {
   allowed: boolean; // the viewer may search (manager, or the requester) and it is not playable yet
   retryAfter?: string; // ISO; set while the requester cooldown holds
   lastSearchedAt?: string; // ISO; last search by Radarr/Sonarr for the requested scope
+  running: boolean; // a Radarr/Sonarr search command for the media is in flight
 }
 
 export type EstimatePercentile = 50 | 90 | 95 | 99;
