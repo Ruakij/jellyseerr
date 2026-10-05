@@ -21,6 +21,7 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import type {
   ProgressDownload,
+  ProgressEpisodes,
   RequestProgressStatsResponse,
 } from '@server/interfaces/api/progressInterfaces';
 import availabilitySync from '@server/lib/availabilitySync';
@@ -280,6 +281,8 @@ interface ArrState {
   /** Radarr/Sonarr searches for it, for the series: some requested episode. */
   monitored: boolean;
   lastSearchedAt?: number;
+  /** Series only: episode files of the requested seasons against their monitored aired episodes. */
+  episodes?: ProgressEpisodes;
 }
 
 const latest = (times: (string | undefined)[]) => {
@@ -306,13 +309,23 @@ async function arrState(
       api.getSeriesById(arrId),
       api.getEpisodes(arrId),
     ]);
-    const requested = episodes.filter(
-      (e) => !seasons || seasons.has(e.seasonNumber)
-    );
+    const wanted = (seasonNumber: number) =>
+      !seasons || seasons.has(seasonNumber);
+    const requested = episodes.filter((e) => wanted(e.seasonNumber));
+    const counts = series.seasons
+      .filter((s) => wanted(s.seasonNumber))
+      .reduce(
+        (sum, { statistics }) => ({
+          imported: sum.imported + (statistics?.episodeFileCount ?? 0),
+          total: sum.total + (statistics?.episodeCount ?? 0),
+        }),
+        { imported: 0, total: 0 }
+      );
     return {
       hasFile: requested.some((e) => e.hasFile),
       monitored: series.monitored && requested.some((e) => e.monitored),
       lastSearchedAt: latest(requested.map((e) => e.lastSearchTime)),
+      episodes: counts.total > 0 ? counts : undefined,
     };
   } catch (e) {
     if (isNotFound(e))
@@ -338,6 +351,7 @@ function applyArrState(
     tracker.setSearch(mediaId, is4k, { lastSearchedAt: state.lastSearchedAt });
   }
   entry.filesMissing = !state.hasFile;
+  tracker.setEpisodes(mediaId, is4k, state.episodes);
   entry.arrError = state.removed
     ? `Removed from ${ARR_NAME[type]}`
     : state.monitored
@@ -692,21 +706,89 @@ const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
   }
 );
 
-const jellyfinRemoved = new KeyedDebouncer(async (key) => {
-  await availabilitySync.syncMedia(Number(key));
-  await reconcileJellyfin();
-});
+// Long enough for Jellyfin to notice a deletion Radarr/Sonarr reported (its library monitor waits
+// 60s by default): the check marks a version deleted only when both lost it.
+export const REMOVAL_DEBOUNCE_MS = 90_000;
+export const REMOVAL_MAX_WAIT_MS = 5 * 60_000;
+
+const mediaRemovals = new KeyedDebouncer(
+  async (key) => {
+    await availabilitySync.syncMedia(Number(key));
+    await reconcileJellyfin();
+  },
+  REMOVAL_DEBOUNCE_MS,
+  REMOVAL_MAX_WAIT_MS
+);
+
+// A season delete or a Jellyfin metadata refresh reports removals over minutes; one run covers it.
+export const FULL_SYNC_DEBOUNCE_MS = 5 * 60_000;
+export const FULL_SYNC_MAX_WAIT_MS = 30 * 60_000;
+
+const fullSync = new KeyedDebouncer(
+  async () => {
+    await availabilitySync.run();
+    await reconcileJellyfin();
+  },
+  FULL_SYNC_DEBOUNCE_MS,
+  FULL_SYNC_MAX_WAIT_MS
+);
 
 /**
- * Runs the availability check for the movies and series behind removed Jellyfin items. Other
- * items, like episodes and seasons, are left to the periodic availability sync.
+ * Runs the availability check for the movies and series behind removed Jellyfin items, and the
+ * full availability sync for removed items that are no stored movie or series, like episodes and
+ * seasons.
  */
 export async function onJellyfinRemoved(ids: string[]): Promise<void> {
   const media = await getRepository(Media).find({
-    select: { id: true },
+    select: { id: true, jellyfinMediaId: true, jellyfinMediaId4k: true },
     where: [{ jellyfinMediaId: In(ids) }, { jellyfinMediaId4k: In(ids) }],
   });
-  for (const { id } of media) jellyfinRemoved.push(String(id));
+  for (const { id } of media) mediaRemovals.push(String(id));
+  const known = new Set(
+    media.flatMap((m) => [m.jellyfinMediaId, m.jellyfinMediaId4k])
+  );
+  if (ids.some((id) => !known.has(id))) fullSync.push('full');
+}
+
+/** The Radarr movie or Sonarr series an event reports content gone from, if any. */
+function removedItem(
+  source: SignalRSource,
+  event: ServarrSignalREvent
+): number | undefined {
+  switch (event.type) {
+    case 'movie':
+      // Radarr reports a deleted movie file only by its id, then the movie without a file.
+      return event.action === 'deleted' || event.hasFile === false
+        ? event.id
+        : undefined;
+    case 'series':
+      return event.action === 'deleted' ? event.id : undefined;
+    case 'movieFile':
+      return event.action === 'deleted' ? event.movieId : undefined;
+    case 'episodeFile':
+      return event.action === 'deleted' ? event.seriesId : undefined;
+    case 'episode':
+      // Sonarr reports a deleted episode file only by its id, then its episodes without a file.
+      return event.action === 'deleted' ||
+        (event.hasFile === false && !event.grabbed)
+        ? (event.seriesId ??
+            episodeSeries.get(`${source.serverId}:${event.id}`))
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** Runs the availability check for the available media behind a Radarr movie or Sonarr series. */
+async function checkRemoved(
+  source: SignalRSource,
+  arrId: number
+): Promise<void> {
+  for (const { media, is4k } of await findMedia(source, arrId)) {
+    if (isAvailable(is4k ? media.status4k : media.status)) {
+      mediaRemovals.push(String(media.id));
+    }
+  }
 }
 
 function onSignalRConnected(source: SignalRSource, first: boolean): void {
@@ -817,6 +899,14 @@ export function onSignalRMessage(
 ): void {
   const arrId = changedItem(event);
   if (arrId !== undefined) syncItem(source, arrId);
+  const removedId = removedItem(source, event);
+  if (removedId !== undefined) {
+    checkRemoved(source, removedId).catch((e: Error) =>
+      logger.error(`Handling removed content failed: ${e.message}`, {
+        label: 'Request Progress',
+      })
+    );
+  }
 
   if (event.type === 'command') {
     handleCommand(source, event).catch((e: Error) =>

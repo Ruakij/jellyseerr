@@ -1,5 +1,6 @@
 import type {
   ProgressDownload,
+  ProgressEpisodes,
   ProgressStepKey,
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
@@ -48,6 +49,8 @@ export interface TrackedProgress {
   /** Why sending the request to Radarr/Sonarr failed, from the request. */
   failureReason?: string;
   downloads?: ProgressDownload[];
+  /** Imported episodes of the requested seasons, for a series. */
+  episodes?: ProgressEpisodes;
   playUrl?: string;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
   reconstructed?: boolean;
@@ -334,6 +337,19 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     this.changed(entry);
   }
 
+  public setEpisodes(
+    mediaId: number,
+    is4k: boolean,
+    episodes: ProgressEpisodes | undefined
+  ): void {
+    const entry = this.entry(mediaId, is4k);
+    if (!entry || JSON.stringify(entry.episodes) === JSON.stringify(episodes)) {
+      return;
+    }
+    entry.episodes = episodes;
+    this.changed(entry);
+  }
+
   public finished(entry: TrackedProgress): boolean {
     return (
       entry.steps.playable.status === 'done' ||
@@ -368,6 +384,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           k === 'searching' && state.status === 'running'
             ? searchingDetail(entry)
             : state.detail,
+        episodes: k === 'importing' ? entry.episodes : undefined,
       };
     });
     const totals = entry.serverKey
