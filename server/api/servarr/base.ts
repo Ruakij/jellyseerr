@@ -110,6 +110,8 @@ export interface HistoryRecord {
   movieId?: number;
   seriesId?: number;
   episodeId?: number;
+  // Sonarr only, requested with includeEpisode.
+  episode?: { seasonNumber: number; episodeNumber: number };
   data: Record<string, string | undefined>;
 }
 
@@ -242,7 +244,13 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
       if (since) {
         const response = await this.axios.get<HistoryRecord[]>(
           '/history/since',
-          { params: { date: since.toISOString(), eventType: eventTypeId } }
+          {
+            params: {
+              date: since.toISOString(),
+              eventType: eventTypeId,
+              includeEpisode: true,
+            },
+          }
         );
         return [...response.data].sort(
           (a, b) => Date.parse(b.date) - Date.parse(a.date)
@@ -256,6 +264,7 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
           sortKey: 'date',
           sortDirection: 'descending',
           eventType: eventTypeId,
+          includeEpisode: true,
         },
       });
       return response.data.records;
