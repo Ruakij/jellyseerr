@@ -19,6 +19,10 @@ import Season from '@server/entity/Season';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import notificationManager, { Notification } from '@server/lib/notifications';
 import progressTracker from '@server/lib/requestProgress/tracker';
+import {
+  applyRequestFailure,
+  classifyRequestError,
+} from '@server/lib/requestRetry';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { withNestedTransaction } from '@server/utils/nestedTransaction';
@@ -408,13 +412,29 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
             media[entity.is4k ? 'serviceId4k' : 'serviceId'] =
               radarrSettings?.id;
             await mediaRepository.save(media);
+
+            if (entity.retryCount) {
+              entity.retryCount = 0;
+              // update() skips the subscriber, save() would send the request again
+              await getRepository(MediaRequest).update(entity.id, {
+                retryCount: 0,
+              });
+            }
           })
-          .catch(async () => {
+          .catch(async (e) => {
+            // Ahead of saving FAILED: a failed run keeps its first error.
+            progressTracker.fail(
+              entity.media.id,
+              entity.is4k,
+              'Sending the request to Radarr failed'
+            );
+            const failure = classifyRequestError(e);
+            let notify = true;
             try {
               const requestRepository = getRepository(MediaRequest);
 
               if (entity.status !== MediaRequestStatus.FAILED) {
-                entity.status = MediaRequestStatus.FAILED;
+                notify = applyRequestFailure(entity, failure);
                 await requestRepository.save(entity);
               }
             } catch (saveError) {
@@ -428,27 +448,26 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
               });
             }
 
-            progressTracker.fail(
-              entity.media.id,
-              entity.is4k,
-              'Sending the request to Radarr failed'
-            );
-
             logger.warn(
               'Something went wrong sending movie request to Radarr, marking status as FAILED',
               {
                 label: 'Media Request',
                 requestId: entity.id,
                 mediaId: entity.media.id,
+                failureKind: failure.kind,
+                failureReason: failure.reason,
+                nextRetryAt: entity.nextRetryAt,
                 radarrMovieOptions,
               }
             );
 
-            MediaRequest.sendNotification(
-              entity,
-              media,
-              Notification.MEDIA_FAILED
-            );
+            if (notify) {
+              MediaRequest.sendNotification(
+                entity,
+                media,
+                Notification.MEDIA_FAILED
+              );
+            }
           })
           .finally(() => {
             radarr.clearCache({
@@ -471,7 +490,8 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
         });
 
         if (media) {
-          entity.status = MediaRequestStatus.FAILED;
+          const failure = classifyRequestError(e);
+          const notify = applyRequestFailure(entity, failure);
           await requestRepository.save(entity);
 
           logger.warn(
@@ -481,14 +501,18 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
               requestId: entity.id,
               mediaId: entity.media.id,
               errorMessage: e.message,
+              failureKind: failure.kind,
+              nextRetryAt: entity.nextRetryAt,
             }
           );
 
-          MediaRequest.sendNotification(
-            entity,
-            media,
-            Notification.MEDIA_FAILED
-          );
+          if (notify) {
+            MediaRequest.sendNotification(
+              entity,
+              media,
+              Notification.MEDIA_FAILED
+            );
+          }
         }
       }
     }
@@ -769,13 +793,29 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
             media[entity.is4k ? 'serviceId4k' : 'serviceId'] =
               sonarrSettings?.id;
             await mediaRepository.save(media);
+
+            if (entity.retryCount) {
+              entity.retryCount = 0;
+              // update() skips the subscriber, save() would send the request again
+              await getRepository(MediaRequest).update(entity.id, {
+                retryCount: 0,
+              });
+            }
           })
-          .catch(async () => {
+          .catch(async (e) => {
+            // Ahead of saving FAILED: a failed run keeps its first error.
+            progressTracker.fail(
+              entity.media.id,
+              entity.is4k,
+              'Sending the request to Sonarr failed'
+            );
+            const failure = classifyRequestError(e);
+            let notify = true;
             try {
               const requestRepository = getRepository(MediaRequest);
 
               if (entity.status !== MediaRequestStatus.FAILED) {
-                entity.status = MediaRequestStatus.FAILED;
+                notify = applyRequestFailure(entity, failure);
                 await requestRepository.save(entity);
               }
             } catch (saveError) {
@@ -789,27 +829,26 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
               });
             }
 
-            progressTracker.fail(
-              entity.media.id,
-              entity.is4k,
-              'Sending the request to Sonarr failed'
-            );
-
             logger.warn(
               'Something went wrong sending series request to Sonarr, marking status as FAILED',
               {
                 label: 'Media Request',
                 requestId: entity.id,
                 mediaId: entity.media.id,
+                failureKind: failure.kind,
+                failureReason: failure.reason,
+                nextRetryAt: entity.nextRetryAt,
                 sonarrSeriesOptions,
               }
             );
 
-            MediaRequest.sendNotification(
-              entity,
-              media,
-              Notification.MEDIA_FAILED
-            );
+            if (notify) {
+              MediaRequest.sendNotification(
+                entity,
+                media,
+                Notification.MEDIA_FAILED
+              );
+            }
           })
           .finally(() => {
             sonarr.clearCache({
@@ -833,7 +872,8 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
         });
 
         if (media) {
-          entity.status = MediaRequestStatus.FAILED;
+          const failure = classifyRequestError(e);
+          const notify = applyRequestFailure(entity, failure);
           await requestRepository.save(entity);
 
           logger.warn(
@@ -843,14 +883,18 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
               requestId: entity.id,
               mediaId: entity.media.id,
               errorMessage: e.message,
+              failureKind: failure.kind,
+              nextRetryAt: entity.nextRetryAt,
             }
           );
 
-          MediaRequest.sendNotification(
-            entity,
-            media,
-            Notification.MEDIA_FAILED
-          );
+          if (notify) {
+            MediaRequest.sendNotification(
+              entity,
+              media,
+              Notification.MEDIA_FAILED
+            );
+          }
         }
       }
     }
@@ -1082,6 +1126,15 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
   public async afterUpdate(event: UpdateEvent<MediaRequest>): Promise<void> {
     if (!event.entity) {
       return;
+    }
+
+    const request = event.entity as MediaRequest;
+    if (request.status === MediaRequestStatus.FAILED && request.media) {
+      progressTracker.failRequest(
+        request.media.id,
+        request.is4k,
+        request.failureReason
+      );
     }
 
     try {

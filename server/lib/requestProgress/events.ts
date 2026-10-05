@@ -1,5 +1,6 @@
 import jellyfinSocket from '@server/api/jellyfin-socket';
 import type { HistoryRecord } from '@server/api/servarr/base';
+import { isNotFound } from '@server/api/servarr/base';
 import RadarrAPI from '@server/api/servarr/radarr';
 import type {
   CommandEvent,
@@ -30,11 +31,15 @@ import type {
   ProgressTracker,
   TrackedProgress,
 } from '@server/lib/requestProgress/tracker';
-import progressTracker from '@server/lib/requestProgress/tracker';
+import progressTracker, {
+  STEP_KEYS,
+} from '@server/lib/requestProgress/tracker';
 import {
   jellyfinItemScanner,
   jellyfinRecentScanner,
 } from '@server/lib/scanners/jellyfin';
+import { radarrScanner } from '@server/lib/scanners/radarr';
+import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { In, MoreThanOrEqual } from 'typeorm';
@@ -276,10 +281,6 @@ interface ArrState {
   lastSearchedAt?: number;
 }
 
-const isNotFound = (e: Error) =>
-  (e.cause as { response?: { status?: number } } | undefined)?.response
-    ?.status === 404;
-
 const latest = (times: (string | undefined)[]) => {
   const ms = times.flatMap((t) => (t ? [Date.parse(t)] : []));
   return ms.length ? Math.max(...ms) : undefined;
@@ -320,14 +321,10 @@ async function arrState(
 }
 
 const ARR_NAME = { radarr: 'Radarr', sonarr: 'Sonarr' } as const;
-const removedError = (type: ServarrType) => `Removed from ${ARR_NAME[type]}`;
-const unmonitoredError = (type: ServarrType) =>
-  `Not monitored in ${ARR_NAME[type]}`;
 
 /**
- * Files appearing finish the import; files disappearing send the run back to searching. Without
- * files, an item gone from Radarr/Sonarr or no longer monitored fails the search, as nothing would
- * ever grab it.
+ * Files appearing finish the import; files disappearing send the run back to searching. Whether
+ * the request failed is up to the request status, see `ProgressTracker.failRequest`.
  */
 function applyArrState(
   entry: TrackedProgress,
@@ -340,35 +337,21 @@ function applyArrState(
     tracker.setSearch(mediaId, is4k, { lastSearchedAt: state.lastSearchedAt });
   }
   entry.filesMissing = !state.hasFile;
+  entry.arrError = state.removed
+    ? `Removed from ${ARR_NAME[type]}`
+    : state.monitored
+      ? undefined
+      : `Not monitored in ${ARR_NAME[type]}`;
   // Awaiting approval: nothing was sent to Radarr/Sonarr yet.
   if (steps.requested.status !== 'done') return;
   if (state.hasFile) {
     tracker.advance(mediaId, is4k, 'importing');
-    return;
-  }
-
-  const imported = steps.importing.status === 'done';
-  // An unmonitored item still imports what it already downloads.
-  const error = state.removed
-    ? removedError(type)
-    : !state.monitored && (imported || steps.grabbed.status === 'pending')
-      ? unmonitoredError(type)
-      : undefined;
-  const searching = steps.searching;
-  if (searching.status === 'failed' && searching.error === error) return;
-  const arrFailed =
-    searching.status === 'failed' &&
-    (searching.error === removedError(type) ||
-      searching.error === unmonitoredError(type));
-  if (
-    imported ||
-    (error &&
-      (steps.grabbed.status !== 'pending' || searching.status !== 'running')) ||
-    (!error && arrFailed)
+  } else if (
+    steps.importing.status === 'done' &&
+    !STEP_KEYS.some((k) => steps[k].status === 'failed')
   ) {
     tracker.research(mediaId, is4k);
   }
-  if (error) tracker.fail(mediaId, is4k, error);
 }
 
 /** Milliseconds until a queue item completes, as the download client estimates it. */
@@ -539,7 +522,14 @@ export async function refreshServer(
 
   entries.forEach((entry, i) => {
     const state = states[i];
-    if (state) applyArrState(entry, state, type, tracker);
+    if (!state) return;
+    applyArrState(entry, state, type, tracker);
+    // The scanner decides what this means for the media and request status.
+    const m = media.get(entry.mediaId);
+    const arrId = m && externalId(m, entry.is4k);
+    if (entry.arrError && arrId) {
+      syncItem({ type, serverId: Number(id) }, arrId);
+    }
   });
 }
 
@@ -579,7 +569,6 @@ export async function reconcileJellyfin(
 }
 
 const REQUEST_DECLINED = 'Request declined';
-const REQUEST_FAILED = 'Request failed';
 
 /**
  * Starts entries for media whose newest request the tracker never saw, e.g. one sent before a
@@ -638,13 +627,18 @@ export async function reconstructProgress(
         request.status === MediaRequestStatus.DECLINED,
       reconstructed: true,
     });
-    if (failed) {
+    if (request.status === MediaRequestStatus.FAILED) {
+      tracker.failRequest(
+        media.id,
+        is4k,
+        request.failureReason,
+        request.updatedAt.getTime()
+      );
+    } else if (failed) {
       tracker.fail(
         media.id,
         is4k,
-        request.status === MediaRequestStatus.DECLINED
-          ? REQUEST_DECLINED
-          : REQUEST_FAILED,
+        REQUEST_DECLINED,
         request.updatedAt.getTime()
       );
     } else if (request.status === MediaRequestStatus.APPROVED) {
@@ -660,6 +654,24 @@ export async function reconstructProgress(
 }
 
 const serverRefresh = new KeyedDebouncer((key) => refreshServer(key));
+
+const itemSyncs = new KeyedDebouncer<{ source: SignalRSource; arrId: number }>(
+  (_key, [{ source, arrId }]) =>
+    source.type === 'radarr'
+      ? radarrScanner.syncMovie(source.serverId, arrId)
+      : sonarrScanner.syncSeries(source.serverId, arrId)
+);
+
+/**
+ * Updates the media and request status of one Radarr movie or Sonarr series through the scanner,
+ * once its events settle. The full scans remain the backstop for missed events.
+ */
+export function syncItem(source: SignalRSource, arrId: number): void {
+  itemSyncs.push(`${serverKey(source.type, source.serverId)}:${arrId}`, {
+    source,
+    arrId,
+  });
+}
 
 // Full polls, run once after a connection (re)starts since neither socket replays missed events.
 const polls = new KeyedDebouncer(async (key) => {
@@ -766,10 +778,28 @@ export async function reloadStepStats(): Promise<void> {
   }
 }
 
-function onSignalRMessage(
+/** The Radarr movie or Sonarr series whose state an event changed, if any. */
+function changedItem(event: ServarrSignalREvent): number | undefined {
+  switch (event.type) {
+    case 'movie':
+    case 'series':
+      return event.id;
+    case 'movieFile':
+      return event.movieId;
+    case 'episodeFile':
+      return event.seriesId;
+    default:
+      return undefined;
+  }
+}
+
+export function onSignalRMessage(
   source: SignalRSource,
   event: ServarrSignalREvent
 ): void {
+  const arrId = changedItem(event);
+  if (arrId !== undefined) syncItem(source, arrId);
+
   if (event.type === 'command') {
     handleCommand(source, event).catch((e: Error) =>
       logger.error(`Handling a command event failed: ${e.message}`, {
@@ -778,11 +808,7 @@ function onSignalRMessage(
     );
   } else if (event.type === 'episode' && event.seriesId !== undefined) {
     rememberEpisode(source.serverId, event.id, event.seriesId);
-  } else if (
-    event.type === 'queue' ||
-    event.type === 'movieFile' ||
-    event.type === 'episodeFile'
-  ) {
+  } else if (event.type !== 'episode') {
     serverRefresh.push(serverKey(source.type, source.serverId));
   }
 }
@@ -813,7 +839,7 @@ export function startProgressEvents(): void {
   jellyfinSocket.on('connected', jellyfinPoll);
   jellyfinSocket.on('reconnected', jellyfinPoll);
   jellyfinSocket.on('libraryChanged', (event) => {
-    if (event.itemsAdded.length > 0 && progressTracker.active().length > 0) {
+    if (event.itemsAdded.length > 0) {
       jellyfinAdded.push('added', { ids: event.itemsAdded, at: Date.now() });
     }
   });

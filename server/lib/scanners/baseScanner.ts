@@ -8,6 +8,8 @@ import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import MediaRequest from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
+import { Notification } from '@server/lib/notifications';
+import { applyRequestFailure } from '@server/lib/requestRetry';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import AsyncLock from '@server/utils/asyncLock';
@@ -48,6 +50,16 @@ interface ProcessOptions {
   processing?: boolean;
   hasFile?: boolean;
 }
+
+export type ArrItemState =
+  | { monitored: boolean; hasFile: boolean }
+  | {
+      seasons: {
+        seasonNumber: number;
+        monitored: boolean;
+        episodeFileCount: number;
+      }[];
+    };
 
 export interface ProcessableSeason {
   seasonNumber: number;
@@ -650,38 +662,76 @@ class BaseScanner<T> {
   }
 
   /**
-   * Declines APPROVED requests bound to media that has been orphaned before completion.
-   * DECLINED clears the duplicate-request guard so the user can re-request it.
-   * Callers must load the requests relation on the media.
+   * Fails APPROVED requests of media still PROCESSING once the arr can no
+   * longer fulfil them. FAILED keeps the request retryable, and a retry
+   * re-adds or re-monitors the item in the arr.
+   *
+   * Must run before the scan resets the media or season status, since the
+   * decision depends on the status being PROCESSING.
+   *
+   * @param arrItem the arr state of the item, or null when no arr server of
+   * this profile type has it
    */
-  protected async declineOrphanedRequests(
+  public async failUnfulfillableRequests(
     media: Media,
-    is4k: boolean
+    is4k: boolean,
+    arrItem: ArrItemState | null
   ): Promise<void> {
-    if (media.requests === undefined) {
-      throw new Error(
-        `declineOrphanedRequests called for media ${media.id} without the 'requests' relation loaded`
-      );
+    const statusKey = is4k ? 'status4k' : 'status';
+    if (media[statusKey] !== MediaStatus.PROCESSING) {
+      return;
     }
 
+    const arrName = media.mediaType === MediaType.MOVIE ? 'Radarr' : 'Sonarr';
     const requestRepository = getRepository(MediaRequest);
+    const requests = await requestRepository.find({
+      where: {
+        media: { id: media.id },
+        is4k,
+        status: MediaRequestStatus.APPROVED,
+      },
+    });
 
-    const orphanedRequests = (media.requests ?? []).filter(
-      (request) =>
-        request.is4k === is4k && request.status === MediaRequestStatus.APPROVED
-    );
+    for (const request of requests) {
+      let reason: string | undefined;
 
-    for (const request of orphanedRequests) {
-      request.status = MediaRequestStatus.DECLINED;
-      // Ensure that the media relation is set so the AfterUpdate
-      // notification hook can resolve it
-      request.media = media;
+      if (!arrItem) {
+        reason = `Removed from ${arrName}`;
+      } else if ('hasFile' in arrItem) {
+        if (!arrItem.monitored && !arrItem.hasFile) {
+          reason = 'Not monitored in Radarr';
+        }
+      } else {
+        const lostSeasons = request.seasons
+          .map((s) => s.seasonNumber)
+          .filter((seasonNumber) => {
+            const arrSeason = arrItem.seasons.find(
+              (s) => s.seasonNumber === seasonNumber
+            );
+            return (
+              media.seasons?.find((s) => s.seasonNumber === seasonNumber)?.[
+                statusKey
+              ] === MediaStatus.PROCESSING &&
+              (!arrSeason ||
+                (!arrSeason.monitored && arrSeason.episodeFileCount === 0))
+            );
+          });
+        if (lostSeasons.length > 0) {
+          reason = `Season(s) ${lostSeasons.join(', ')} not monitored in Sonarr`;
+        }
+      }
+
+      if (!reason) {
+        continue;
+      }
+
+      applyRequestFailure(request, { kind: 'permanent', reason });
       await requestRepository.save(request);
+      MediaRequest.sendNotification(request, media, Notification.MEDIA_FAILED);
       this.log(
-        `Declined orphaned ${
-          media.mediaType === MediaType.MOVIE ? 'movie' : 'series'
-        } request ${request.id} for ${media.tmdbId} not found in any Sonarr/Radarr server.`,
-        'info'
+        `Failed ${is4k ? '4K ' : ''}request ${request.id} for ${media.mediaType} ${media.tmdbId}: ${reason}.`,
+        'info',
+        { requestId: request.id, mediaId: media.id, reason }
       );
     }
   }

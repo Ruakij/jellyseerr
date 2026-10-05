@@ -15,8 +15,10 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
+import { DEBOUNCE_MS } from '@server/lib/requestProgress/debounce';
 import {
   handleCommand,
+  onSignalRMessage,
   queueEtaMs,
   reconcileJellyfin,
   reconstructProgress,
@@ -26,10 +28,12 @@ import {
   requestStarts,
 } from '@server/lib/requestProgress/events';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
-import {
+import progressTracker, {
   ProgressTracker,
   WAITING_FOR_RELEASE,
 } from '@server/lib/requestProgress/tracker';
+import { radarrScanner } from '@server/lib/scanners/radarr';
+import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
@@ -287,35 +291,21 @@ describe('refreshServer', () => {
     }
   });
 
-  it('fails the search of an item removed from Radarr', async () => {
+  it('fails the run with the Radarr reason once the request failed', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
     removed = true;
 
     await refreshServer('radarr-0', tracker);
 
+    // The request status decides, not the tracker.
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'running');
+
+    tracker.failRequest(media.id, false);
+
     const step = statusOf(tracker, media.id, 'searching');
     assert.equal(step.status, 'failed');
     assert.equal(step.error, 'Removed from Radarr');
-  });
-
-  it('fails the search of an unmonitored item until it is monitored again', async () => {
-    const { media, tracker } = await setup();
-    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
-    tracker.advance(media.id, false, 'importing');
-    monitored = false;
-
-    await refreshServer('radarr-0', tracker);
-
-    const step = statusOf(tracker, media.id, 'searching');
-    assert.equal(step.status, 'failed');
-    assert.equal(step.error, 'Not monitored in Radarr');
-    assert.equal(statusOf(tracker, media.id, 'importing').status, 'pending');
-
-    monitored = true;
-    await refreshServer('radarr-0', tracker);
-
-    assert.equal(statusOf(tracker, media.id, 'searching').status, 'running');
   });
 
   it('keeps an unmonitored item with a running download', async () => {
@@ -768,5 +758,78 @@ describe('queueEtaMs', () => {
     );
     assert.equal(queueEtaMs({ timeleft: '1.02:00:05' }, now), 93_605_000);
     assert.equal(queueEtaMs({}, now), undefined);
+  });
+});
+
+describe('request status', () => {
+  it('fails the tracked run when the request is saved as FAILED', async () => {
+    const { media } = await setup();
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    const requests = getRepository(MediaRequest);
+    const request = await requests.save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy: user,
+        modifiedBy: user,
+      })
+    );
+    progressTracker.start({ mediaId: media.id, is4k: false });
+
+    request.status = MediaRequestStatus.FAILED;
+    await requests.save(request);
+
+    const step = progressTracker
+      .get(media.id, false)!
+      .steps.find((s) => s.key === 'searching')!;
+    assert.equal(step.status, 'failed');
+    assert.equal(step.error, 'Request failed');
+  });
+});
+
+describe('onSignalRMessage', () => {
+  it('syncs each changed item once per burst of events', async () => {
+    const syncMovie = mock.method(radarrScanner, 'syncMovie', async () => {});
+    const syncSeries = mock.method(sonarrScanner, 'syncSeries', async () => {});
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      onSignalRMessage(radarr, { type: 'movie', action: 'updated', id: 42 });
+      onSignalRMessage(radarr, {
+        type: 'movieFile',
+        action: 'deleted',
+        id: 9,
+        movieId: 42,
+      });
+      onSignalRMessage(radarr, { type: 'movie', action: 'deleted', id: 7 });
+      onSignalRMessage(
+        { type: 'sonarr', serverId: 1 },
+        { type: 'episodeFile', action: 'deleted', id: 3, seriesId: 5 }
+      );
+      onSignalRMessage(
+        { type: 'sonarr', serverId: 1 },
+        { type: 'series', action: 'updated', id: 5 }
+      );
+      assert.equal(syncMovie.mock.callCount(), 0);
+
+      mock.timers.tick(DEBOUNCE_MS);
+      await new Promise(setImmediate);
+
+      assert.deepEqual(
+        syncMovie.mock.calls.map((c) => c.arguments),
+        [
+          [0, 42],
+          [0, 7],
+        ]
+      );
+      assert.deepEqual(
+        syncSeries.mock.calls.map((c) => c.arguments),
+        [[1, 5]]
+      );
+    } finally {
+      mock.timers.reset();
+      syncMovie.mock.restore();
+      syncSeries.mock.restore();
+    }
   });
 });

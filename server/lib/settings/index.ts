@@ -183,6 +183,8 @@ export interface MainSettings {
   locale: string;
   youtubeUrl: string;
   versionCheck: boolean;
+  autoRetryFailedRequests: boolean;
+  autoRetryMaxAttempts: number;
 }
 
 export interface ProxySettings {
@@ -412,7 +414,8 @@ export type JobId =
   | 'jellyfin-full-scan'
   | 'image-cache-cleanup'
   | 'availability-sync'
-  | 'process-blocklisted-tags';
+  | 'process-blocklisted-tags'
+  | 'retry-failed-requests';
 
 export interface AllSettings {
   clientId: string;
@@ -770,6 +773,8 @@ class Settings {
         locale: 'en',
         youtubeUrl: '',
         versionCheck: true,
+        autoRetryFailedRequests: true,
+        autoRetryMaxAttempts: 4,
       },
       plex: {
         name: '',
@@ -950,6 +955,9 @@ class Settings {
         },
         'process-blocklisted-tags': {
           schedule: '0 30 1 */7 * *',
+        },
+        'retry-failed-requests': {
+          schedule: '0 */2 * * * *',
         },
       },
       network: {

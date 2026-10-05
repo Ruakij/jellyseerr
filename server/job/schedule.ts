@@ -4,6 +4,7 @@ import availabilitySync from '@server/lib/availabilitySync';
 import downloadTracker from '@server/lib/downloadtracker';
 import ImageProxy from '@server/lib/imageproxy';
 import refreshToken from '@server/lib/refreshToken';
+import { retryFailedRequests } from '@server/lib/requestRetry';
 import {
   jellyfinFullScanner,
   jellyfinRecentScanner,
@@ -257,6 +258,25 @@ export const startJobs = (): void => {
     }),
     running: () => blocklistedTagsProcessor.status().running,
     cancelFn: () => blocklistedTagsProcessor.cancel(),
+  });
+
+  scheduledJobs.push({
+    id: 'retry-failed-requests',
+    name: 'Retry Failed Requests',
+    type: 'process',
+    interval: 'minutes',
+    cronSchedule: jobs['retry-failed-requests'].schedule,
+    job: schedule.scheduleJob(jobs['retry-failed-requests'].schedule, () => {
+      logger.debug('Starting scheduled job: Retry Failed Requests', {
+        label: 'Jobs',
+      });
+      retryFailedRequests().catch((e) => {
+        logger.error('Failed to retry failed requests', {
+          label: 'Jobs',
+          errorMessage: e.message,
+        });
+      });
+    }),
   });
 
   logger.info('Scheduled jobs loaded', { label: 'Jobs' });

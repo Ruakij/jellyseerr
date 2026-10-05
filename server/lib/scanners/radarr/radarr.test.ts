@@ -25,6 +25,24 @@ Object.defineProperty(RadarrAPI.prototype, 'getMovies', {
   configurable: true,
 });
 
+let getMovieImpl: (id: number) => Promise<RadarrMovie> = async () => {
+  throw new Error('Not found', { cause: { response: { status: 404 } } });
+};
+let getMovieByTmdbIdImpl: (
+  tmdbId: number
+) => Promise<RadarrMovie> = async () => {
+  throw new Error('Movie not found');
+};
+Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
+  set() {},
+  get() {
+    return async ({ id }: { id: number }) => getMovieImpl(id);
+  },
+  configurable: true,
+});
+RadarrAPI.prototype.getMovieByTmdbId = async (tmdbId: number) =>
+  getMovieByTmdbIdImpl(tmdbId);
+
 mock.method(MediaRequest, 'sendNotification', async () => undefined);
 
 setupTestDb();
@@ -73,9 +91,47 @@ function fakeRadarrMovie(overrides: Partial<RadarrMovie> = {}): RadarrMovie {
   };
 }
 
+async function seedMovieRequest(
+  tmdbId: number,
+  mediaStatus: MediaStatus,
+  requestStatus: MediaRequestStatus
+): Promise<MediaRequest> {
+  const requestedBy = await getRepository(User).findOneOrFail({
+    where: { id: 1 },
+  });
+  const media = await getRepository(Media).save(
+    new Media({ tmdbId, mediaType: MediaType.MOVIE, status: mediaStatus })
+  );
+  // empty arr settings keep the request subscriber from sending to Radarr
+  const settings = getSettings();
+  settings.radarr = [];
+  settings.sonarr = [];
+  return getRepository(MediaRequest).save(
+    new MediaRequest({
+      type: MediaType.MOVIE,
+      status: requestStatus,
+      media,
+      requestedBy,
+      is4k: false,
+    })
+  );
+}
+
+async function reload(request: MediaRequest): Promise<MediaRequest> {
+  return getRepository(MediaRequest).findOneOrFail({
+    where: { id: request.id },
+  });
+}
+
 describe('Radarr Scanner', () => {
   beforeEach(() => {
     getMoviesImpl = async () => [];
+    getMovieImpl = async () => {
+      throw new Error('Not found', { cause: { response: { status: 404 } } });
+    };
+    getMovieByTmdbIdImpl = async () => {
+      throw new Error('Movie not found');
+    };
   });
 
   describe('unmonitored movie handling', () => {
@@ -403,7 +459,7 @@ describe('Radarr Scanner', () => {
   });
 
   describe('orphaned request handling', () => {
-    it('declines the approved request and resets media to UNKNOWN when the movie is orphaned', async () => {
+    it('fails the approved request and resets media to UNKNOWN when the movie is orphaned', async () => {
       const mediaRepository = getRepository(Media);
       const requestRepository = getRepository(MediaRequest);
       const userRepository = getRepository(User);
@@ -446,10 +502,13 @@ describe('Radarr Scanner', () => {
       });
 
       assert.strictEqual(updatedMedia.status, MediaStatus.UNKNOWN);
-      assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
+      assert.strictEqual(updatedRequest.status, MediaRequestStatus.FAILED);
+      assert.strictEqual(updatedRequest.failureKind, 'permanent');
+      assert.strictEqual(updatedRequest.failureReason, 'Removed from Radarr');
+      assert.strictEqual(updatedRequest.nextRetryAt, null);
     });
 
-    it('does not decline the request when the movie still exists in Radarr', async () => {
+    it('does not fail the request when the movie still exists in Radarr', async () => {
       const mediaRepository = getRepository(Media);
       const requestRepository = getRepository(MediaRequest);
       const userRepository = getRepository(User);
@@ -538,27 +597,7 @@ describe('Radarr Scanner', () => {
       assert.strictEqual(updatedRequest.status, MediaRequestStatus.APPROVED);
     });
 
-    it('declineOrphanedRequests throws when the requests relation is not loaded', async () => {
-      const media = new Media();
-      media.id = 1;
-      media.tmdbId = 123;
-      media.mediaType = MediaType.MOVIE;
-
-      await assert.rejects(
-        () =>
-          (
-            radarrScanner as unknown as {
-              declineOrphanedRequests: (
-                m: Media,
-                is4k: boolean
-              ) => Promise<void>;
-            }
-          ).declineOrphanedRequests(media, false),
-        /without the 'requests' relation loaded/
-      );
-    });
-
-    it('declines only the 4k request when the 4k dimension is orphaned but standard still exists', async () => {
+    it('fails only the 4k request when the 4k dimension is orphaned but standard still exists', async () => {
       const mediaRepository = getRepository(Media);
       const requestRepository = getRepository(MediaRequest);
       const userRepository = getRepository(User);
@@ -636,7 +675,154 @@ describe('Radarr Scanner', () => {
       assert.strictEqual(updatedMedia.status, MediaStatus.PROCESSING);
       assert.strictEqual(updatedMedia.status4k, MediaStatus.UNKNOWN);
       assert.strictEqual(updatedStandard.status, MediaRequestStatus.APPROVED);
-      assert.strictEqual(updated4k.status, MediaRequestStatus.DECLINED);
+      assert.strictEqual(updated4k.status, MediaRequestStatus.FAILED);
+    });
+
+    it('fails the approved request when the movie is unmonitored without a file', async () => {
+      const request = await seedMovieRequest(
+        1100,
+        MediaStatus.PROCESSING,
+        MediaRequestStatus.APPROVED
+      );
+
+      configureRadarr([{ syncEnabled: true }]);
+      getMoviesImpl = async () => [
+        fakeRadarrMovie({ tmdbId: 1100, monitored: false, hasFile: false }),
+      ];
+
+      await radarrScanner.run();
+
+      const updated = await reload(request);
+      assert.strictEqual(updated.status, MediaRequestStatus.FAILED);
+      assert.strictEqual(updated.failureKind, 'permanent');
+      assert.strictEqual(updated.failureReason, 'Not monitored in Radarr');
+      assert.strictEqual(updated.media.status, MediaStatus.UNKNOWN);
+    });
+
+    it('leaves a pending request untouched when the movie is removed', async () => {
+      const request = await seedMovieRequest(
+        1101,
+        MediaStatus.PROCESSING,
+        MediaRequestStatus.PENDING
+      );
+
+      configureRadarr([{ syncEnabled: true }]);
+      getMoviesImpl = async () => [fakeRadarrMovie({ tmdbId: 1, id: 99 })];
+
+      await radarrScanner.run();
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.PENDING
+      );
+    });
+
+    it('leaves the request of available media untouched when the movie is unmonitored', async () => {
+      const request = await seedMovieRequest(
+        1102,
+        MediaStatus.AVAILABLE,
+        MediaRequestStatus.APPROVED
+      );
+
+      configureRadarr([{ syncEnabled: true }]);
+      getMoviesImpl = async () => [
+        fakeRadarrMovie({ tmdbId: 1102, monitored: false, hasFile: false }),
+      ];
+
+      await radarrScanner.run();
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.APPROVED
+      );
+    });
+
+    it('changes nothing when Radarr is unreachable', async () => {
+      const request = await seedMovieRequest(
+        1103,
+        MediaStatus.PROCESSING,
+        MediaRequestStatus.APPROVED
+      );
+
+      configureRadarr([{ syncEnabled: true }]);
+      getMoviesImpl = async () => {
+        throw new Error('connect ECONNREFUSED');
+      };
+
+      await radarrScanner.run();
+
+      const updated = await reload(request);
+      assert.strictEqual(updated.status, MediaRequestStatus.APPROVED);
+      assert.strictEqual(updated.media.status, MediaStatus.PROCESSING);
+    });
+  });
+
+  describe('syncMovie', () => {
+    async function seedLinked(tmdbId: number) {
+      const request = await seedMovieRequest(
+        tmdbId,
+        MediaStatus.PROCESSING,
+        MediaRequestStatus.APPROVED
+      );
+      await getRepository(Media).update(request.media.id, {
+        serviceId: 0,
+        externalServiceId: 42,
+      });
+      return request;
+    }
+
+    it('fails the request of a movie deleted in Radarr', async () => {
+      const request = await seedLinked(1200);
+      configureRadarr([{ syncEnabled: true }]);
+
+      await radarrScanner.syncMovie(0, 42);
+
+      const updated = await reload(request);
+      assert.strictEqual(updated.status, MediaRequestStatus.FAILED);
+      assert.strictEqual(updated.media.status, MediaStatus.UNKNOWN);
+    });
+
+    it('keeps the request while another Radarr server has the movie', async () => {
+      const request = await seedLinked(1201);
+      configureRadarr([{ syncEnabled: true }, { syncEnabled: true }]);
+      getMovieByTmdbIdImpl = async (tmdbId) =>
+        fakeRadarrMovie({ tmdbId, id: 7, hasFile: false });
+
+      await radarrScanner.syncMovie(0, 42);
+
+      const updated = await reload(request);
+      assert.strictEqual(updated.status, MediaRequestStatus.APPROVED);
+      assert.strictEqual(updated.media.status, MediaStatus.PROCESSING);
+      assert.strictEqual(updated.media.serviceId, 1);
+    });
+
+    it('fails the request of a movie unmonitored in Radarr', async () => {
+      const request = await seedLinked(1202);
+      configureRadarr([{ syncEnabled: true }]);
+      getMovieImpl = async (id) =>
+        fakeRadarrMovie({ tmdbId: 1202, id, monitored: false, hasFile: false });
+
+      await radarrScanner.syncMovie(0, 42);
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.FAILED
+      );
+    });
+
+    it('changes nothing when Radarr fails otherwise', async () => {
+      const request = await seedLinked(1203);
+      configureRadarr([{ syncEnabled: true }]);
+      getMovieImpl = async () => {
+        throw new Error('connect ECONNREFUSED');
+      };
+
+      await assert.rejects(radarrScanner.syncMovie(0, 42));
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.APPROVED
+      );
     });
   });
 });
