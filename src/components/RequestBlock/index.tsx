@@ -2,6 +2,7 @@ import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
 import Tooltip from '@app/components/Common/Tooltip';
+import RequestFailedBadge from '@app/components/RequestFailedBadge';
 import RequestModal from '@app/components/RequestModal';
 import useRequestOverride from '@app/hooks/useRequestOverride';
 import { useUser } from '@app/hooks/useUser';
@@ -225,9 +226,7 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
                 </Badge>
               )}
               {request.status === MediaRequestStatus.FAILED && (
-                <Badge badgeType="danger">
-                  {intl.formatMessage(globalMessages.failed)}
-                </Badge>
+                <RequestFailedBadge request={request} />
               )}
               {request.status === MediaRequestStatus.COMPLETED && (
                 <Badge badgeType="success">
