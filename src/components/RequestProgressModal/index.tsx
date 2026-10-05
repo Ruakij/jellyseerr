@@ -17,7 +17,13 @@ import type {
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
 import axios from 'axios';
-import { useEffect, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from 'react';
 import { useIntl } from 'react-intl';
 import useSWR from 'swr';
 
@@ -426,6 +432,48 @@ const RequestProgressModal = ({
   );
 };
 
+interface ProgressTarget {
+  mediaId: number;
+  is4k: boolean;
+  subTitle?: string;
+}
+
+const OpenProgressContext = createContext<(target: ProgressTarget) => void>(
+  () => undefined
+);
+
+// One pop-up for the whole app: a badge or list row that opened it unmounts
+// when the media or request status changes, and the pop-up must outlive it
+export const RequestProgressProvider = ({
+  children,
+}: {
+  children: React.ReactNode;
+}) => {
+  const [target, setTarget] = useState<ProgressTarget>();
+  const [show, setShow] = useState(false);
+  const progress = useRequestProgress(
+    show ? target?.mediaId : undefined,
+    !!target?.is4k
+  );
+  const open = useCallback((t: ProgressTarget) => {
+    setTarget(t);
+    setShow(true);
+  }, []);
+  const close = useCallback(() => setShow(false), []);
+
+  return (
+    <OpenProgressContext.Provider value={open}>
+      {children}
+      <RequestProgressModal
+        show={show}
+        progress={progress}
+        subTitle={target?.subTitle}
+        onClose={close}
+      />
+    </OpenProgressContext.Provider>
+  );
+};
+
 interface RequestProgressTriggerProps {
   mediaId?: number;
   is4k?: boolean;
@@ -440,20 +488,8 @@ export const RequestProgressTrigger = ({
   subTitle,
   children,
 }: RequestProgressTriggerProps) => {
-  const [show, setShow] = useState(false);
-  const progress = useRequestProgress(show ? mediaId : undefined, is4k);
-
-  return (
-    <>
-      {children(() => setShow(true))}
-      <RequestProgressModal
-        show={show}
-        progress={progress}
-        subTitle={subTitle}
-        onClose={() => setShow(false)}
-      />
-    </>
-  );
+  const open = useContext(OpenProgressContext);
+  return <>{children(() => mediaId && open({ mediaId, is4k, subTitle }))}</>;
 };
 
 export default RequestProgressModal;
