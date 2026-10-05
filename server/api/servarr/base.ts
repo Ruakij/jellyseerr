@@ -78,6 +78,48 @@ interface QueueResponse<QueueItemAppendT> {
   records: (QueueItem & QueueItemAppendT)[];
 }
 
+export type HistoryEventType =
+  | 'unknown'
+  | 'grabbed'
+  | 'downloadFolderImported'
+  | 'downloadFailed'
+  | 'downloadIgnored'
+  | 'movieFolderImported'
+  | 'movieFileDeleted'
+  | 'movieFileRenamed'
+  | 'seriesFolderImported'
+  | 'episodeFileDeleted'
+  | 'episodeFileRenamed';
+
+// Radarr and Sonarr number their history enums differently; these three share their values.
+const HISTORY_EVENT_TYPE_IDS = {
+  grabbed: 1,
+  downloadFolderImported: 3,
+  downloadFailed: 4,
+} as const;
+
+export type HistoryEventTypeFilter = keyof typeof HISTORY_EVENT_TYPE_IDS;
+
+export interface HistoryRecord {
+  id: number;
+  date: string;
+  eventType: HistoryEventType;
+  sourceTitle: string;
+  // Shared by the grabbed and the import records of one download; absent for manual imports.
+  downloadId?: string;
+  movieId?: number;
+  seriesId?: number;
+  episodeId?: number;
+  data: Record<string, string | undefined>;
+}
+
+interface HistoryResponse {
+  page: number;
+  pageSize: number;
+  totalRecords: number;
+  records: HistoryRecord[];
+}
+
 class ServarrBase<QueueItemAppendT> extends ExternalAPI {
   static buildUrl(settings: DVRSettings, path?: string): string {
     return `${settings.useSsl ? 'https' : 'http'}://${settings.hostname}:${
@@ -176,6 +218,50 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
     } catch (e) {
       throw new Error(
         `[${this.apiName}] Failed to retrieve queue: ${e.message}`,
+        { cause: e }
+      );
+    }
+  };
+
+  /**
+   * Newest records first. With `since`, all records after that date are returned unpaged.
+   */
+  public getHistory = async ({
+    eventType,
+    since,
+    page = 1,
+    pageSize = 200,
+  }: {
+    eventType?: HistoryEventTypeFilter;
+    since?: Date;
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<HistoryRecord[]> => {
+    const eventTypeId = eventType && HISTORY_EVENT_TYPE_IDS[eventType];
+    try {
+      if (since) {
+        const response = await this.axios.get<HistoryRecord[]>(
+          '/history/since',
+          { params: { date: since.toISOString(), eventType: eventTypeId } }
+        );
+        return [...response.data].sort(
+          (a, b) => Date.parse(b.date) - Date.parse(a.date)
+        );
+      }
+
+      const response = await this.axios.get<HistoryResponse>('/history', {
+        params: {
+          page,
+          pageSize,
+          sortKey: 'date',
+          sortDirection: 'descending',
+          eventType: eventTypeId,
+        },
+      });
+      return response.data.records;
+    } catch (e) {
+      throw new Error(
+        `[${this.apiName}] Failed to retrieve history: ${e.message}`,
         { cause: e }
       );
     }
