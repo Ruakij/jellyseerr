@@ -1,20 +1,16 @@
-import { SmallLoadingSpinner } from '@app/components/Common/LoadingSpinner';
+import Button from '@app/components/Common/Button';
 import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestBlock from '@app/components/RequestBlock';
+import StepGraphic from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
-import {
-  CheckCircleIcon,
-  EllipsisHorizontalCircleIcon,
-  XCircleIcon,
-} from '@heroicons/react/24/solid';
+import { PlayIcon } from '@heroicons/react/24/solid';
 import type { MediaRequest } from '@server/entity/MediaRequest';
 import type {
-  ProgressDownload,
   ProgressStep,
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
@@ -48,12 +44,14 @@ const stepElapsed = (step: ProgressStep, now: number): number | undefined => {
   return undefined;
 };
 
-// p90 of a download says nothing before its size is known; the client ETA does
-const stepEstimate = (
-  step: ProgressStep,
-  downloads?: ProgressDownload[]
+// The only reads of the estimate fields of the API: a step's, or the total
+const estimateMs = (
+  progress: RequestProgress,
+  step?: ProgressStep
 ): number | undefined => {
-  const etas = (downloads ?? [])
+  if (!step) return progress.totalP90Ms;
+  // p90 of a download says nothing before its size is known; the client ETA does
+  const etas = (progress.downloads ?? [])
     .map((d) => d.etaMs)
     .filter((eta): eta is number => eta !== undefined);
   return step.key === 'grabbed' && etas.length > 0
@@ -61,21 +59,18 @@ const stepEstimate = (
     : step.p90Ms;
 };
 
-const StepIcon = ({ status }: { status: ProgressStep['status'] }) => {
-  switch (status) {
-    case 'done':
-      return <CheckCircleIcon className="h-6 w-6 text-green-500" />;
-    case 'failed':
-      return <XCircleIcon className="h-6 w-6 text-red-500" />;
-    case 'running':
-      return (
-        <div className="h-6 w-6 [&_svg]:h-6 [&_svg]:w-6">
-          <SmallLoadingSpinner />
-        </div>
-      );
-    default:
-      return <EllipsisHorizontalCircleIcon className="h-6 w-6 text-gray-600" />;
-  }
+// The step the detail panel shows: a failure, else what runs, else the latest
+const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
+  steps.find((s) => s.status === 'failed') ??
+  steps.find((s) => s.status === 'running') ??
+  [...steps].reverse().find((s) => s.status === 'done') ??
+  steps[0];
+
+const sceneColor: Record<ProgressStep['status'], string> = {
+  done: 'text-green-400',
+  running: 'text-indigo-300',
+  failed: 'text-red-400',
+  pending: 'text-gray-600',
 };
 
 interface RequestProgressModalProps {
@@ -116,12 +111,19 @@ const RequestProgressModal = ({
 
   const estimate = (ms?: number) =>
     ms !== undefined && (
-      <span className="text-xs text-gray-500">
+      <span className="text-gray-500">
         {intl.formatMessage(messages.estimate, {
           duration: formatDuration(ms),
         })}
       </span>
     );
+
+  const step = progress && currentStep(progress.steps);
+  const stepMs = step && stepElapsed(step, now);
+  const downloads =
+    step?.key === 'grabbed' && step.status === 'running'
+      ? (progress?.downloads ?? [])
+      : [];
 
   return (
     <Transition
@@ -141,105 +143,106 @@ const RequestProgressModal = ({
         subTitle={subTitle}
         onCancel={onClose}
         cancelText={intl.formatMessage(globalMessages.close)}
-        onOk={
-          progress?.playUrl
-            ? () => window.open(progress.playUrl, '_blank', 'noopener')
-            : undefined
-        }
-        okText={intl.formatMessage(messages.watch)}
-        okButtonType="success"
       >
         {progress && (
-          <ProgressStepper
-            steps={progress.steps}
-            downloads={progress.downloads}
-            label={(key) => intl.formatMessage(messages[key])}
-          />
-        )}
-        <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-3 gap-y-1">
-          {progress?.steps.map((step) => {
-            const elapsed = stepElapsed(step, now);
-            return (
-              <div key={step.key} className="contents">
-                <div className="mt-2">
-                  <StepIcon status={step.status} />
-                </div>
-                <span
-                  className={`mt-2 ${
-                    step.status === 'pending' ? 'text-gray-500' : 'text-white'
-                  }`}
-                >
-                  {intl.formatMessage(messages[step.key])}
-                </span>
-                <span className="mt-2 text-right text-xs text-gray-200">
-                  {elapsed !== undefined && formatDuration(elapsed)}
-                </span>
-                <span className="mt-2 text-right">
-                  {estimate(stepEstimate(step, progress?.downloads))}
-                </span>
-                {step.detail && (
-                  <div className="col-span-3 col-start-2 break-words text-xs text-gray-400">
-                    {step.detail}
-                  </div>
-                )}
-                {step.status === 'failed' && step.error && (
-                  <div className="col-span-3 col-start-2 text-xs text-red-400">
-                    {step.error}
-                  </div>
-                )}
-                {step.key === 'grabbed' &&
-                  step.status === 'running' &&
-                  progress?.downloads?.map((dl, i) => (
-                    <div
-                      key={`dl-${i}`}
-                      className="col-span-3 col-start-2 text-xs text-gray-400"
-                    >
-                      <div className="flex justify-between space-x-2">
-                        <Tooltip content={dl.title}>
-                          <span className="truncate text-gray-300">
-                            {dl.title}
-                          </span>
-                        </Tooltip>
-                        {dl.indexer && (
-                          <span className="flex-shrink-0">{dl.indexer}</span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex items-center space-x-2">
-                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-700">
-                          <div
-                            className="h-full bg-indigo-500 transition-all duration-500"
-                            style={{
-                              width: `${
-                                dl.size > 0
-                                  ? ((dl.size - dl.sizeLeft) / dl.size) * 100
-                                  : 0
-                              }%`,
-                            }}
-                          />
-                        </div>
-                        {estimate(dl.etaMs)}
-                      </div>
-                    </div>
-                  ))}
+          <>
+            <ProgressStepper
+              steps={progress.steps}
+              downloads={progress.downloads}
+              label={(key) => intl.formatMessage(messages[key])}
+              time={(s) => {
+                const ms = stepElapsed(s, now);
+                return ms === undefined ? undefined : formatDuration(ms);
+              }}
+            />
+            {totalMs !== undefined && (
+              <div className="mt-2 text-center text-xs tabular-nums text-gray-300">
+                {intl.formatMessage(messages.total)} {formatDuration(totalMs)}{' '}
+                {estimate(estimateMs(progress))}
               </div>
-            );
-          })}
-          {totalMs !== undefined && (
-            <>
-              <div className="col-span-4 mt-3 border-t border-gray-700" />
-              <span />
-              <span className="mt-2 text-white">
-                {intl.formatMessage(messages.total)}
-              </span>
-              <span className="mt-2 text-right text-xs text-white">
-                {formatDuration(totalMs)}
-              </span>
-              <span className="mt-2 text-right">
-                {estimate(progress?.totalP90Ms)}
-              </span>
-            </>
-          )}
-        </div>
+            )}
+          </>
+        )}
+        {step && progress && (
+          <div className="mt-4 flex flex-col items-center gap-4 rounded-lg bg-gray-900/40 p-4 sm:flex-row sm:items-start">
+            <div
+              className={`flex h-24 w-24 flex-shrink-0 items-center justify-center ${
+                sceneColor[step.status]
+              }`}
+            >
+              <StepGraphic
+                step={step}
+                downloads={progress.downloads}
+                className={
+                  step.status === 'running' || step.key === 'playable'
+                    ? 'h-24 w-24'
+                    : 'h-14 w-14'
+                }
+              />
+            </div>
+            <div className="w-full min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                <h3 className="text-lg font-semibold text-white">
+                  {intl.formatMessage(messages[step.key])}
+                </h3>
+                <span className="text-sm tabular-nums text-gray-300">
+                  {stepMs !== undefined && formatDuration(stepMs)}{' '}
+                  {estimate(estimateMs(progress, step))}
+                </span>
+              </div>
+              {step.detail && (
+                <p className="mt-1 break-words text-sm text-gray-400">
+                  {step.detail}
+                </p>
+              )}
+              {step.status === 'failed' && step.error && (
+                <p className="mt-2 break-words text-sm text-red-400">
+                  {step.error}
+                </p>
+              )}
+              {downloads.map((dl, i) => (
+                <div key={`dl-${i}`} className="mt-3 text-xs text-gray-400">
+                  <div className="flex justify-between gap-2">
+                    <Tooltip content={dl.title}>
+                      <span className="truncate text-gray-300">{dl.title}</span>
+                    </Tooltip>
+                    {dl.indexer && (
+                      <span className="flex-shrink-0">{dl.indexer}</span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-700">
+                      <div
+                        className="h-full bg-indigo-500 transition-all duration-500"
+                        style={{
+                          width: `${
+                            dl.size > 0
+                              ? ((dl.size - dl.sizeLeft) / dl.size) * 100
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                    {estimate(dl.etaMs)}
+                  </div>
+                </div>
+              ))}
+              {step.key === 'playable' && progress.playUrl && (
+                <Button
+                  as="a"
+                  href={progress.playUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  buttonType="success"
+                  className="mt-3"
+                >
+                  <PlayIcon />
+                  <span>{intl.formatMessage(messages.watch)}</span>
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
         {request && (
           <div className="-mx-4 mt-4 border-t border-gray-700">
             <RequestBlock request={request} />
