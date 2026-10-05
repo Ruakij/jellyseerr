@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { before, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 
 import TheMovieDb from '@server/api/themoviedb';
 import type {
@@ -22,7 +22,7 @@ import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import { checkUser, isAuthenticated } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
-import type { Express } from 'express';
+import { listenOnLocalhost } from '@server/test/server';
 import express from 'express';
 import session from 'express-session';
 import request from 'supertest';
@@ -84,8 +84,6 @@ Object.defineProperty(TheMovieDb.prototype, 'getTvShow', {
   configurable: true,
 });
 
-let app: Express;
-
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -116,9 +114,7 @@ function createApp() {
   return app;
 }
 
-before(async () => {
-  app = createApp();
-});
+const app = listenOnLocalhost(createApp());
 
 setupTestDb();
 
