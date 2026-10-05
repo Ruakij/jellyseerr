@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { after, afterEach, before, describe, it } from 'node:test';
 
 import type { HistoryRecord } from '@server/api/servarr/base';
 import { getRepository } from '@server/datasource';
@@ -8,6 +8,7 @@ import {
   MIN_TOTAL_SAMPLES,
   StepStats,
   pairGrabToImport,
+  pairRequestToGrab,
   percentile,
   windowed,
 } from '@server/lib/requestProgress/stepStats';
@@ -125,7 +126,79 @@ describe('pairGrabToImport', () => {
   });
 });
 
+describe('pairRequestToGrab', () => {
+  const grab = (
+    date: string,
+    downloadId: string,
+    item: Partial<HistoryRecord>
+  ): HistoryRecord => ({
+    ...rec('grabbed', date, downloadId),
+    movieId: undefined,
+    ...item,
+  });
+
+  it('pairs a request with the first grab of its item after it', () => {
+    const samples = pairRequestToGrab(
+      [{ at: Date.parse('2026-10-05T10:00:00Z'), arrId: 1 }],
+      [
+        grab('2026-10-05T10:05:00Z', 'later', { movieId: 1 }),
+        grab('2026-10-05T09:00:00Z', 'before', { movieId: 1 }),
+        grab('2026-10-05T10:01:00Z', 'other', { movieId: 2 }),
+        grab('2026-10-05T10:02:00Z', 'first', { movieId: 1 }),
+        rec('downloadFolderImported', '2026-10-05T10:01:30Z', 'import'),
+      ]
+    );
+    assert.deepEqual(samples, [
+      {
+        at: Date.parse('2026-10-05T10:02:00Z'),
+        durationMs: 120_000,
+        downloadId: 'first',
+      },
+    ]);
+  });
+
+  it('matches series grabs of the requested seasons only', () => {
+    const samples = pairRequestToGrab(
+      [{ at: Date.parse('2026-10-05T10:00:00Z'), arrId: 7, seasons: [2] }],
+      [
+        grab('2026-10-05T10:01:00Z', 's1', {
+          seriesId: 7,
+          episode: { seasonNumber: 1, episodeNumber: 1 },
+        }),
+        grab('2026-10-05T10:03:00Z', 's2', {
+          seriesId: 7,
+          episode: { seasonNumber: 2, episodeNumber: 1 },
+        }),
+      ]
+    );
+    assert.deepEqual(
+      samples.map((s) => s.downloadId),
+      ['s2']
+    );
+  });
+
+  it('counts a grab two requests reach once, for the later request', () => {
+    const samples = pairRequestToGrab(
+      [
+        { at: Date.parse('2026-10-05T10:00:00Z'), arrId: 1 },
+        { at: Date.parse('2026-10-05T10:04:00Z'), arrId: 1 },
+      ],
+      [grab('2026-10-05T10:05:00Z', 'A', { movieId: 1 })]
+    );
+    assert.deepEqual(
+      samples.map((s) => s.durationMs),
+      [60_000]
+    );
+  });
+});
+
 describe('StepStats', () => {
+  // The history records are fixed dates, which an age limit would drop some day.
+  const settings = getSettings().requestProgress;
+  const { historyMaxAgeDays } = settings;
+  before(() => (settings.historyMaxAgeDays = 0));
+  after(() => (settings.historyMaxAgeDays = historyMaxAgeDays));
+
   it('merges history and recorded samples for importing, per server', async () => {
     const stats = new StepStats();
     await stats.refresh('radarr-0', sevenSecondGrab);
@@ -170,6 +243,23 @@ describe('StepStats', () => {
       p50: 9_000,
       p90: 9_000,
     });
+  });
+
+  it('seeds searching from requests and their grabs, unless tracked', async () => {
+    const stats = new StepStats();
+    let since: Date | undefined;
+    await stats.refresh('s', sevenSecondGrab, async (from) => {
+      since = from;
+      return [{ at: Date.parse('2026-10-05T09:59:00Z'), arrId: 1 }];
+    });
+    assert.deepEqual(since, new Date('2026-10-05T10:00:00Z'));
+    assert.deepEqual(stats.get('s').searching, {
+      count: 1,
+      p50: 60_000,
+      p90: 60_000,
+    });
+    stats.record('s', 'searching', 5_000, { downloadId: 'A' });
+    assert.equal(stats.get('s').searching.count, 1);
   });
 
   it('keeps the previous history when a refresh fails', async () => {

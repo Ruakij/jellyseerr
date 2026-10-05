@@ -21,6 +21,7 @@ import {
   reconcileJellyfin,
   refreshServer,
   rememberEpisode,
+  requestStarts,
 } from '@server/lib/requestProgress/events';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
 import { ProgressTracker } from '@server/lib/requestProgress/tracker';
@@ -465,6 +466,78 @@ describe('reconcileJellyfin', () => {
     const progress = tracker.get(media.id, false)!;
     assert.ok(progress.steps.every((s) => s.status === 'done'));
     assert.match(progress.playUrl ?? '', /id=abc/);
+  });
+});
+
+describe('requestStarts', () => {
+  it('lists auto-approved requests sent to the server since a date', async () => {
+    getSettings().sonarr = [
+      { id: 0, name: 'Sonarr', hostname: 'localhost', port: 8989, apiKey: 'k' },
+      {
+        id: 1,
+        name: 'Sonarr 4K',
+        hostname: 'localhost',
+        port: 8990,
+        apiKey: 'k',
+        is4k: true,
+      },
+    ] as SonarrSettings[];
+    const users = getRepository(User);
+    const admin = await users.findOneByOrFail({ id: 1 });
+    const friend = await users.findOneByOrFail({ email: 'friend@seerr.dev' });
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 1,
+        tvdbId: 2,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 34,
+        serviceId4k: 1,
+        externalServiceId4k: 56,
+      })
+    );
+    const request = (
+      createdAt: string,
+      status: MediaRequestStatus,
+      modifiedBy: User,
+      is4k = false
+    ) =>
+      new MediaRequest({
+        type: MediaType.TV,
+        status,
+        media,
+        is4k,
+        requestedBy: friend,
+        modifiedBy,
+        createdAt: new Date(createdAt),
+        seasons: [new SeasonRequest({ seasonNumber: 2 })],
+      });
+    await getRepository(MediaRequest).save([
+      request('2026-10-05T10:00:00Z', MediaRequestStatus.APPROVED, friend),
+      request('2026-10-05T11:00:00Z', MediaRequestStatus.COMPLETED, friend),
+      request('2026-10-04T10:00:00Z', MediaRequestStatus.APPROVED, friend),
+      request('2026-10-05T12:00:00Z', MediaRequestStatus.APPROVED, admin),
+      request('2026-10-05T13:00:00Z', MediaRequestStatus.PENDING, friend),
+      request(
+        '2026-10-05T14:00:00Z',
+        MediaRequestStatus.APPROVED,
+        friend,
+        true
+      ),
+    ]);
+
+    const since = new Date('2026-10-05T00:00:00Z');
+    const starts = (await requestStarts('sonarr', 0, since)).sort(
+      (a, b) => a.at - b.at
+    );
+    assert.deepEqual(starts, [
+      { at: Date.parse('2026-10-05T10:00:00Z'), arrId: 34, seasons: [2] },
+      { at: Date.parse('2026-10-05T11:00:00Z'), arrId: 34, seasons: [2] },
+    ]);
+    assert.deepEqual(await requestStarts('sonarr', 1, since), [
+      { at: Date.parse('2026-10-05T14:00:00Z'), arrId: 56, seasons: [2] },
+    ]);
   });
 });
 
