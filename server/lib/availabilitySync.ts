@@ -43,6 +43,8 @@ class AvailabilitySync {
   private singleSyncs: Promise<void> = Promise.resolve();
 
   async run() {
+    // The schedule and the removal events both start it.
+    if (this.running) return;
     this.running = true;
 
     try {
