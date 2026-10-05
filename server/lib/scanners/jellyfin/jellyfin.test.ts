@@ -19,7 +19,7 @@ import type { Library } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
 import assert from 'node:assert/strict';
-import { beforeEach, describe, it } from 'node:test';
+import { beforeEach, describe, it, mock } from 'node:test';
 
 // --- Mock animeList.sync to avoid filesystem/network I/O in tests ---
 Object.defineProperty(animeList, 'sync', {
@@ -59,13 +59,13 @@ Object.defineProperty(JellyfinAPI.prototype, 'getItemData', {
   configurable: true,
 });
 
-let getAncestorsImpl: (
-  id: string
-) => Promise<{ Id: string; Type: string }[]> = async () => [];
+let getVirtualFoldersImpl: () => Promise<
+  { ItemId: string; Locations: string[] }[]
+> = async () => [];
 
-Object.defineProperty(JellyfinAPI.prototype, 'getAncestors', {
+Object.defineProperty(JellyfinAPI.prototype, 'getVirtualFolders', {
   get() {
-    return async (id: string) => getAncestorsImpl(id);
+    return async () => getVirtualFoldersImpl();
   },
   set() {},
   configurable: true,
@@ -249,7 +249,7 @@ describe('Jellyfin Scanner', () => {
   beforeEach(async () => {
     getLibraryContentsImpl = async () => [];
     getItemDataImpl = async () => undefined;
-    getAncestorsImpl = async () => [];
+    getVirtualFoldersImpl = async () => [];
     getSeasonsImpl = async () => [];
     getEpisodesImpl = async () => [];
     getTvShowImpl = async () => fakeTmdbShow(1);
@@ -529,28 +529,63 @@ describe('Jellyfin Scanner', () => {
   });
 
   describe('runItems', () => {
-    it('skips items of disabled libraries', async () => {
+    const scanned = async (ids: string[]) => {
+      const processed = mock.method(
+        jellyfinItemScanner as unknown as { processItem: () => Promise<void> },
+        'processItem',
+        async () => undefined
+      );
+      try {
+        await jellyfinItemScanner.runItems(ids);
+        return processed.mock.calls.map(
+          (c) => (c.arguments as unknown as [{ Id: string }])[0].Id
+        );
+      } finally {
+        processed.mock.restore();
+      }
+    };
+
+    // Jellyfin lists only the physical folder and the root as ancestors, never the library.
+    it('scans items under an enabled library location only', async () => {
       configureJellyfinWithLibrary([
-        { id: 'lib-on', name: 'Movies', enabled: true, type: 'movie' },
-        { id: 'lib-off', name: 'Other', enabled: false, type: 'movie' },
+        { id: 'lib-on', name: 'Shows', enabled: true, type: 'show' },
+        { id: 'lib-off', name: 'Other', enabled: false, type: 'show' },
       ]);
-      getAncestorsImpl = async (id) => [
-        { Id: `${id}-folder`, Type: 'Folder' },
-        {
-          Id: id === 'in-on' ? 'lib-on' : id === 'in-off' ? 'lib-off' : 'x',
-          Type: 'CollectionFolder',
-        },
-        { Id: 'root', Type: 'AggregateFolder' },
+      getVirtualFoldersImpl = async () => [
+        { ItemId: 'lib-on', Locations: ['/media/tv/'] },
+        { ItemId: 'lib-off', Locations: ['/media/other'] },
       ];
-      const fetched: string[] = [];
-      getItemDataImpl = async (id) => {
-        fetched.push(id);
-        return undefined;
+      const paths: Record<string, string> = {
+        'in-on': '/media/tv/Show A',
+        'in-off': '/media/other/Show B',
       };
+      getItemDataImpl = async (id) =>
+        ({
+          Id: id,
+          Name: id,
+          Type: 'Series',
+          Path: paths[id],
+        }) as JellyfinLibraryItemExtended;
 
-      await jellyfinItemScanner.runItems(['in-on', 'in-off', 'in-unknown']);
+      assert.deepEqual(await scanned(['in-on', 'in-off']), ['in-on']);
+    });
 
-      assert.deepEqual(fetched, ['in-on']);
+    it('scans items whose library cannot be decided', async () => {
+      configureJellyfinWithLibrary([
+        { id: 'lib-on', name: 'Shows', enabled: true, type: 'show' },
+      ]);
+      getVirtualFoldersImpl = async () => {
+        throw new Error('forbidden');
+      };
+      getItemDataImpl = async (id) =>
+        ({
+          Id: id,
+          Name: id,
+          Type: 'Series',
+          Path: '/anywhere',
+        }) as JellyfinLibraryItemExtended;
+
+      assert.deepEqual(await scanned(['a']), ['a']);
     });
   });
 });
