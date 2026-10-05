@@ -28,10 +28,96 @@ describe('parseSignalRMessage', () => {
         status: 'completed',
         result: 'successful',
         message: 'Completed',
+        trigger: undefined,
+        reportsDownloaded: undefined,
         movieIds: [7],
         seriesId: undefined,
         seasonNumber: undefined,
         episodeIds: undefined,
+      }
+    );
+  });
+
+  // Shapes captured from Radarr 6.4.4 and Sonarr 4.0.20.
+  const captured = (resource: Record<string, unknown>) => ({
+    name: 'command',
+    body: { action: 'updated', resource },
+  });
+
+  it('reads the reports downloaded and trigger of a completed search', () => {
+    const event = parseSignalRMessage(
+      captured({
+        id: 4673285,
+        name: 'MoviesSearch',
+        status: 'completed',
+        result: 'successful',
+        trigger: 'manual',
+        message: 'Completed search for 1 movies. 0 reports downloaded.',
+        body: { movieIds: [382], trigger: 'manual' },
+      })
+    );
+    assert.ok(event?.type === 'command');
+    assert.equal(event.reportsDownloaded, 0);
+    assert.equal(event.trigger, 'manual');
+    assert.deepEqual(event.movieIds, [382]);
+
+    const sonarr = parseSignalRMessage(
+      captured({
+        id: 5335091,
+        name: 'EpisodeSearch',
+        status: 'completed',
+        result: 'successful',
+        trigger: 'unspecified',
+        message: 'Episode search completed. 1 reports downloaded.',
+        body: { movieIds: null, episodeIds: [10800], seriesId: null },
+      })
+    );
+    assert.ok(sonarr?.type === 'command');
+    assert.equal(sonarr.reportsDownloaded, 1);
+    assert.equal(sonarr.trigger, 'unspecified');
+    assert.deepEqual(sonarr.episodeIds, [10800]);
+    assert.equal(sonarr.seriesId, undefined);
+  });
+
+  it('ignores the report count while a search is still started', () => {
+    const event = parseSignalRMessage(
+      captured({
+        id: 5335132,
+        name: 'EpisodeSearch',
+        status: 'started',
+        trigger: 'manual',
+        message: 'Episode search completed. 1 reports downloaded.',
+        body: { episodeIds: [13171] },
+      })
+    );
+    assert.ok(event?.type === 'command');
+    assert.equal(event.reportsDownloaded, undefined);
+  });
+
+  it('parses a Sonarr episode update', () => {
+    assert.deepStrictEqual(
+      parseSignalRMessage({
+        name: 'episode',
+        body: {
+          action: 'updated',
+          resource: {
+            seriesId: 34,
+            tvdbId: 11002134,
+            episodeFileId: 0,
+            seasonNumber: 21,
+            hasFile: false,
+            grabbed: true,
+            id: 10800,
+          },
+        },
+      }),
+      {
+        type: 'episode',
+        action: 'updated',
+        id: 10800,
+        seriesId: 34,
+        episodeFileId: 0,
+        hasFile: false,
       }
     );
   });
@@ -64,6 +150,19 @@ describe('parseSignalRMessage', () => {
       undefined
     );
     assert.equal(parseSignalRMessage(cmd('MoviesSearch', 'weird')), undefined);
+  });
+
+  it('maps a queue status with warnings to a queue event', () => {
+    assert.deepStrictEqual(
+      parseSignalRMessage({
+        name: 'queue/status',
+        body: {
+          action: 'updated',
+          resource: { totalCount: 1, count: 1, errors: false, warnings: true },
+        },
+      }),
+      { type: 'queue' }
+    );
   });
 
   it('maps all queue messages to a queue event', () => {
