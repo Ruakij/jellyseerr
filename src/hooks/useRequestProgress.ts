@@ -5,14 +5,13 @@ const RETRY_MS = 5000;
 
 const useRequestProgress = (
   mediaId: number | undefined,
-  is4k: boolean,
-  enabled = true
+  is4k: boolean
 ): RequestProgress | undefined => {
   const [progress, setProgress] = useState<RequestProgress>();
 
   useEffect(() => {
     setProgress(undefined);
-    if (!mediaId || !enabled) {
+    if (!mediaId) {
       return;
     }
 
@@ -39,7 +38,7 @@ const useRequestProgress = (
       clearTimeout(retry);
       source?.close();
     };
-  }, [mediaId, is4k, enabled]);
+  }, [mediaId, is4k]);
 
   return progress;
 };

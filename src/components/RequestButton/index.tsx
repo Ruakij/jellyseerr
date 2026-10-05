@@ -26,6 +26,9 @@ import { mutate } from 'swr';
 const messages = defineMessages('components.RequestButton', {
   requestandwatch: 'Request & Watch',
   requestonly: 'Request only',
+  requestmoreandwatch: 'Request More & Watch',
+  request4kandwatch: 'Request in 4K & Watch',
+  requestmore4kandwatch: 'Request More in 4K & Watch',
   showprogress: 'Show Progress',
   viewrequest: 'View Request',
   viewrequest4k: 'View 4K Request',
@@ -76,15 +79,31 @@ const RequestButton = ({
   const [showRequest4kModal, setShowRequest4kModal] = useState(false);
   const [editRequest, setEditRequest] = useState(false);
   const [watchAfterRequest, setWatchAfterRequest] = useState(false);
-  const [trackProgress, setTrackProgress] = useState(false);
+  const [tracked, setTracked] = useState<{ mediaId?: number; is4k: boolean }>();
   const [showProgress, setShowProgress] = useState(false);
+  const inFlight = (status?: MediaStatus) =>
+    status === MediaStatus.PENDING || status === MediaStatus.PROCESSING;
+  const progressTarget =
+    tracked ??
+    (inFlight(media?.status)
+      ? { mediaId: media?.id, is4k: false }
+      : inFlight(media?.status4k)
+        ? { mediaId: media?.id, is4k: true }
+        : undefined);
   const progress = useRequestProgress(
-    media?.id,
-    false,
-    trackProgress ||
-      media?.status === MediaStatus.PENDING ||
-      media?.status === MediaStatus.PROCESSING
+    progressTarget?.mediaId,
+    progressTarget?.is4k ?? false
   );
+
+  const requestCompleted =
+    (is4k: boolean) => (_: unknown, mediaId?: number) => {
+      onUpdate();
+      (is4k ? setShowRequest4kModal : setShowRequestModal)(false);
+      if (watchAfterRequest) {
+        setTracked({ mediaId: mediaId ?? media?.id, is4k });
+        setShowProgress(true);
+      }
+    };
 
   // All pending requests
   const activeRequests = media?.requests.filter(
@@ -285,6 +304,28 @@ const RequestButton = ({
     }
   }
 
+  const pushRequest = (
+    id: string,
+    is4k: boolean,
+    watchText: string,
+    onlyText: string
+  ) => {
+    const open = (watch: boolean) => () => {
+      setEditRequest(false);
+      setWatchAfterRequest(watch);
+      (is4k ? setShowRequest4kModal : setShowRequestModal)(true);
+    };
+    buttons.push(
+      {
+        id: `${id}-watch`,
+        text: watchText,
+        action: open(true),
+        svg: <PlayIcon />,
+      },
+      { id, text: onlyText, action: open(false), svg: <ArrowDownTrayIcon /> }
+    );
+  };
+
   // Standard request button
   if (
     (!media ||
@@ -300,27 +341,11 @@ const RequestButton = ({
       { type: 'or' }
     )
   ) {
-    buttons.push(
-      {
-        id: 'request-watch',
-        text: intl.formatMessage(messages.requestandwatch),
-        action: () => {
-          setEditRequest(false);
-          setWatchAfterRequest(true);
-          setShowRequestModal(true);
-        },
-        svg: <PlayIcon />,
-      },
-      {
-        id: 'request',
-        text: intl.formatMessage(messages.requestonly),
-        action: () => {
-          setEditRequest(false);
-          setWatchAfterRequest(false);
-          setShowRequestModal(true);
-        },
-        svg: <ArrowDownTrayIcon />,
-      }
+    pushRequest(
+      'request',
+      false,
+      intl.formatMessage(messages.requestandwatch),
+      intl.formatMessage(messages.requestonly)
     );
   } else if (
     mediaType === 'tv' &&
@@ -332,16 +357,12 @@ const RequestButton = ({
     media.status !== MediaStatus.BLOCKLISTED &&
     !isShowComplete
   ) {
-    buttons.push({
-      id: 'request-more',
-      text: intl.formatMessage(messages.requestmore),
-      action: () => {
-        setEditRequest(false);
-        setWatchAfterRequest(false);
-        setShowRequestModal(true);
-      },
-      svg: <ArrowDownTrayIcon />,
-    });
+    pushRequest(
+      'request-more',
+      false,
+      intl.formatMessage(messages.requestmoreandwatch),
+      intl.formatMessage(messages.requestmore)
+    );
   }
 
   // 4K request button
@@ -361,15 +382,12 @@ const RequestButton = ({
     ((settings.currentSettings.movie4kEnabled && mediaType === 'movie') ||
       (settings.currentSettings.series4kEnabled && mediaType === 'tv'))
   ) {
-    buttons.push({
-      id: 'request4k',
-      text: intl.formatMessage(globalMessages.request4k),
-      action: () => {
-        setEditRequest(false);
-        setShowRequest4kModal(true);
-      },
-      svg: <ArrowDownTrayIcon />,
-    });
+    pushRequest(
+      'request4k',
+      true,
+      intl.formatMessage(messages.request4kandwatch),
+      intl.formatMessage(globalMessages.request4k)
+    );
   } else if (
     mediaType === 'tv' &&
     (!active4kRequest || active4kRequest.requestedBy.id !== user?.id) &&
@@ -381,15 +399,12 @@ const RequestButton = ({
     !is4kShowComplete &&
     settings.currentSettings.series4kEnabled
   ) {
-    buttons.push({
-      id: 'request-more-4k',
-      text: intl.formatMessage(messages.requestmore4k),
-      action: () => {
-        setEditRequest(false);
-        setShowRequest4kModal(true);
-      },
-      svg: <ArrowDownTrayIcon />,
-    });
+    pushRequest(
+      'request-more-4k',
+      true,
+      intl.formatMessage(messages.requestmore4kandwatch),
+      intl.formatMessage(messages.requestmore4k)
+    );
   }
 
   const [buttonOne, ...others] = buttons;
@@ -416,14 +431,7 @@ const RequestButton = ({
         show={showRequestModal}
         type={mediaType}
         editRequest={editRequest ? activeRequest : undefined}
-        onComplete={() => {
-          onUpdate();
-          setShowRequestModal(false);
-          if (watchAfterRequest) {
-            setTrackProgress(true);
-            setShowProgress(true);
-          }
-        }}
+        onComplete={requestCompleted(false)}
         onCancel={() => setShowRequestModal(false)}
       />
       <RequestModal
@@ -432,10 +440,7 @@ const RequestButton = ({
         type={mediaType}
         editRequest={editRequest ? active4kRequest : undefined}
         is4k
-        onComplete={() => {
-          onUpdate();
-          setShowRequest4kModal(false);
-        }}
+        onComplete={requestCompleted(true)}
         onCancel={() => setShowRequest4kModal(false)}
       />
       {buttonOne && (
