@@ -279,6 +279,7 @@ describe('ServarrBase getHistory', () => {
           sortKey: 'date',
           sortDirection: 'descending',
           eventType: 1,
+          includeEpisode: true,
         },
       },
     ]);
@@ -303,7 +304,13 @@ describe('ServarrBase getHistory', () => {
     );
     assert.deepEqual(get.mock.calls[0].arguments, [
       '/history/since',
-      { params: { date: '2026-10-05T00:00:00.000Z', eventType: undefined } },
+      {
+        params: {
+          date: '2026-10-05T00:00:00.000Z',
+          eventType: undefined,
+          includeEpisode: true,
+        },
+      },
     ]);
   });
 });
