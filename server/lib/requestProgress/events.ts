@@ -21,6 +21,7 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import type {
   ProgressDownload,
+  ProgressEpisodes,
   RequestProgressStatsResponse,
 } from '@server/interfaces/api/progressInterfaces';
 import availabilitySync from '@server/lib/availabilitySync';
@@ -280,6 +281,8 @@ interface ArrState {
   /** Radarr/Sonarr searches for it, for the series: some requested episode. */
   monitored: boolean;
   lastSearchedAt?: number;
+  /** Series only: episode files of the requested seasons against their monitored aired episodes. */
+  episodes?: ProgressEpisodes;
 }
 
 const latest = (times: (string | undefined)[]) => {
@@ -306,13 +309,23 @@ async function arrState(
       api.getSeriesById(arrId),
       api.getEpisodes(arrId),
     ]);
-    const requested = episodes.filter(
-      (e) => !seasons || seasons.has(e.seasonNumber)
-    );
+    const wanted = (seasonNumber: number) =>
+      !seasons || seasons.has(seasonNumber);
+    const requested = episodes.filter((e) => wanted(e.seasonNumber));
+    const counts = series.seasons
+      .filter((s) => wanted(s.seasonNumber))
+      .reduce(
+        (sum, { statistics }) => ({
+          imported: sum.imported + (statistics?.episodeFileCount ?? 0),
+          total: sum.total + (statistics?.episodeCount ?? 0),
+        }),
+        { imported: 0, total: 0 }
+      );
     return {
       hasFile: requested.some((e) => e.hasFile),
       monitored: series.monitored && requested.some((e) => e.monitored),
       lastSearchedAt: latest(requested.map((e) => e.lastSearchTime)),
+      episodes: counts.total > 0 ? counts : undefined,
     };
   } catch (e) {
     if (isNotFound(e))
@@ -338,6 +351,7 @@ function applyArrState(
     tracker.setSearch(mediaId, is4k, { lastSearchedAt: state.lastSearchedAt });
   }
   entry.filesMissing = !state.hasFile;
+  tracker.setEpisodes(mediaId, is4k, state.episodes);
   entry.arrError = state.removed
     ? `Removed from ${ARR_NAME[type]}`
     : state.monitored
