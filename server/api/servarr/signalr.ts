@@ -41,7 +41,13 @@ export type ServarrSignalREvent =
   | CommandEvent
   // The queue messages carry no usable diff, only the hint to refetch.
   | { type: 'queue' }
-  | { type: 'movie'; action: ResourceAction; id: number; tmdbId?: number }
+  | {
+      type: 'movie';
+      action: ResourceAction;
+      id: number;
+      tmdbId?: number;
+      hasFile?: boolean;
+    }
   | { type: 'series'; action: ResourceAction; id: number; tvdbId?: number }
   | { type: 'movieFile'; action: ResourceAction; id: number; movieId?: number }
   // The only link from a Sonarr episode to its series; episode searches carry episode ids only.
@@ -52,6 +58,7 @@ export type ServarrSignalREvent =
       seriesId?: number;
       episodeFileId?: number;
       hasFile?: boolean;
+      grabbed?: boolean;
     }
   | {
       type: 'episodeFile';
@@ -85,6 +92,8 @@ const nums = (v: unknown): number[] | undefined =>
   Array.isArray(v) && v.every((n) => num(n) !== undefined)
     ? (v as number[])
     : undefined;
+const bool = (v: unknown): boolean | undefined =>
+  typeof v === 'boolean' ? v : undefined;
 const action = (v: unknown): ResourceAction | undefined =>
   v === 'updated' || v === 'deleted' ? v : undefined;
 
@@ -144,7 +153,13 @@ export function parseSignalRMessage(
 
   switch (name) {
     case 'movie':
-      return { type: 'movie', action: act, id, tmdbId: num(resource.tmdbId) };
+      return {
+        type: 'movie',
+        action: act,
+        id,
+        tmdbId: num(resource.tmdbId),
+        hasFile: bool(resource.hasFile),
+      };
     case 'series':
       return { type: 'series', action: act, id, tvdbId: num(resource.tvdbId) };
     case 'episode':
@@ -154,8 +169,8 @@ export function parseSignalRMessage(
         id,
         seriesId: num(resource.seriesId),
         episodeFileId: num(resource.episodeFileId),
-        hasFile:
-          typeof resource.hasFile === 'boolean' ? resource.hasFile : undefined,
+        hasFile: bool(resource.hasFile),
+        grabbed: bool(resource.grabbed),
       };
     case 'moviefile':
       return {
