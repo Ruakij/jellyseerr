@@ -14,6 +14,7 @@ import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import MediaRequest from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
+import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
 import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import type { SonarrSettings } from '@server/lib/settings';
@@ -172,6 +173,83 @@ function configureSonarr(overrides: Partial<SonarrSettings>[] = [{}]): void {
     ...o,
   })) as SonarrSettings[];
   settings.radarr = [];
+}
+
+function sonarrSeason(seasonNumber: number, monitored: boolean, files = 0) {
+  return {
+    seasonNumber,
+    monitored,
+    statistics: {
+      episodeFileCount: files,
+      totalEpisodeCount: 10,
+      episodeCount: 10,
+      percentOfEpisodes: files * 10,
+      sizeOnDisk: 0,
+      previousAiring: undefined,
+    },
+  };
+}
+
+function tmdbSeasons(...seasonNumbers: number[]): TmdbTvSeasonResult[] {
+  return seasonNumbers.map((n) => ({
+    id: n,
+    air_date: '2024-01-01',
+    episode_count: 10,
+    name: `Season ${n}`,
+    overview: '',
+    season_number: n,
+  }));
+}
+
+/** Show with seasons 1 and 2 PROCESSING and an approved request for season 1. */
+async function seedSeasonRequest(
+  tmdbId: number,
+  tvdbId: number
+): Promise<MediaRequest> {
+  const requestedBy = await getRepository(User).findOneOrFail({
+    where: { id: 1 },
+  });
+  const media = await getRepository(Media).save(
+    new Media({
+      tmdbId,
+      tvdbId,
+      mediaType: MediaType.TV,
+      status: MediaStatus.PROCESSING,
+      seasons: [1, 2].map(
+        (seasonNumber) =>
+          new Season({
+            seasonNumber,
+            status: MediaStatus.PROCESSING,
+            status4k: MediaStatus.UNKNOWN,
+          })
+      ),
+    })
+  );
+  // empty arr settings keep the request subscriber from sending to Sonarr
+  const settings = getSettings();
+  settings.sonarr = [];
+  settings.radarr = [];
+  return getRepository(MediaRequest).save(
+    new MediaRequest({
+      type: MediaType.TV,
+      status: MediaRequestStatus.APPROVED,
+      media,
+      requestedBy,
+      is4k: false,
+      seasons: [
+        new SeasonRequest({
+          seasonNumber: 1,
+          status: MediaRequestStatus.APPROVED,
+        }),
+      ],
+    })
+  );
+}
+
+async function reload(request: MediaRequest): Promise<MediaRequest> {
+  return getRepository(MediaRequest).findOneOrFail({
+    where: { id: request.id },
+  });
 }
 
 describe('Sonarr Scanner', () => {
@@ -534,7 +612,7 @@ describe('Sonarr Scanner', () => {
   });
 
   describe('orphaned request handling', () => {
-    it('declines the approved request and resets the show to UNKNOWN when orphaned', async () => {
+    it('fails the approved request and resets the show to UNKNOWN when orphaned', async () => {
       const mediaRepository = getRepository(Media);
       const requestRepository = getRepository(MediaRequest);
       const userRepository = getRepository(User);
@@ -585,10 +663,10 @@ describe('Sonarr Scanner', () => {
       });
 
       assert.strictEqual(updatedMedia.status, MediaStatus.UNKNOWN);
-      assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
+      assert.strictEqual(updatedRequest.status, MediaRequestStatus.FAILED);
     });
 
-    it('does not decline the request when the show still exists in Sonarr', async () => {
+    it('does not fail the request when the show still exists in Sonarr', async () => {
       const mediaRepository = getRepository(Media);
       const requestRepository = getRepository(MediaRequest);
       const userRepository = getRepository(User);
@@ -711,27 +789,7 @@ describe('Sonarr Scanner', () => {
       assert.strictEqual(updatedRequest.status, MediaRequestStatus.APPROVED);
     });
 
-    it('declineOrphanedRequests throws when the requests relation is not loaded', async () => {
-      const media = new Media();
-      media.id = 1;
-      media.tmdbId = 123;
-      media.mediaType = MediaType.TV;
-
-      await assert.rejects(
-        () =>
-          (
-            sonarrScanner as unknown as {
-              declineOrphanedRequests: (
-                m: Media,
-                is4k: boolean
-              ) => Promise<void>;
-            }
-          ).declineOrphanedRequests(media, false),
-        /without the 'requests' relation loaded/
-      );
-    });
-
-    it('declines only the 4k request when the 4k dimension is orphaned but standard still exists', async () => {
+    it('fails only the 4k request when the 4k dimension is orphaned but standard still exists', async () => {
       const mediaRepository = getRepository(Media);
       const requestRepository = getRepository(MediaRequest);
       const userRepository = getRepository(User);
@@ -832,7 +890,79 @@ describe('Sonarr Scanner', () => {
       assert.strictEqual(updatedMedia.status, MediaStatus.PROCESSING);
       assert.strictEqual(updatedMedia.status4k, MediaStatus.UNKNOWN);
       assert.strictEqual(updatedStandard.status, MediaRequestStatus.APPROVED);
-      assert.strictEqual(updated4k.status, MediaRequestStatus.DECLINED);
+      assert.strictEqual(updated4k.status, MediaRequestStatus.FAILED);
+    });
+
+    it('fails the approved request when a requested season is unmonitored without files', async () => {
+      const request = await seedSeasonRequest(2100, 2100);
+      getTvShowImpl = async () => fakeTmdbShow(2100, tmdbSeasons(1, 2));
+
+      configureSonarr([{ syncEnabled: true }]);
+      getSeriesImpl = async () => [
+        fakeSonarrSeries({
+          tvdbId: 2100,
+          seasons: [sonarrSeason(1, false), sonarrSeason(2, true)],
+        }),
+      ];
+
+      await sonarrScanner.run();
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.FAILED
+      );
+    });
+
+    it('fails the approved request when a requested season is missing from Sonarr', async () => {
+      const request = await seedSeasonRequest(2101, 2101);
+      getTvShowImpl = async () => fakeTmdbShow(2101, tmdbSeasons(1, 2));
+
+      configureSonarr([{ syncEnabled: true }]);
+      getSeriesImpl = async () => [
+        fakeSonarrSeries({ tvdbId: 2101, seasons: [sonarrSeason(2, true)] }),
+      ];
+
+      await sonarrScanner.run();
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.FAILED
+      );
+    });
+
+    it('keeps the request approved when only an unrequested season is unmonitored', async () => {
+      const request = await seedSeasonRequest(2102, 2102);
+      getTvShowImpl = async () => fakeTmdbShow(2102, tmdbSeasons(1, 2));
+
+      configureSonarr([{ syncEnabled: true }]);
+      getSeriesImpl = async () => [
+        fakeSonarrSeries({
+          tvdbId: 2102,
+          seasons: [sonarrSeason(1, true), sonarrSeason(2, false)],
+        }),
+      ];
+
+      await sonarrScanner.run();
+
+      assert.strictEqual(
+        (await reload(request)).status,
+        MediaRequestStatus.APPROVED
+      );
+    });
+
+    it('changes nothing when Sonarr is unreachable', async () => {
+      const request = await seedSeasonRequest(2103, 2103);
+
+      configureSonarr([{ syncEnabled: true }]);
+      getSeriesImpl = async () => {
+        throw new Error('connect ECONNREFUSED');
+      };
+
+      await sonarrScanner.run();
+
+      const updated = await reload(request);
+      assert.strictEqual(updated.status, MediaRequestStatus.APPROVED);
+      assert.strictEqual(updated.media.status, MediaStatus.PROCESSING);
     });
   });
 });
