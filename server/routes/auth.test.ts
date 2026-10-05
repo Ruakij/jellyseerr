@@ -21,6 +21,7 @@ import ImageProxy from '@server/lib/imageproxy';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
+import { listenOnLocalhost } from '@server/test/server';
 import {
   allowlistedSettings,
   assertNoCredentials,
@@ -29,7 +30,6 @@ import {
 import { ApiError } from '@server/types/error';
 import axios from 'axios';
 import cookieParser from 'cookie-parser';
-import type { Express } from 'express';
 import express from 'express';
 import session from 'express-session';
 import fetchMock from 'fetch-mock';
@@ -115,8 +115,6 @@ const getImageMock = mock.method(
   })
 );
 
-let app: Express;
-
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -150,9 +148,7 @@ function createApp() {
   return app;
 }
 
-before(async () => {
-  app = createApp();
-});
+const app = listenOnLocalhost(createApp());
 
 afterEach(() => {
   getSettings().reset();
