@@ -23,7 +23,15 @@ const useRequestProgress = (
         `/api/v1/media/${mediaId}/progress?is4k=${is4k}`
       );
       source.addEventListener('progress', (e) => {
-        setProgress(JSON.parse((e as MessageEvent<string>).data));
+        const next: RequestProgress = JSON.parse(
+          (e as MessageEvent<string>).data
+        );
+        // the stream sends the timeline only when it changed
+        setProgress((prev) =>
+          next.timeline === undefined
+            ? { ...next, timeline: prev?.timeline }
+            : next
+        );
       });
       source.onerror = () => {
         // EventSource retries network drops itself but gives up on HTTP errors
