@@ -9,7 +9,7 @@ import {
 import { ProgressTracker } from '@server/lib/requestProgress/tracker';
 
 function setup() {
-  let now = 1_000_000;
+  let now = Date.now();
   const stats = new StepStats();
   const tracker = new ProgressTracker(stats, () => now);
   const changes: RequestProgress[] = [];
