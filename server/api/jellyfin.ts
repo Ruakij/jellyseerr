@@ -529,6 +529,13 @@ class JellyfinAPI extends ExternalAPI {
     }
   }
 
+  /** Parent folders of an item up to the root; the library is the one of type CollectionFolder. */
+  public async getAncestors(
+    id: string
+  ): Promise<{ Id: string; Type: string }[]> {
+    return this.get<{ Id: string; Type: string }[]>(`/Items/${id}/Ancestors`);
+  }
+
   public async getSeasons(seriesID: string): Promise<JellyfinLibraryItem[]> {
     try {
       const seasonResponse = await this.get<any>(`/Shows/${seriesID}/Seasons`);

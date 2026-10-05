@@ -20,7 +20,10 @@ import Media from '@server/entity/Media';
 import MediaRequest from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
 import { User } from '@server/entity/User';
-import { jellyfinFullScanner } from '@server/lib/scanners/jellyfin';
+import {
+  jellyfinFullScanner,
+  jellyfinItemScanner,
+} from '@server/lib/scanners/jellyfin';
 import type { Library } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
@@ -61,6 +64,18 @@ Object.defineProperty(JellyfinAPI.prototype, 'getLibraryContents', {
 Object.defineProperty(JellyfinAPI.prototype, 'getItemData', {
   get() {
     return async (id: string) => getItemDataImpl(id);
+  },
+  set() {},
+  configurable: true,
+});
+
+let getAncestorsImpl: (
+  id: string
+) => Promise<{ Id: string; Type: string }[]> = async () => [];
+
+Object.defineProperty(JellyfinAPI.prototype, 'getAncestors', {
+  get() {
+    return async (id: string) => getAncestorsImpl(id);
   },
   set() {},
   configurable: true,
@@ -249,6 +264,7 @@ describe('Jellyfin Scanner', () => {
   beforeEach(async () => {
     getLibraryContentsImpl = async () => [];
     getItemDataImpl = async () => undefined;
+    getAncestorsImpl = async () => [];
     getSeasonsImpl = async () => [];
     getEpisodesImpl = async () => [];
     getTvShowImpl = async () => fakeTmdbShow(1);
@@ -598,6 +614,32 @@ describe('Jellyfin Scanner', () => {
         MediaStatus.PARTIALLY_AVAILABLE,
         'Show should stay PARTIALLY_AVAILABLE when a DELETED season is missing from the metadata provider'
       );
+    });
+  });
+
+  describe('runItems', () => {
+    it('skips items of disabled libraries', async () => {
+      configureJellyfinWithLibrary([
+        { id: 'lib-on', name: 'Movies', enabled: true, type: 'movie' },
+        { id: 'lib-off', name: 'Other', enabled: false, type: 'movie' },
+      ]);
+      getAncestorsImpl = async (id) => [
+        { Id: `${id}-folder`, Type: 'Folder' },
+        {
+          Id: id === 'in-on' ? 'lib-on' : id === 'in-off' ? 'lib-off' : 'x',
+          Type: 'CollectionFolder',
+        },
+        { Id: 'root', Type: 'AggregateFolder' },
+      ];
+      const fetched: string[] = [];
+      getItemDataImpl = async (id) => {
+        fetched.push(id);
+        return undefined;
+      };
+
+      await jellyfinItemScanner.runItems(['in-on', 'in-off', 'in-unknown']);
+
+      assert.deepEqual(fetched, ['in-on']);
     });
   });
 });
