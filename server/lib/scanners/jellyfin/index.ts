@@ -551,8 +551,19 @@ class JellyfinScanner
     const sessionId = this.startRun();
     try {
       if (!(await this.createClient())) return;
+      const enabled = new Set(
+        getSettings()
+          .jellyfin.libraries.filter((library) => library.enabled)
+          .map((library) => library.id)
+      );
       const items = await Promise.all(
-        ids.map((id) => this.jfClient.getItemData(id).catch(() => undefined))
+        ids.map(async (id) => {
+          const ancestors = await this.jfClient
+            .getAncestors(id)
+            .catch(() => []);
+          if (!ancestors.some((a) => enabled.has(a.Id))) return undefined;
+          return this.jfClient.getItemData(id).catch(() => undefined);
+        })
       );
       this.items = uniqWith(
         items.filter(
