@@ -629,6 +629,9 @@ describe('Radarr Scanner', () => {
 
       assert.strictEqual(updatedMedia.status, MediaStatus.UNKNOWN);
       assert.strictEqual(updatedRequest.status, MediaRequestStatus.FAILED);
+      assert.strictEqual(updatedRequest.failureKind, 'permanent');
+      assert.strictEqual(updatedRequest.failureReason, 'Removed from Radarr');
+      assert.strictEqual(updatedRequest.nextRetryAt, null);
     });
 
     it('does not fail the request when the movie still exists in Radarr', async () => {
@@ -817,6 +820,8 @@ describe('Radarr Scanner', () => {
 
       const updated = await reload(request);
       assert.strictEqual(updated.status, MediaRequestStatus.FAILED);
+      assert.strictEqual(updated.failureKind, 'permanent');
+      assert.strictEqual(updated.failureReason, 'Not monitored in Radarr');
       assert.strictEqual(updated.media.status, MediaStatus.UNKNOWN);
     });
 
