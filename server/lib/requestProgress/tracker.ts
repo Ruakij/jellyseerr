@@ -52,6 +52,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     private readonly now: () => number = Date.now
   ) {
     super();
+    // One listener per open progress stream.
+    this.setMaxListeners(0);
   }
 
   /** Starts a fresh run, replacing any previous one of the same media. */
