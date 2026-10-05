@@ -267,7 +267,7 @@ export class StepStats {
         ? new Date(Date.now() - window.maxAgeDays * DAY_MS)
         : undefined;
     const range = since
-      ? { since }
+      ? { since, limit: window.maxSamples }
       : { pageSize: window.maxSamples || UNLIMITED_HISTORY };
     // Two filtered requests, as the paged endpoint of older Radarr/Sonarr takes one event type only.
     const [grabs, imports] = await Promise.all([
