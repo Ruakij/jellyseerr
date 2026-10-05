@@ -60,7 +60,8 @@ export function searchAccess(
 }
 
 /**
- * Searches for exactly what was requested: the movie, whole seasons without any file, and the
+ * Sets what was requested to monitored, as an approved open request wants it, then searches for
+ * exactly that: the movie, whole seasons without any file, and the
  * missing aired episodes of the other requested seasons. False when the request has no
  * Radarr/Sonarr item yet.
  */
@@ -74,9 +75,15 @@ export async function searchRequest(
   if (!api || !arrId) return false;
 
   if (api instanceof RadarrAPI) {
+    await api.monitorMovie(arrId);
     await api.runCommand('MoviesSearch', { movieIds: [arrId] });
   } else {
     const episodes = await api.getEpisodes(arrId);
+    await api.monitorSeasons(
+      arrId,
+      request.seasons.map((s) => s.seasonNumber),
+      episodes
+    );
     const missing: number[] = [];
     for (const { seasonNumber } of request.seasons) {
       const aired = episodes.filter(
