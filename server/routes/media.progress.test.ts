@@ -18,6 +18,7 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
+import { Permission } from '@server/lib/permissions';
 import progressTracker from '@server/lib/requestProgress/tracker';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
@@ -239,7 +240,7 @@ async function postSearch(mediaId: number, user: number) {
 }
 
 describe('POST /media/:mediaId/progress/search', () => {
-  it('lets a manager search any time and the requester once per cooldown', async () => {
+  it('lets managers search any time, REQUEST_SEARCH once per cooldown and nobody else', async () => {
     getSettings().radarr = [
       { id: 0, name: 'Radarr', hostname: 'localhost', port: 7878, apiKey: 'k' },
     ] as RadarrSettings[];
@@ -255,14 +256,20 @@ describe('POST /media/:mediaId/progress/search', () => {
     );
     const users = getRepository(User);
     const friend = await users.findOneByOrFail({ email: 'friend@seerr.dev' });
-    const stranger = await users.save(
-      Object.assign(new User(), {
-        email: 'stranger@seerr.dev',
-        username: 'stranger',
-        avatar: '',
-        permissions: 32,
-      })
+    const user = (name: string, permissions: number) =>
+      users.save(
+        Object.assign(new User(), {
+          email: `${name}@seerr.dev`,
+          username: name,
+          avatar: '',
+          permissions,
+        })
+      );
+    const searcher = await user(
+      'searcher',
+      Permission.REQUEST | Permission.REQUEST_SEARCH
     );
+    const manager = await user('manager', Permission.MANAGE_REQUESTS);
     const media = await getRepository(Media).save(
       Object.assign(new Media(), {
         tmdbId: 4,
@@ -282,28 +289,38 @@ describe('POST /media/:mediaId/progress/search', () => {
       })
     );
 
-    assert.equal((await postSearch(media.id, friend.id)).statusCode, 204);
+    assert.equal((await postSearch(media.id, friend.id)).statusCode, 403);
+    assert.equal((await postSearch(media.id, searcher.id)).statusCode, 204);
     assert.deepEqual(commands.mock.calls[0].arguments, [
       'MoviesSearch',
       { movieIds: [42] },
     ]);
     assert.deepEqual(monitor.mock.calls[0].arguments, [42]);
-    const limited = await postSearch(media.id, friend.id);
+    const limited = await postSearch(media.id, searcher.id);
     assert.equal(limited.statusCode, 429);
     const retryAfter = Number(limited.headers['retry-after']);
     assert.ok(retryAfter > 890 && retryAfter <= 900, String(retryAfter));
+    assert.equal((await postSearch(media.id, manager.id)).statusCode, 204);
+    assert.equal((await postSearch(media.id, manager.id)).statusCode, 204);
     assert.equal((await postSearch(media.id, 1)).statusCode, 204);
-    assert.equal((await postSearch(media.id, stranger.id)).statusCode, 403);
-    assert.equal(commands.mock.callCount(), 2);
+    assert.equal(commands.mock.callCount(), 4);
 
-    const stream = await openStream(
-      `/media/${media.id}/progress?is4k=false`,
-      friend.id
-    );
-    const { search } = parse(await stream.next());
-    await stream.close();
-    assert.equal(search.allowed, true);
-    assert.ok(Date.parse(search.retryAfter) > Date.now());
+    const searchFor = async (id: number) => {
+      const stream = await openStream(
+        `/media/${media.id}/progress?is4k=false`,
+        id
+      );
+      const { search } = parse(await stream.next());
+      await stream.close();
+      return search;
+    };
+    const limitedSearch = await searchFor(searcher.id);
+    assert.equal(limitedSearch.allowed, true);
+    assert.ok(Date.parse(limitedSearch.retryAfter) > Date.now());
+    const managerSearch = await searchFor(manager.id);
+    assert.equal(managerSearch.allowed, true);
+    assert.equal(managerSearch.retryAfter, undefined);
+    assert.equal((await searchFor(friend.id)).allowed, false);
     commands.mock.restore();
     monitor.mock.restore();
   });

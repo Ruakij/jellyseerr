@@ -7719,8 +7719,8 @@ paths:
       description: |
         Triggers a Radarr/Sonarr search for exactly the requested scope of the newest open
         request: the movie, each requested season without any file, or the missing aired episodes
-        of the other requested seasons. Allowed with the `MANAGE_REQUESTS` permission, and for the
-        requester once every 15 minutes per media item.
+        of the other requested seasons. Allowed with the `MANAGE_REQUESTS` permission, and with the
+        `REQUEST_SEARCH` permission once every 15 minutes per media item.
       tags:
         - media
       parameters:
@@ -7741,13 +7741,13 @@ paths:
         '204':
           description: Search triggered
         '403':
-          description: Neither a request manager nor the requester
+          description: Neither `MANAGE_REQUESTS` nor `REQUEST_SEARCH`
         '404':
           description: Media does not exist or has no open request
         '409':
           description: The media is not in Radarr/Sonarr yet
         '429':
-          description: The requester searched within the last 15 minutes
+          description: Without `MANAGE_REQUESTS`, the media item was searched within the last 15 minutes
           headers:
             Retry-After:
               description: Seconds until the next search is allowed
