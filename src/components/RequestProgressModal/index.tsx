@@ -27,6 +27,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   searching: 'Searching',
   grabbed: 'Downloading',
   importing: 'Importing',
+  episodesImported: '{imported} of {total} episodes imported',
   inJellyfin: 'Adding to Jellyfin',
   playable: 'Ready',
   estimate: '~{duration}',
@@ -281,6 +282,9 @@ const RequestProgressModal = ({
         est?.rangeMs === undefined || s.status === 'done'
           ? undefined
           : `${formatDuration(est.rangeMs[0])}-${formatDuration(est.rangeMs[1])}`,
+      episodes:
+        s.episodes &&
+        intl.formatMessage(messages.episodesImported, { ...s.episodes }),
     };
   };
 

@@ -610,6 +610,7 @@
   "components.RequestModal.selectmovies": "Select Movie(s)",
   "components.RequestModal.selectseason": "Select Season(s)",
   "components.RequestProgressModal.awaitingApproval": "Waiting for approval",
+  "components.RequestProgressModal.episodesImported": "{imported} of {total} episodes imported",
   "components.RequestProgressModal.estimate": "~{duration}",
   "components.RequestProgressModal.estimateRange": "~{duration} ({low}-{high})",
   "components.RequestProgressModal.failed": "Something went wrong at this step.",

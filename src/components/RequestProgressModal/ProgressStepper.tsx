@@ -51,6 +51,7 @@ interface ProgressStepperProps {
     time?: string;
     estimate?: string;
     range?: string;
+    episodes?: string;
   };
 }
 
@@ -62,7 +63,7 @@ const ProgressStepper = ({
 }: ProgressStepperProps) => (
   <ol className="flex items-start">
     {steps.map((step, i) => {
-      const { percent, time, estimate, range } = stats(step);
+      const { percent, time, estimate, range, episodes } = stats(step);
       const running = step.status === 'running';
       return (
         <Fragment key={step.key}>
@@ -106,6 +107,11 @@ const ProgressStepper = ({
                 <span className="hidden text-gray-600 sm:inline">{range}</span>
               )}
             </span>
+            {episodes && (
+              <span className="mt-0.5 text-center text-[10px] leading-tight text-gray-300">
+                {episodes}
+              </span>
+            )}
           </li>
           {i < steps.length - 1 && (
             <Connector step={step} downloads={downloads} />
