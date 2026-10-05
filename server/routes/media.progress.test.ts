@@ -320,6 +320,10 @@ describe('POST /media/:mediaId/progress/search', () => {
     const managerSearch = await searchFor(manager.id);
     assert.equal(managerSearch.allowed, true);
     assert.equal(managerSearch.retryAfter, undefined);
+    assert.equal(managerSearch.running, false);
+    progressTracker.start({ mediaId: media.id, is4k: false });
+    progressTracker.setSearch(media.id, false, { searchCommandId: 7 });
+    assert.equal((await searchFor(manager.id)).running, true);
     assert.equal((await searchFor(friend.id)).allowed, false);
     commands.mock.restore();
     monitor.mock.restore();
