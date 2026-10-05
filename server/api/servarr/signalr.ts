@@ -27,6 +27,10 @@ export interface CommandEvent {
   // 'successful' or 'unsuccessful'; a search that found nothing still completes.
   result?: string;
   message?: string;
+  /** 'manual' for user and API searches; 'unspecified' for e.g. a re-search after a failed download. */
+  trigger?: string;
+  /** Grabbed releases, from the message of a completed search; 0 means no results. */
+  reportsDownloaded?: number;
   movieIds?: number[];
   seriesId?: number;
   seasonNumber?: number;
@@ -40,6 +44,15 @@ export type ServarrSignalREvent =
   | { type: 'movie'; action: ResourceAction; id: number; tmdbId?: number }
   | { type: 'series'; action: ResourceAction; id: number; tvdbId?: number }
   | { type: 'movieFile'; action: ResourceAction; id: number; movieId?: number }
+  // The only link from a Sonarr episode to its series; episode searches carry episode ids only.
+  | {
+      type: 'episode';
+      action: ResourceAction;
+      id: number;
+      seriesId?: number;
+      episodeFileId?: number;
+      hasFile?: boolean;
+    }
   | {
       type: 'episodeFile';
       action: ResourceAction;
@@ -104,13 +117,21 @@ export function parseSignalRMessage(
       return undefined;
     }
     const cmdBody = obj(resource.body);
+    const message = str(resource.message);
+    // Sonarr sends a completed-looking message while the command is still started.
+    const reports =
+      status === 'completed'
+        ? message?.match(/(\d+) reports? downloaded/)?.[1]
+        : undefined;
     return {
       type: 'command',
       id,
       name: cmdName,
       status: status as CommandStatus,
       result: str(resource.result),
-      message: str(resource.message),
+      message,
+      trigger: str(resource.trigger) ?? str(cmdBody?.trigger),
+      reportsDownloaded: reports === undefined ? undefined : Number(reports),
       movieIds: nums(cmdBody?.movieIds),
       seriesId: num(cmdBody?.seriesId),
       seasonNumber: num(cmdBody?.seasonNumber),
@@ -126,6 +147,16 @@ export function parseSignalRMessage(
       return { type: 'movie', action: act, id, tmdbId: num(resource.tmdbId) };
     case 'series':
       return { type: 'series', action: act, id, tvdbId: num(resource.tvdbId) };
+    case 'episode':
+      return {
+        type: 'episode',
+        action: act,
+        id,
+        seriesId: num(resource.seriesId),
+        episodeFileId: num(resource.episodeFileId),
+        hasFile:
+          typeof resource.hasFile === 'boolean' ? resource.hasFile : undefined,
+      };
     case 'moviefile':
       return {
         type: 'movieFile',
