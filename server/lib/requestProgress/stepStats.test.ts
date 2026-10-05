@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import type { HistoryRecord } from '@server/api/servarr/base';
 import {
   MAX_SAMPLES,
+  MIN_TOTAL_SAMPLES,
   StepStats,
   pairGrabToImport,
   percentile,
@@ -174,5 +175,15 @@ describe('StepStats', () => {
       })
     );
     assert.equal(stats.get('s').importing.count, 1);
+  });
+
+  it('estimates the total from end-to-end samples once there are enough', () => {
+    const stats = new StepStats();
+    for (let i = 1; i < MIN_TOTAL_SAMPLES; i++)
+      stats.recordTotal('s', i * 1_000);
+    assert.equal(stats.totalP90('s'), undefined);
+    stats.recordTotal('s', MIN_TOTAL_SAMPLES * 1_000);
+    assert.equal(stats.totalP90('s'), 18_000);
+    assert.equal(stats.totalP90('other'), undefined);
   });
 });

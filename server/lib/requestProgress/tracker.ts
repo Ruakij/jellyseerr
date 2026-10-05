@@ -50,7 +50,10 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   private evictions = new Map<string, NodeJS.Timeout>();
 
   constructor(
-    private readonly stats: Pick<StepStats, 'get' | 'record'> = stepStats,
+    private readonly stats: Pick<
+      StepStats,
+      'get' | 'record' | 'recordTotal' | 'totalP90'
+    > = stepStats,
     private readonly now: () => number = Date.now
   ) {
     super();
@@ -151,6 +154,14 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       }
       previousEnd = entry.steps[k].finishedAt;
     }
+    if (step === 'playable' && entry.serverKey) {
+      const requestedAt = entry.steps.requested.startedAt ?? at;
+      this.stats.recordTotal(
+        entry.serverKey,
+        Math.max(0, at - requestedAt),
+        at
+      );
+    }
     const next = STEP_KEYS[index + 1];
     if (next && entry.steps[next].status === 'pending') {
       entry.steps[next] = { status: 'running', startedAt: at };
@@ -225,7 +236,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       is4k: entry.is4k,
       requestId: entry.requestId,
       steps,
-      totalP90Ms: p90s.length ? p90s.reduce((a, b) => a + b, 0) : undefined,
+      totalP90Ms:
+        (entry.serverKey ? this.stats.totalP90(entry.serverKey) : undefined) ??
+        (p90s.length ? p90s.reduce((a, b) => a + b, 0) : undefined),
       playUrl: entry.playUrl,
     };
   }
