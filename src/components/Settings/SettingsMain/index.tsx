@@ -73,6 +73,13 @@ const messages = defineMessages('components.Settings.SettingsMain', {
   validationApplicationUrlTrailingSlash: 'URL must not end in a trailing slash',
   partialRequestsEnabled: 'Allow Partial Series Requests',
   enableSpecialEpisodes: 'Allow Special Episodes Requests',
+  autoRetryFailedRequests: 'Retry Failed Requests Automatically',
+  autoRetryFailedRequestsTip:
+    'Resend requests that failed because Radarr or Sonarr was unreachable or returned a server error',
+  autoRetryMaxAttempts: 'Maximum Automatic Retries',
+  autoRetryMaxAttemptsTip:
+    'Retries happen after 5 minutes, 15 minutes, 1 hour and then every 6 hours',
+  validationAutoRetryMaxAttempts: 'You must provide a number between 1 and 20',
   locale: 'Display Language',
   youtubeUrl: 'YouTube URL',
   youtubeUrlTip:
@@ -123,6 +130,11 @@ const SettingsMain = () => {
         'Number must be less than or equal to 250.',
         (value) => (value ?? 0) <= 250
       ),
+    autoRetryMaxAttempts: Yup.number()
+      .typeError(intl.formatMessage(messages.validationAutoRetryMaxAttempts))
+      .integer(intl.formatMessage(messages.validationAutoRetryMaxAttempts))
+      .min(1, intl.formatMessage(messages.validationAutoRetryMaxAttempts))
+      .max(20, intl.formatMessage(messages.validationAutoRetryMaxAttempts)),
     youtubeUrl: Yup.string()
       .url(intl.formatMessage(messages.validationUrl))
       .test(
@@ -187,6 +199,8 @@ const SettingsMain = () => {
             blocklistedTagsLimit: data?.blocklistedTagsLimit || 50,
             partialRequestsEnabled: data?.partialRequestsEnabled,
             enableSpecialEpisodes: data?.enableSpecialEpisodes,
+            autoRetryFailedRequests: data?.autoRetryFailedRequests ?? true,
+            autoRetryMaxAttempts: data?.autoRetryMaxAttempts ?? 4,
             cacheImages: data?.cacheImages,
             youtubeUrl: data?.youtubeUrl,
             versionCheck: data?.versionCheck,
@@ -211,6 +225,8 @@ const SettingsMain = () => {
                 blocklistedTagsLimit: values.blocklistedTagsLimit,
                 partialRequestsEnabled: values.partialRequestsEnabled,
                 enableSpecialEpisodes: values.enableSpecialEpisodes,
+                autoRetryFailedRequests: values.autoRetryFailedRequests,
+                autoRetryMaxAttempts: Number(values.autoRetryMaxAttempts),
                 cacheImages: values.cacheImages,
                 youtubeUrl: values.youtubeUrl,
                 versionCheck: values?.versionCheck,
@@ -613,6 +629,61 @@ const SettingsMain = () => {
                     />
                   </div>
                 </div>
+                <div className="form-row">
+                  <label
+                    htmlFor="autoRetryFailedRequests"
+                    className="checkbox-label"
+                  >
+                    <span className="mr-2">
+                      {intl.formatMessage(messages.autoRetryFailedRequests)}
+                    </span>
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.autoRetryFailedRequestsTip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="autoRetryFailedRequests"
+                      name="autoRetryFailedRequests"
+                      onChange={() => {
+                        setFieldValue(
+                          'autoRetryFailedRequests',
+                          !values.autoRetryFailedRequests
+                        );
+                      }}
+                    />
+                  </div>
+                </div>
+                {values.autoRetryFailedRequests && (
+                  <div className="form-row">
+                    <label
+                      htmlFor="autoRetryMaxAttempts"
+                      className="text-label"
+                    >
+                      {intl.formatMessage(messages.autoRetryMaxAttempts)}
+                      <span className="label-tip">
+                        {intl.formatMessage(messages.autoRetryMaxAttemptsTip)}
+                      </span>
+                    </label>
+                    <div className="form-input-area">
+                      <Field
+                        id="autoRetryMaxAttempts"
+                        name="autoRetryMaxAttempts"
+                        type="text"
+                        inputMode="numeric"
+                        className="short"
+                      />
+                      {errors.autoRetryMaxAttempts &&
+                        touched.autoRetryMaxAttempts &&
+                        typeof errors.autoRetryMaxAttempts === 'string' && (
+                          <div className="error">
+                            {errors.autoRetryMaxAttempts}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                )}
                 <div className="form-row">
                   <label htmlFor="youtubeUrl" className="text-label">
                     {intl.formatMessage(messages.youtubeUrl)}

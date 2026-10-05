@@ -256,6 +256,14 @@ components:
         versionCheck:
           type: boolean
           example: false
+        autoRetryFailedRequests:
+          type: boolean
+          example: true
+          description: Automatically resend requests that failed for a transient reason (network error, HTTP 5xx or 429 from Radarr/Sonarr).
+        autoRetryMaxAttempts:
+          type: number
+          example: 4
+          description: Number of automatic retries after the first failure. Retries back off 5 minutes, 15 minutes, 1 hour, then 6 hours.
     NetworkSettings:
       type: object
       properties:
@@ -1277,6 +1285,29 @@ components:
           type: boolean
           example: false
           description: If true, this request will not count against the user's quota. Requires MANAGE_REQUESTS permission.
+        failureReason:
+          type: string
+          nullable: true
+          example: 'Failed to add movie to Radarr: ECONNREFUSED'
+          readOnly: true
+          description: Why the request failed. Only set while the status is FAILED.
+        failureKind:
+          type: string
+          enum: [transient, permanent]
+          nullable: true
+          readOnly: true
+          description: Transient failures (network errors, HTTP 5xx or 429) are retried automatically, permanent ones need an admin.
+        retryCount:
+          type: number
+          example: 0
+          readOnly: true
+          description: Automatic retries since the last successful send to Radarr/Sonarr.
+        nextRetryAt:
+          type: string
+          nullable: true
+          example: '2020-09-12T10:05:00.000Z'
+          readOnly: true
+          description: When the next automatic retry runs, if one is scheduled.
       required:
         - id
         - status
