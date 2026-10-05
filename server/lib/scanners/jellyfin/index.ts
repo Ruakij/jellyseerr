@@ -464,24 +464,7 @@ class JellyfinScanner
     const sessionId = this.startRun();
 
     try {
-      const userRepository = getRepository(User);
-      const admin = await userRepository.findOne({
-        where: { id: 1 },
-        select: ['id', 'jellyfinUserId', 'jellyfinDeviceId'],
-        order: { id: 'ASC' },
-      });
-
-      if (!admin) {
-        return this.log('No admin configured. Jellyfin sync skipped.', 'warn');
-      }
-
-      this.jfClient = new JellyfinAPI(
-        getHostname(),
-        settings.jellyfin.apiKey,
-        admin.jellyfinDeviceId
-      );
-
-      this.jfClient.setUserId(admin.jellyfinUserId ?? '');
+      if (!(await this.createClient())) return;
 
       this.libraries = settings.jellyfin.libraries.filter(
         (library) => library.enabled
@@ -539,6 +522,68 @@ class JellyfinScanner
     }
   }
 
+  private async createClient(): Promise<boolean> {
+    const admin = await getRepository(User).findOne({
+      where: { id: 1 },
+      select: ['id', 'jellyfinUserId', 'jellyfinDeviceId'],
+      order: { id: 'ASC' },
+    });
+
+    if (!admin) {
+      this.log('No admin configured. Jellyfin sync skipped.', 'warn');
+      return false;
+    }
+
+    this.jfClient = new JellyfinAPI(
+      getHostname(),
+      getSettings().jellyfin.apiKey,
+      admin.jellyfinDeviceId
+    );
+    this.jfClient.setUserId(admin.jellyfinUserId ?? '');
+    return true;
+  }
+
+  /**
+   * Processes the given Jellyfin items only, as reported by the websocket. Episodes and seasons
+   * are processed through their series.
+   */
+  public async runItems(ids: string[]): Promise<void> {
+    const sessionId = this.startRun();
+    try {
+      if (!(await this.createClient())) return;
+      const enabled = new Set(
+        getSettings()
+          .jellyfin.libraries.filter((library) => library.enabled)
+          .map((library) => library.id)
+      );
+      const items = await Promise.all(
+        ids.map(async (id) => {
+          const ancestors = await this.jfClient
+            .getAncestors(id)
+            .catch(() => []);
+          if (!ancestors.some((a) => enabled.has(a.Id))) return undefined;
+          return this.jfClient.getItemData(id).catch(() => undefined);
+        })
+      );
+      this.items = uniqWith(
+        items.filter(
+          (item): item is JellyfinLibraryItemExtended =>
+            !!item &&
+            (item.Type === 'Movie' || !!item.SeriesId || item.Type === 'Series')
+        ),
+        (a, b) => (a.SeriesId ?? a.Id) === (b.SeriesId ?? b.Id)
+      ).map((item) =>
+        item.Type === 'Movie' ? item : { ...item, Type: 'Series' as const }
+      );
+      this.processedAnidbSeason = new Map();
+      await this.loop(this.processItem.bind(this), { sessionId });
+    } catch (e) {
+      this.log('Item sync interrupted', 'error', { errorMessage: e.message });
+    } finally {
+      this.endRun(sessionId);
+    }
+  }
+
   public status(): JellyfinSyncStatus {
     return {
       running: this.running,
@@ -554,3 +599,5 @@ export const jellyfinFullScanner = new JellyfinScanner();
 export const jellyfinRecentScanner = new JellyfinScanner({
   isRecentOnly: true,
 });
+// Separate instance, as a scanner holds the state of one run at a time.
+export const jellyfinItemScanner = new JellyfinScanner();

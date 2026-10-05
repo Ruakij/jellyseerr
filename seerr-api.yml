@@ -7559,6 +7559,38 @@ paths:
       responses:
         '204':
           description: Successfully removed media item
+  /media/{mediaId}/progress:
+    get:
+      summary: Stream request progress
+      description: |
+        Server-sent events stream of the request progress of a media item. Sends the current
+        state on connect as `event: progress` with a `RequestProgress` JSON body, then one event
+        per change, and a comment line every 25 seconds.
+      tags:
+        - media
+      parameters:
+        - in: path
+          name: mediaId
+          description: Media ID
+          required: true
+          example: '1'
+          schema:
+            type: string
+        - in: query
+          name: is4k
+          required: false
+          example: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404':
+          description: Media does not exist
   /media/{mediaId}/{status}:
     post:
       summary: Update media status
