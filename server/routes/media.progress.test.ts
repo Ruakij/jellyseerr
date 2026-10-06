@@ -119,45 +119,8 @@ describe('GET /media/:mediaId/progress', () => {
     assert.equal(progressTracker.listenerCount('change'), listeners);
   });
 
-  it('reconstructs a request the tracker never saw from Radarr', async () => {
-    const requestedAt = Date.parse('2026-10-05T10:00:00Z');
-    for (const [name, impl] of [
-      [
-        'getItemHistory',
-        async () => [
-          {
-            id: 1,
-            date: '2026-10-05T09:00:00Z',
-            eventType: 'grabbed',
-            downloadId: 'OLD',
-            movieId: 42,
-            sourceTitle: 'Old',
-            data: {},
-          },
-          {
-            id: 2,
-            date: '2026-10-05T10:05:00Z',
-            eventType: 'grabbed',
-            downloadId: 'D',
-            movieId: 42,
-            sourceTitle: 'Movie.2026.1080p',
-            data: {},
-          },
-        ],
-      ],
-      ['getQueue', async () => []],
-      ['getMovie', async () => ({ hasFile: false })],
-    ] as const) {
-      Object.defineProperty(RadarrAPI.prototype, name, {
-        set() {},
-        get: () => impl,
-        configurable: true,
-      });
-    }
+  it('sends the untracked state of a request the tracker never saw without rebuilding it', async () => {
     mock.method(MediaRequest, 'sendNotification', async () => undefined);
-    getSettings().radarr = [
-      { id: 0, name: 'Radarr', hostname: 'localhost', port: 7878, apiKey: 'k' },
-    ] as RadarrSettings[];
     const user = await getRepository(User).findOneByOrFail({ id: 1 });
     // The database restarts its ids per test, the global tracker keeps the entries of media 1.
     await getRepository(Media).save(
@@ -168,40 +131,25 @@ describe('GET /media/:mediaId/progress', () => {
         tmdbId: 2,
         mediaType: MediaType.MOVIE,
         status: MediaStatus.PROCESSING,
-        serviceId: 0,
-        externalServiceId: 42,
       })
     );
     await getRepository(MediaRequest).save(
       new MediaRequest({
         type: MediaType.MOVIE,
-        status: MediaRequestStatus.APPROVED,
+        status: MediaRequestStatus.PENDING,
         media,
         requestedBy: user,
         modifiedBy: user,
-        createdAt: new Date(requestedAt),
       })
     );
 
-    assert.equal(progressTracker.entry(media.id, false), undefined);
     const stream = await openStream(`/media/${media.id}/progress?is4k=false`);
-    let progress = parse(await stream.next());
-    while (
-      !progress.steps.find((s: { key: string }) => s.key === 'grabbed').detail
-    ) {
-      progress = parse(await stream.next());
-    }
+    const progress = parse(await stream.next());
+    await new Promise((r) => setTimeout(r, 50));
     await stream.close();
 
-    const step = (key: string) =>
-      progress.steps.find((s: { key: string }) => s.key === key);
-    assert.equal(
-      step('requested').startedAt,
-      new Date(requestedAt).toISOString()
-    );
-    assert.equal(step('searching').finishedAt, '2026-10-05T10:05:00.000Z');
-    assert.equal(step('grabbed').detail, 'Movie.2026.1080p');
-    assert.equal(step('grabbed').status, 'running');
+    assert.deepEqual(progress.requests, []);
+    assert.equal(progressTracker.entry(media.id, false), undefined);
   });
 
   it('falls back to the stored final run of a request', async () => {
