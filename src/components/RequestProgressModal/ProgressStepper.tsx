@@ -59,7 +59,6 @@ interface ProgressStepperProps {
     time?: string;
     estimate?: string;
     range?: string;
-    episodes?: string;
     counts?: string;
     failed?: string;
     waiting?: string;
@@ -76,16 +75,8 @@ const ProgressStepper = ({
 }: ProgressStepperProps) => (
   <ol>
     {steps.map((step, i) => {
-      const {
-        percent,
-        time,
-        estimate,
-        range,
-        episodes,
-        counts,
-        failed,
-        waiting,
-      } = stats(step);
+      const { percent, time, estimate, range, counts, failed, waiting } =
+        stats(step);
       const running = step.status === 'running';
       const last = i === steps.length - 1;
       return (
@@ -127,7 +118,7 @@ const ProgressStepper = ({
                 </span>
               )}
             </div>
-            {(counts || failed || time || waiting || estimate || episodes) && (
+            {(counts || failed || time || waiting || estimate) && (
               <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs tabular-nums leading-tight text-gray-400">
                 {counts && (
                   <span className="font-semibold text-gray-200">{counts}</span>
@@ -145,7 +136,6 @@ const ProgressStepper = ({
                     {range}
                   </span>
                 )}
-                {episodes && <span className="text-gray-300">{episodes}</span>}
               </div>
             )}
           </div>
