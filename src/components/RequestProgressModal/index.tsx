@@ -35,7 +35,6 @@ const messages = defineMessages('components.RequestProgressModal', {
   searching: 'Searching',
   grabbed: 'Downloading',
   importing: 'Importing',
-  episodesImported: '{imported} of {total} episodes imported',
   inJellyfin: 'Adding to Jellyfin',
   playable: 'Ready',
   estimate: '~{duration}',
@@ -58,6 +57,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   waitingGrab: 'Waiting for a new grab',
   waitingFor: 'for {duration}',
   unitCounts: '{done}/{total}',
+  unitEpisodes: '{done}/{total} episodes',
   unitsFailed: '{failed} failed',
   details: 'Details',
   ago: '{duration} ago',
@@ -354,12 +354,13 @@ const RequestProgressModal = ({
         est?.rangeMs === undefined || s.status === 'done'
           ? undefined
           : `${formatDuration(est.rangeMs[0])}-${formatDuration(est.rangeMs[1])}`,
-      episodes:
-        s.episodes &&
-        intl.formatMessage(messages.episodesImported, { ...s.episodes }),
       counts:
         s.counts && s.counts.total > 1 && s.status !== 'pending'
-          ? intl.formatMessage(messages.unitCounts, { ...s.counts })
+          ? intl.formatMessage(
+              // episodes only come with the importing step of a series
+              s.episodes ? messages.unitEpisodes : messages.unitCounts,
+              { ...s.counts }
+            )
           : undefined,
       failed:
         s.counts && s.counts.total > 1 && s.counts.failed > 0
