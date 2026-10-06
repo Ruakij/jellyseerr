@@ -25,7 +25,10 @@ import { User } from '@server/entity/User';
 import type { RequestProgressStatsResponse } from '@server/interfaces/api/progressInterfaces';
 import availabilitySync from '@server/lib/availabilitySync';
 import downloadTracker from '@server/lib/downloadtracker';
-import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
+import {
+  DEBOUNCE_MS,
+  KeyedDebouncer,
+} from '@server/lib/requestProgress/debounce';
 import { storeRun } from '@server/lib/requestProgress/history';
 import type { RequestStart } from '@server/lib/requestProgress/stepStats';
 import stepStats from '@server/lib/requestProgress/stepStats';
@@ -879,6 +882,10 @@ export async function reconstructProgress(
   await reconcileJellyfin(undefined, tracker);
 }
 
+// Queue events keep coming while anything downloads, so the refresh runs at least this often;
+// a grab during a long search shows within it.
+export const SERVER_REFRESH_MAX_WAIT_MS = 3000;
+
 const serverRefresh = new KeyedDebouncer<FinishedSearch | void>(
   async (key, values) => {
     const finished = values.filter((v): v is FinishedSearch => !!v);
@@ -890,7 +897,9 @@ const serverRefresh = new KeyedDebouncer<FinishedSearch | void>(
         tracker.searchFinished(mediaId, is4k, search);
       }
     }
-  }
+  },
+  DEBOUNCE_MS,
+  SERVER_REFRESH_MAX_WAIT_MS
 );
 
 // Request hooks fire inside their transaction; the debounce reads the committed state.
@@ -1154,9 +1163,15 @@ export function onSignalRMessage(
         label: 'Request Progress',
       })
     );
-  } else if (event.type === 'episode' && event.seriesId !== undefined) {
-    rememberEpisode(source.serverId, event.id, event.seriesId);
-  } else if (event.type !== 'episode') {
+  } else if (event.type === 'episode') {
+    if (event.seriesId !== undefined) {
+      rememberEpisode(source.serverId, event.id, event.seriesId);
+    }
+    // Sonarr reports a grab on its episodes at once, its queue only later.
+    if (event.grabbed) {
+      serverRefresh.push(serverKey(source.type, source.serverId));
+    }
+  } else {
     serverRefresh.push(serverKey(source.type, source.serverId));
   }
 }

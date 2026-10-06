@@ -22,6 +22,7 @@ import { DEBOUNCE_MS } from '@server/lib/requestProgress/debounce';
 import {
   FULL_SYNC_DEBOUNCE_MS,
   REMOVAL_DEBOUNCE_MS,
+  SERVER_REFRESH_MAX_WAIT_MS,
   handleCommand,
   onJellyfinRemoved,
   onSignalRMessage,
@@ -1206,6 +1207,44 @@ describe('onSignalRMessage', () => {
       mock.timers.reset();
       syncMovie.mock.restore();
       syncSeries.mock.restore();
+    }
+  });
+});
+
+describe('onSignalRMessage refresh', () => {
+  it('shows a grab during a long search while queue events keep coming', async () => {
+    const { media } = await setup();
+    progressTracker.start({
+      mediaId: media.id,
+      is4k: false,
+      serverKey: 'radarr-0',
+    });
+    // Date too: the debounce measures its maximum wait with Date.now.
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    try {
+      history = [
+        {
+          eventType: 'grabbed',
+          date: new Date().toISOString(),
+          movieId: 42,
+          downloadId: 'D',
+        },
+      ];
+      // A download sends queue updates more often than the debounce delay.
+      for (let t = 0; t < SERVER_REFRESH_MAX_WAIT_MS; t += 1000) {
+        onSignalRMessage(radarr, { type: 'queue' });
+        mock.timers.tick(1000);
+      }
+      await settle();
+      assert.equal(
+        statusOf(progressTracker, media.id, 'grabbed').status,
+        'running'
+      );
+    } finally {
+      mock.timers.reset();
+      (
+        progressTracker as unknown as { entries: Map<string, unknown> }
+      ).entries.clear();
     }
   });
 });
