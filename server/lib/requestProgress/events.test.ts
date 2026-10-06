@@ -333,10 +333,6 @@ describe('refreshServer', () => {
         etaMs: 90_000,
       },
     ]);
-    assert.deepEqual(statusOf(tracker, media.id, 'importing').episodes, {
-      imported: 0,
-      total: 2,
-    });
     assert.deepEqual(
       progress.timeline?.map((e) => [e.kind, e.units]),
       [
@@ -366,7 +362,6 @@ describe('refreshServer', () => {
       failed: 0,
       total: 2,
     });
-    assert.deepEqual(importing.episodes, { imported: 1, total: 2 });
     assert.equal(importing.progress, 0.5);
   });
 

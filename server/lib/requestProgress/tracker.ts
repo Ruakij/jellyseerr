@@ -963,7 +963,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       ? this.stats.get(entry.serverKey)
       : undefined;
     const units = [...entry.units.values()];
-    const series = entry.unitsKnown && units[0]?.seasonNumber !== undefined;
     const steps = STEP_KEYS.map((k) => {
       const state = entry.steps[k];
       // Ready is no phase of its own: it completes with the last unit in Jellyfin.
@@ -1002,13 +1001,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
             : k === 'grabbed'
               ? this.releaseTitles(entry)
               : undefined,
-        episodes:
-          k === 'importing' && series
-            ? {
-                imported: units.filter((u) => u.hasFile).length,
-                total: units.length,
-              }
-            : undefined,
         counts: state.counts,
         progress: state.progress,
       };
