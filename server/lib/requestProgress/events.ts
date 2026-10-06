@@ -31,6 +31,7 @@ import type {
   ProgressTracker,
   QueueItemState,
   TrackedProgress,
+  TrackedRequest,
   Unit,
 } from '@server/lib/requestProgress/tracker';
 import progressTracker from '@server/lib/requestProgress/tracker';
@@ -237,27 +238,61 @@ interface ArrItem {
   episode?: { seasonNumber: number };
 }
 
-/** Seasons of the request behind each tracked series; absent when no request is found. */
-async function requestedSeasons(
-  entries: TrackedProgress[]
-): Promise<Map<TrackedProgress, Set<number>>> {
-  const requests = await getRepository(MediaRequest).find({
-    where: { media: { id: In(entries.map((e) => e.mediaId)) } },
-    order: { id: 'DESC' },
-  });
-  const seasons = new Map<TrackedProgress, Set<number>>();
-  for (const entry of entries) {
-    // Entries started from a search event carry no request id; the newest request stands in.
-    const request = requests.find((r) =>
-      entry.requestId !== undefined
-        ? r.id === entry.requestId
-        : r.media.id === entry.mediaId && r.is4k === entry.is4k
-    );
-    if (request) {
-      seasons.set(entry, new Set(request.seasons.map((s) => s.seasonNumber)));
-    }
+/**
+ * Seasons of the requests behind a tracked series that went to Sonarr, or of all its requests
+ * while each awaits approval; absent without requests or for a movie.
+ */
+function requestedSeasons(entry: TrackedProgress): Set<number> | undefined {
+  const all = [...entry.requests.values()];
+  const sent = all.filter((r) => !r.awaitingApproval);
+  const requests = sent.length > 0 ? sent : all;
+  if (requests.length === 0 || requests.some((r) => !r.seasons)) {
+    return undefined;
   }
-  return seasons;
+  return new Set(requests.flatMap((r) => r.seasons ?? []));
+}
+
+// Deleted, declined and completed requests leave the run.
+const ACTIVE_REQUEST = [
+  MediaRequestStatus.PENDING,
+  MediaRequestStatus.APPROVED,
+  MediaRequestStatus.FAILED,
+];
+
+const trackedRequest = (request: MediaRequest): TrackedRequest => ({
+  id: request.id,
+  seasons:
+    request.type === MediaType.TV
+      ? request.seasons.map((s) => s.seasonNumber)
+      : undefined,
+  requestedBy: request.requestedBy?.displayName,
+  at: request.createdAt.getTime(),
+  awaitingApproval: request.status === MediaRequestStatus.PENDING,
+});
+
+/** Sets the requests of the tracked runs of these media to their active requests. */
+export async function syncRequests(
+  mediaIds: number[],
+  tracker: ProgressTracker = progressTracker
+): Promise<void> {
+  const entries = tracker.tracked().filter((e) => mediaIds.includes(e.mediaId));
+  if (entries.length === 0) return;
+  const requests = await getRepository(MediaRequest).find({
+    where: {
+      media: { id: In(entries.map((e) => e.mediaId)) },
+      status: In(ACTIVE_REQUEST),
+    },
+  });
+  for (const { mediaId, is4k } of entries) {
+    tracker.setRequests(
+      mediaId,
+      is4k,
+      requests
+        .filter((r) => r.media.id === mediaId && r.is4k === is4k)
+        .map(trackedRequest),
+      { cause: 'requests' }
+    );
+  }
 }
 
 type UnitState = Pick<
@@ -389,10 +424,18 @@ export async function refreshServer(
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
   const [type, id] = key.split('-') as [ServarrType, string];
+  const api = servarrApi(type, Number(id));
+  if (!api) return;
+  await syncRequests(
+    tracker
+      .tracked()
+      .filter((e) => e.serverKey === key)
+      .map((e) => e.mediaId),
+    tracker
+  );
   // Finished entries too: files deleted after the import send the run back to searching.
   const entries = tracker.tracked().filter((e) => e.serverKey === key);
-  const api = servarrApi(type, Number(id));
-  if (entries.length === 0 || !api) return;
+  if (entries.length === 0) return;
 
   const media = await loadMedia(entries);
   const byArrId = new Map<number, TrackedProgress[]>();
@@ -404,7 +447,9 @@ export async function refreshServer(
   if (byArrId.size === 0) return;
 
   const seasons =
-    type === 'sonarr' ? await requestedSeasons(entries) : undefined;
+    type === 'sonarr'
+      ? new Map(entries.map((e) => [e, requestedSeasons(e)]))
+      : undefined;
   // Per item: the history of a whole server since an old request can be too large to load.
   const [histories, queue, states] = await Promise.all([
     Promise.all(
@@ -657,32 +702,30 @@ export async function reconcileJellyfin(
   }
 }
 
-const REQUEST_DECLINED = 'Request declined';
-
 /**
- * Starts entries for media whose newest request the tracker never saw, e.g. one sent before a
+ * Starts entries for media with active requests the tracker never saw, e.g. ones sent before a
  * restart, and fills them in from Radarr/Sonarr history, queue and files and from Jellyfin, as a
- * run would have. Without `targets`, covers every open request. Their times are not measured.
+ * run would have. Without `targets`, covers every active request. Their times are not measured.
  */
 export async function reconstructProgress(
   targets?: { mediaId: number; is4k: boolean }[],
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
   const requests = await getRepository(MediaRequest).find({
-    where: targets
-      ? { media: { id: In(targets.map((t) => t.mediaId)) } }
-      : {
-          status: In([MediaRequestStatus.PENDING, MediaRequestStatus.APPROVED]),
-        },
-    order: { id: 'DESC' },
+    where: {
+      status: In(ACTIVE_REQUEST),
+      ...(targets ? { media: { id: In(targets.map((t) => t.mediaId)) } } : {}),
+    },
+    order: { id: 'ASC' },
   });
-  const seen = new Set<string>();
-  const created: TrackedProgress[] = [];
+  const variants = new Map<string, MediaRequest[]>();
   for (const request of requests) {
-    const { media, is4k } = request;
-    const variant = `${media.id}:${is4k}`;
-    if (seen.has(variant)) continue;
-    seen.add(variant);
+    const variant = `${request.media.id}:${request.is4k}`;
+    variants.set(variant, [...(variants.get(variant) ?? []), request]);
+  }
+  const created: TrackedProgress[] = [];
+  for (const group of variants.values()) {
+    const { media, is4k } = group[0];
     if (
       (targets &&
         !targets.some((t) => t.mediaId === media.id && t.is4k === is4k)) ||
@@ -690,47 +733,41 @@ export async function reconstructProgress(
     ) {
       continue;
     }
-    const mediaStatus = is4k ? media.status4k : media.status;
-    const open =
-      request.status === MediaRequestStatus.PENDING ||
-      request.status === MediaRequestStatus.APPROVED;
-    const failed =
-      request.status === MediaRequestStatus.DECLINED ||
-      request.status === MediaRequestStatus.FAILED;
+    const failed = group.filter((r) => r.status === MediaRequestStatus.FAILED);
+    // A failed request of available media is no run anymore.
     if (
-      !(open && isWaiting(mediaStatus)) &&
-      !(failed && !isAvailable(mediaStatus))
+      failed.length === group.length &&
+      isAvailable(is4k ? media.status4k : media.status)
     ) {
       continue;
     }
-
-    const server = requestServer(request);
+    const server = requestServer(
+      group.find((r) => r.status === MediaRequestStatus.APPROVED) ?? group[0]
+    );
+    const [first, ...others] = group.map(trackedRequest);
     const entry = tracker.start({
       mediaId: media.id,
       is4k,
-      requestId: request.id,
+      requestId: first.id,
+      seasons: first.seasons,
+      requestedBy: first.requestedBy,
       serverKey: server && serverKey(server.type, server.serverId),
-      at: request.createdAt.getTime(),
-      awaitingApproval:
-        request.status === MediaRequestStatus.PENDING ||
-        request.status === MediaRequestStatus.DECLINED,
+      at: first.at,
+      awaitingApproval: first.awaitingApproval,
       reconstructed: true,
     });
-    if (request.status === MediaRequestStatus.FAILED) {
+    if (others.length > 0) {
+      tracker.setRequests(media.id, is4k, [first, ...others], { at: first.at });
+    }
+    const last = failed.pop();
+    if (last) {
       tracker.failRequest(
         media.id,
         is4k,
-        request.failureReason,
-        request.updatedAt.getTime()
+        last.failureReason,
+        last.updatedAt.getTime()
       );
-    } else if (failed) {
-      tracker.fail(
-        media.id,
-        is4k,
-        REQUEST_DECLINED,
-        request.updatedAt.getTime()
-      );
-    } else if (request.status === MediaRequestStatus.APPROVED) {
+    } else if (group.some((r) => r.status === MediaRequestStatus.APPROVED)) {
       created.push(entry);
     }
   }
@@ -743,6 +780,17 @@ export async function reconstructProgress(
 }
 
 const serverRefresh = new KeyedDebouncer((key) => refreshServer(key));
+
+// Request hooks fire inside their transaction; the debounce reads the committed state.
+const requestSyncs = new KeyedDebouncer(async (key) => {
+  const mediaId = Number(key);
+  await syncRequests([mediaId]);
+  for (const entry of progressTracker.tracked()) {
+    if (entry.mediaId === mediaId && entry.serverKey) {
+      serverRefresh.push(entry.serverKey);
+    }
+  }
+});
 
 const itemSyncs = new KeyedDebouncer<{ source: SignalRSource; arrId: number }>(
   (_key, [{ source, arrId }]) =>
@@ -1018,6 +1066,9 @@ export function startProgressEvents(): void {
     logger.warn(`Reconstructing open requests failed: ${e.message}`, {
       label: 'Request Progress',
     })
+  );
+  progressTracker.on('requests', (mediaId) =>
+    requestSyncs.push(String(mediaId))
   );
   servarrSignalR.on('connected', onSignalRConnected);
   servarrSignalR.on('reconnected', onSignalRConnected);
