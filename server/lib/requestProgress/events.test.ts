@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
 
+import JellyfinAPI from '@server/api/jellyfin';
 import type { HistoryRecord } from '@server/api/servarr/base';
 import RadarrAPI from '@server/api/servarr/radarr';
 import type { CommandEvent } from '@server/api/servarr/signalr';
@@ -686,18 +687,114 @@ describe('handleCommand media cache', () => {
 });
 
 describe('reconcileJellyfin', () => {
+  const video = { MediaSources: [{ MediaStreams: [{ Type: 'Video' }] }] };
+  const jellyfinItem = (item: object) =>
+    mock.method(JellyfinAPI.prototype, 'getItemData', async () => item);
+
   it('marks linked media in Jellyfin and available media playable', async () => {
     const { media, tracker } = await setup({
       status: MediaStatus.AVAILABLE,
       jellyfinMediaId: 'abc',
     });
     tracker.start({ mediaId: media.id, is4k: false });
+    const item = jellyfinItem(video);
 
     await reconcileJellyfin(undefined, tracker);
+    item.mock.restore();
 
     const progress = tracker.get(media.id, false)!;
     assert.ok(progress.steps.every((s) => s.status === 'done'));
     assert.match(progress.playUrl ?? '', /id=abc/);
+  });
+
+  it('waits until Jellyfin probed the movie file', async () => {
+    const { media, tracker } = await setup({
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    tracker.start({ mediaId: media.id, is4k: false });
+    const item = jellyfinItem({ MediaSources: [] });
+
+    await reconcileJellyfin(undefined, tracker);
+    item.mock.restore();
+
+    assert.notEqual(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
+    assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
+  });
+
+  it('is not ready while Radarr still downloads a unit', async () => {
+    const { media, tracker } = await setup({
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    tracker.start({ mediaId: media.id, is4k: false });
+    tracker.setQueue(media.id, false, [
+      {
+        downloadId: 'D2',
+        unitIds: [0],
+        title: 'Movie.Proper',
+        size: 100,
+        sizeLeft: 50,
+        state: 'downloading',
+      },
+    ]);
+    const item = jellyfinItem(video);
+
+    await reconcileJellyfin(undefined, tracker);
+    item.mock.restore();
+
+    assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
+  });
+
+  it('counts probed episodes only and links the lowest requested season', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'series',
+    });
+    tracker.start({
+      mediaId: media.id,
+      is4k: false,
+      requestId: 1,
+      seasons: [3, 2],
+    });
+    tracker.setUnits(media.id, false, [
+      { id: 201, seasonNumber: 2, episodeNumber: 1, hasFile: true },
+      { id: 301, seasonNumber: 3, episodeNumber: 1, hasFile: true },
+    ]);
+    let episodes = [
+      { ParentIndexNumber: 2, IndexNumber: 1, ...video },
+      { ParentIndexNumber: 3, IndexNumber: 1 },
+    ];
+    const listed = mock.method(
+      JellyfinAPI.prototype,
+      'getEpisodes',
+      async () => episodes
+    );
+    const seasons = mock.method(
+      JellyfinAPI.prototype,
+      'getSeasons',
+      async () => [
+        { Id: 'season3', IndexNumber: 3 },
+        { Id: 'season2', IndexNumber: 2 },
+      ]
+    );
+
+    await reconcileJellyfin(undefined, tracker);
+    assert.equal(
+      tracker.get(media.id, false)!.steps.find((s) => s.key === 'inJellyfin')!
+        .counts?.done,
+      1
+    );
+    assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
+
+    episodes = episodes.map((e) => ({ ...e, ...video }));
+    await reconcileJellyfin(undefined, tracker);
+    listed.mock.restore();
+    seasons.mock.restore();
+
+    assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+    assert.match(tracker.get(media.id, false)!.playUrl ?? '', /id=season2&/);
   });
 
   it('waits for the Jellyfin item before an available series is ready', async () => {

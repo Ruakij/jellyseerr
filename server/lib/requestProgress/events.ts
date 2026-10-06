@@ -1,3 +1,4 @@
+import type { JellyfinLibraryItemExtended } from '@server/api/jellyfin';
 import JellyfinAPI from '@server/api/jellyfin';
 import jellyfinSocket from '@server/api/jellyfin-socket';
 import type { HistoryRecord } from '@server/api/servarr/base';
@@ -643,17 +644,26 @@ async function jellyfinClient(): Promise<JellyfinAPI | undefined> {
   return client;
 }
 
-/** `season:episode` of the episodes Jellyfin has of a series; undefined when it cannot tell. */
+// Jellyfin lists a new file before probing it, and plays it only once probed.
+const probed = (item?: JellyfinLibraryItemExtended) =>
+  !!item?.MediaSources?.some((s) =>
+    s.MediaStreams?.some((m) => m.Type === 'Video')
+  );
+
+/** `season:episode` of the probed episodes Jellyfin has of a series; undefined when it cannot tell. */
 async function jellyfinEpisodes(
   client: JellyfinAPI | undefined,
   itemId: string
 ): Promise<Set<string> | undefined> {
   if (!client) return undefined;
   try {
-    const episodes = await client.getEpisodes(itemId, undefined);
+    const episodes = await client.getEpisodes(itemId, undefined, {
+      includeMediaInfo: true,
+    });
     const have = new Set<string>();
     for (const e of episodes) {
       if (e.ParentIndexNumber == null || e.IndexNumber == null) continue;
+      if (!probed(e)) continue;
       // A file of several episodes is one item.
       for (
         let n = e.IndexNumber;
@@ -672,6 +682,49 @@ async function jellyfinEpisodes(
     return undefined;
   }
 }
+
+/** Whether Jellyfin has probed the movie item; undefined when it cannot tell. */
+async function jellyfinMovie(
+  client: JellyfinAPI | undefined,
+  itemId: string
+): Promise<boolean | undefined> {
+  if (!client) return undefined;
+  try {
+    return probed(await client.getItemData(itemId));
+  } catch (e) {
+    logger.warn(`Loading the movie from Jellyfin failed: ${e.message}`, {
+      label: 'Request Progress',
+      itemId,
+    });
+    return undefined;
+  }
+}
+
+/** The Watch link of a series opens the lowest requested season; the series without one. */
+async function seasonUrl(
+  client: JellyfinAPI | undefined,
+  entry: TrackedProgress,
+  itemId: string,
+  url?: string
+): Promise<string | undefined> {
+  const seasons = [...entry.requests.values()].flatMap((r) => r.seasons ?? []);
+  if (!client || !url || seasons.length === 0) return url;
+  const lowest = Math.min(...seasons);
+  try {
+    const season = (await client.getSeasons(itemId)).find(
+      (s) => s.IndexNumber === lowest
+    );
+    return season ? url.replace(`id=${itemId}&`, `id=${season.Id}&`) : url;
+  } catch {
+    return url;
+  }
+}
+
+/** Radarr/Sonarr still downloads or imports a unit, e.g. one re-grabbed after its import. */
+const queued = (entry: TrackedProgress) =>
+  [...entry.queue.values()].some(
+    (q) => q.state !== 'failed' && q.unitIds.some((id) => entry.units.has(id))
+  );
 
 /**
  * Sets which units of the tracked media Jellyfin has and whether they are ready to play. A
@@ -692,7 +745,12 @@ export async function reconcileJellyfin(
     if (!m) continue;
     const itemId = is4k ? m.jellyfinMediaId4k : m.jellyfinMediaId;
     let present: (unit: Unit) => boolean = () => !!itemId;
-    if (m.mediaType === MediaType.TV && entry.unitsKnown) {
+    if (m.mediaType === MediaType.MOVIE && itemId) {
+      client ??= jellyfinClient();
+      const has = await jellyfinMovie(await client, itemId);
+      if (has === undefined) continue;
+      present = () => has;
+    } else if (m.mediaType === MediaType.TV && entry.unitsKnown) {
       if (itemId) {
         client ??= jellyfinClient();
         const have = await jellyfinEpisodes(await client, itemId);
@@ -710,13 +768,23 @@ export async function reconcileJellyfin(
       }
     }
     // Radarr/Sonarr scans mark the media available once the file exists, before Jellyfin has it.
+    const available =
+      isAvailable(is4k ? m.status4k : m.status) &&
+      !!itemId &&
+      [...entry.units.values()].every(present) &&
+      !queued(entry);
+    let playUrl = is4k ? m.mediaUrl4k : m.mediaUrl;
+    if (available && itemId && m.mediaType === MediaType.TV) {
+      // Looked up once, when the run becomes ready.
+      client ??= jellyfinClient();
+      playUrl = entry.available
+        ? entry.playUrl
+        : await seasonUrl(await client, entry, itemId, playUrl);
+    }
     tracker.setJellyfin(mediaId, is4k, {
       present,
-      available:
-        isAvailable(is4k ? m.status4k : m.status) &&
-        !!itemId &&
-        [...entry.units.values()].every(present),
-      playUrl: is4k ? m.mediaUrl4k : m.mediaUrl,
+      available,
+      playUrl,
       at: addedAt,
       cause: 'Jellyfin',
     });
