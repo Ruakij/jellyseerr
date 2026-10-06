@@ -562,7 +562,8 @@ class JellyfinAPI extends ExternalAPI {
     T extends { includeMediaInfo?: boolean } | undefined = undefined,
   >(
     seriesID: string,
-    seasonID: string,
+    /** Absent: the episodes of every season. */
+    seasonID: string | undefined,
     options?: T
   ): Promise<EpisodeReturn<T>> {
     try {
