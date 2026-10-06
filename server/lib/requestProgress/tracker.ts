@@ -860,9 +860,10 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     { at = this.now(), cause }: Change = {}
   ): void {
     this.mutate(mediaId, is4k, at, cause ?? 'search', (entry) => {
+      const previous = entry.searchCommandId;
       const started =
         search.searchCommandId !== undefined &&
-        search.searchCommandId !== entry.searchCommandId;
+        search.searchCommandId !== previous;
       Object.assign(entry, search);
       if (
         !started &&
@@ -873,6 +874,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         this.endSearch(entry, search.lastSearchedAt as number);
       }
       if (!started) return;
+      // A grab of the previous command reported later then falls into its window and cannot end
+      // this one. The window a request opened before its first command runs on.
+      if (previous !== undefined && entry.searchStartedAt !== undefined) {
+        this.endSearch(entry, at);
+      }
       entry.searchStartedAt ??= at;
       for (const unit of entry.units.values()) {
         if ((failedAt(unit) ?? Infinity) <= GRABBED) unit.failure = undefined;
@@ -1059,6 +1065,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   private waiting(entry: TrackedProgress): 'release' | 'rss' | undefined {
     if (
       entry.searchStartedAt !== undefined ||
+      entry.searchCommandId !== undefined ||
       entry.steps.searching.status !== 'running' ||
       ![...entry.units.values()].some((u) => unitStage(u) === SEARCHING)
     ) {
@@ -1127,7 +1134,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           return { ...base, step: 'playable' as const, status: 'done' };
         }
         const searching =
-          stage === SEARCHING && entry.searchStartedAt === undefined;
+          stage === SEARCHING &&
+          entry.searchStartedAt === undefined &&
+          entry.searchCommandId === undefined;
         const since = Math.max(
           request.at,
           entry.lastSearch?.end ?? 0,
@@ -1148,7 +1157,10 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   private searchingDetail(entry: TrackedProgress): string {
-    if (entry.searchStartedAt !== undefined) {
+    if (
+      entry.searchStartedAt !== undefined ||
+      entry.searchCommandId !== undefined
+    ) {
       return entry.searchIndexers
         ? `Searching (${entry.searchIndexers} indexers)`
         : 'Searching';
