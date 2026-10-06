@@ -4,6 +4,7 @@ import Tooltip from '@app/components/Common/Tooltip';
 import {
   downloadFraction,
   idle,
+  waitingForRelease,
 } from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
@@ -63,6 +64,11 @@ const messages = defineMessages('components.RequestProgressModal', {
   waitingRelease: 'Waiting for release',
   waitingRss: 'Waiting for a release to show up',
   waitingGrab: 'Waiting for a new grab',
+  releaseDated: 'It is downloaded automatically once released.',
+  releaseUndated:
+    'No release date known yet; it is downloaded automatically once released.',
+  releasedNotFound:
+    'Released, but no download found yet; it is grabbed automatically once one shows up.',
   waitingFor: 'for {duration}',
   unitCounts: '{done}/{total}',
   unitsFailed: '{failed} failed',
@@ -361,7 +367,18 @@ const RequestProgressModal = ({
     step?.key === 'grabbed' && step.status === 'running'
       ? (progress?.downloads ?? [])
       : [];
-  const detail = canManage ? step?.detail : undefined;
+  const waitingNote =
+    step && waitingForRelease(step)
+      ? intl.formatMessage(
+          step.waiting === 'rss'
+            ? messages.releasedNotFound
+            : expected
+              ? messages.releaseDated
+              : messages.releaseUndated
+        )
+      : undefined;
+  // The note says what the waiting text of the step would
+  const detail = canManage && !waitingNote ? step?.detail : undefined;
   const error =
     step?.status === 'failed'
       ? step.error && (canManage || PUBLIC_ERRORS.includes(step.error))
@@ -551,13 +568,17 @@ const RequestProgressModal = ({
               )}
             </div>
           )}
-          {(detail ||
+          {(waitingNote ||
+            detail ||
             error ||
             downloads.length > 0 ||
             playUrl ||
             canSearch ||
             lastSearchedAt) && (
             <div className="space-y-3">
+              {waitingNote && (
+                <p className="text-sm text-amber-400">{waitingNote}</p>
+              )}
               {detail && (
                 <p className="break-words text-sm text-gray-400">{detail}</p>
               )}
