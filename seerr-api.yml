@@ -7735,6 +7735,13 @@ paths:
           example: false
           schema:
             type: boolean
+        - in: query
+          name: requestId
+          description: A request of the media; without a live run covering it, its stored run is sent
+          required: false
+          example: 1
+          schema:
+            type: integer
       responses:
         '200':
           description: Event stream

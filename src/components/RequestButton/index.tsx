@@ -72,7 +72,7 @@ const RequestButton = ({
   // is4k of the request just sent, whose progress pop-up is open
   const [progressIs4k, setProgressIs4k] = useState<boolean>();
   // a new media item gets its id from the onUpdate revalidation
-  const progress = useRequestProgress(
+  const { progress, error: progressError } = useRequestProgress(
     progressIs4k === undefined ? undefined : media?.id,
     !!progressIs4k
   );
@@ -384,6 +384,7 @@ const RequestButton = ({
       <RequestProgressModal
         show={progressIs4k !== undefined}
         progress={progress}
+        error={progressError}
         onClose={() => setProgressIs4k(undefined)}
       />
       {buttonOne && (
