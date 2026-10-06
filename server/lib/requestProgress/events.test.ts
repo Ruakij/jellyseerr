@@ -495,6 +495,117 @@ describe('refreshServer scope', () => {
   });
 });
 
+/** A movie run whose search found nothing, so it waits for RSS. */
+async function dormantRun(tracker: ProgressTracker, mediaId: number) {
+  tracker.start({ mediaId, is4k: false, serverKey: 'radarr-0' });
+  lastSearchTime = new Date(Date.now() + 1000).toISOString();
+  await refreshServer('radarr-0', tracker);
+  assert.equal(tracker.dormant(tracker.entry(mediaId, false)!), true);
+  reads.history = [];
+  reads.state = [];
+}
+
+describe('dormant runs', () => {
+  it('reads nothing of a waiting run on a queue event for another item', async () => {
+    const { media, tracker } = await setup();
+    await dormantRun(tracker, media.id);
+    assert.equal(tracker.get(media.id, false)!.dormant, true);
+    const other = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 1043,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 43,
+      })
+    );
+    tracker.start({ mediaId: other.id, is4k: false, serverKey: 'radarr-0' });
+    queue = [{ movieId: 43, downloadId: 'O', title: 'O', size: 0 }];
+
+    await refreshServer('radarr-0', tracker, {});
+
+    assert.deepEqual(reads.history, [43]);
+    assert.deepEqual(reads.state, [43]);
+  });
+
+  it('wakes once its item shows up in the queue', async () => {
+    const { media, tracker } = await setup();
+    await dormantRun(tracker, media.id);
+    queue = [
+      {
+        movieId: 42,
+        downloadId: 'D',
+        title: 'Movie',
+        size: 100,
+        sizeleft: 50,
+        trackedDownloadState: 'downloading',
+      },
+    ];
+
+    await refreshServer('radarr-0', tracker, {});
+
+    assert.deepEqual(reads.history, [42]);
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'running');
+    assert.equal(tracker.get(media.id, false)!.dormant, undefined);
+  });
+
+  it('wakes on a grab the event names', async () => {
+    const { media, tracker } = await setup();
+    await dormantRun(tracker, media.id);
+    history = [
+      {
+        eventType: 'grabbed',
+        date: new Date(Date.now() + 2000).toISOString(),
+        movieId: 42,
+        downloadId: 'D',
+      },
+    ];
+
+    await refreshServer('radarr-0', tracker, {});
+    assert.deepEqual(reads.history, []);
+
+    await refreshServer('radarr-0', tracker, { arrIds: [42] });
+    assert.deepEqual(reads.history, [42]);
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'running');
+    assert.equal(tracker.dormant(tracker.entry(media.id, false)!), false);
+  });
+
+  it('is refreshed by an event naming its item and by the full sync', async () => {
+    const { media } = await setup();
+    const syncMovie = mock.method(radarrScanner, 'syncMovie', async () => {});
+    const run = mock.method(availabilitySync, 'run', async () => {});
+    try {
+      await dormantRun(progressTracker, media.id);
+      mock.timers.enable({ apis: ['setTimeout'] });
+
+      onSignalRMessage(radarr, { type: 'queue' });
+      mock.timers.tick(DEBOUNCE_MS);
+      await settle();
+      assert.deepEqual(reads.history, []);
+
+      onSignalRMessage(radarr, { type: 'movie', action: 'updated', id: 42 });
+      mock.timers.tick(DEBOUNCE_MS);
+      await settle();
+      assert.deepEqual(reads.history, [42]);
+
+      reads.history = [];
+      await onJellyfinRemoved(['jf-unknown']);
+      mock.timers.tick(FULL_SYNC_DEBOUNCE_MS);
+      await settle();
+      mock.timers.tick(DEBOUNCE_MS);
+      await settle();
+      assert.deepEqual(reads.history, [42]);
+    } finally {
+      mock.timers.reset();
+      syncMovie.mock.restore();
+      run.mock.restore();
+      (
+        progressTracker as unknown as { entries: Map<string, unknown> }
+      ).entries.clear();
+    }
+  });
+});
+
 const radarr = { type: 'radarr', serverId: 0 } as const;
 const search = (
   status: CommandEvent['status'],
@@ -938,6 +1049,7 @@ describe('reconstructProgress', () => {
     assert.equal(searching.startedAt, requestedAt);
     assert.equal(searching.detail, WAITING_FOR_RSS);
     assert.equal(searching.waiting, 'rss');
+    assert.equal(tracker.get(media.id, false)!.dormant, true);
   });
 
   it('takes a file in Radarr as imported', async () => {

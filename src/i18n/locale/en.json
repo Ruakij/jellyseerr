@@ -658,7 +658,7 @@
   "components.RequestProgressModal.waitingFor": "for {duration}",
   "components.RequestProgressModal.waitingGrab": "Waiting for a new grab",
   "components.RequestProgressModal.waitingRelease": "Waiting for release",
-  "components.RequestProgressModal.waitingRss": "Waiting for RSS",
+  "components.RequestProgressModal.waitingRss": "Waiting for a release to show up",
   "components.RequestProgressModal.watch": "Watch",
   "components.ResetPassword.confirmpassword": "Confirm Password",
   "components.ResetPassword.email": "Email Address",
