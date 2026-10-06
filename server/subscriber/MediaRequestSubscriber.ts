@@ -1182,6 +1182,18 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
       return;
     }
 
+    const request = event.entity as MediaRequest;
+    if (request.status === MediaRequestStatus.PENDING && request.media) {
+      progressTracker.start({
+        mediaId: request.media.id,
+        is4k: request.is4k,
+        requestId: request.id,
+        seasons: request.seasons?.map((season) => season.seasonNumber),
+        requestedBy: request.requestedBy?.displayName,
+        awaitingApproval: true,
+      });
+    }
+
     try {
       await this.sendToRadarr(event.entity as MediaRequest, event.manager);
       await this.sendToSonarr(event.entity as MediaRequest, event.manager);

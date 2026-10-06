@@ -121,6 +121,8 @@ describe('GET /media/:mediaId/progress', () => {
 
   it('sends the untracked state of a request the tracker never saw without rebuilding it', async () => {
     mock.method(MediaRequest, 'sendNotification', async () => undefined);
+    // Without a Radarr server the approved request is never sent, so no run starts.
+    getSettings().radarr = [];
     const user = await getRepository(User).findOneByOrFail({ id: 1 });
     // The database restarts its ids per test, the global tracker keeps the entries of media 1.
     await getRepository(Media).save(
@@ -136,7 +138,7 @@ describe('GET /media/:mediaId/progress', () => {
     await getRepository(MediaRequest).save(
       new MediaRequest({
         type: MediaType.MOVIE,
-        status: MediaRequestStatus.PENDING,
+        status: MediaRequestStatus.APPROVED,
         media,
         requestedBy: user,
         modifiedBy: user,
