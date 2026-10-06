@@ -382,61 +382,58 @@ const RequestButton = ({
 
   const [buttonOne, ...others] = buttons;
 
-  // stays mounted when the request removes the last button
-  const progressModal = (
-    <RequestProgressModal
-      show={progressIs4k !== undefined}
-      progress={progress}
-      onClose={() => setProgressIs4k(undefined)}
-    />
-  );
-
-  if (!buttonOne) {
-    return progressModal;
-  }
-
+  // One tree shape whether or not buttons remain, so the pop-up stays mounted
+  // when the request removes the last button
   return (
     <>
-      {progressModal}
-      <RequestModal
-        tmdbId={tmdbId}
-        show={showRequestModal}
-        type={mediaType}
-        editRequest={editRequest ? activeRequest : undefined}
-        onComplete={requestCompleted(false)}
-        onCancel={() => setShowRequestModal(false)}
+      <RequestProgressModal
+        show={progressIs4k !== undefined}
+        progress={progress}
+        onClose={() => setProgressIs4k(undefined)}
       />
-      <RequestModal
-        tmdbId={tmdbId}
-        show={showRequest4kModal}
-        type={mediaType}
-        editRequest={editRequest ? active4kRequest : undefined}
-        is4k
-        onComplete={requestCompleted(true)}
-        onCancel={() => setShowRequest4kModal(false)}
-      />
-      <ButtonWithDropdown
-        text={
-          <>
-            {buttonOne.svg}
-            <span>{buttonOne.text}</span>
-          </>
-        }
-        onClick={buttonOne.action}
-        className="ml-2"
-      >
-        {others && others.length > 0
-          ? others.map((button) => (
-              <ButtonWithDropdown.Item
-                onClick={button.action}
-                key={`request-option-${button.id}`}
-              >
-                {button.svg}
-                <span>{button.text}</span>
-              </ButtonWithDropdown.Item>
-            ))
-          : null}
-      </ButtonWithDropdown>
+      {buttonOne && (
+        <>
+          <RequestModal
+            tmdbId={tmdbId}
+            show={showRequestModal}
+            type={mediaType}
+            editRequest={editRequest ? activeRequest : undefined}
+            onComplete={requestCompleted(false)}
+            onCancel={() => setShowRequestModal(false)}
+          />
+          <RequestModal
+            tmdbId={tmdbId}
+            show={showRequest4kModal}
+            type={mediaType}
+            editRequest={editRequest ? active4kRequest : undefined}
+            is4k
+            onComplete={requestCompleted(true)}
+            onCancel={() => setShowRequest4kModal(false)}
+          />
+          <ButtonWithDropdown
+            text={
+              <>
+                {buttonOne.svg}
+                <span>{buttonOne.text}</span>
+              </>
+            }
+            onClick={buttonOne.action}
+            className="ml-2"
+          >
+            {others && others.length > 0
+              ? others.map((button) => (
+                  <ButtonWithDropdown.Item
+                    onClick={button.action}
+                    key={`request-option-${button.id}`}
+                  >
+                    {button.svg}
+                    <span>{button.text}</span>
+                  </ButtonWithDropdown.Item>
+                ))
+              : null}
+          </ButtonWithDropdown>
+        </>
+      )}
     </>
   );
 };

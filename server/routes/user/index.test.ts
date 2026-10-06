@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { before, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 
 import { MediaStatus, MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
@@ -10,17 +10,15 @@ import { getSettings } from '@server/lib/settings';
 import { checkUser, isAuthenticated } from '@server/middleware/auth';
 import authRoutes from '@server/routes/auth';
 import { setupTestDb } from '@server/test/db';
+import { listenOnLocalhost } from '@server/test/server';
 import {
   assertNoCredentials,
   seedUserSettings,
 } from '@server/test/userSettings';
-import type { Express } from 'express';
 import express from 'express';
 import session from 'express-session';
 import request from 'supertest';
 import userRoutes from '.';
-
-let app: Express;
 
 function createApp() {
   const app = express();
@@ -51,9 +49,7 @@ function createApp() {
   return app;
 }
 
-before(async () => {
-  app = createApp();
-});
+const app = listenOnLocalhost(createApp());
 
 setupTestDb();
 

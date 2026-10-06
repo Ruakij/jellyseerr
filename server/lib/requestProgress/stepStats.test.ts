@@ -116,7 +116,7 @@ describe('pairGrabToImport', () => {
     assert.deepEqual(samples, []);
   });
 
-  it('counts a season pack once, until its first import', () => {
+  it('counts a season pack once, per episode until its last import', () => {
     const samples = pairGrabToImport([
       rec('downloadFolderImported', '2026-10-05T10:00:12Z', 'pack'),
       rec('downloadFolderImported', '2026-10-05T10:00:10Z', 'pack'),
@@ -125,8 +125,8 @@ describe('pairGrabToImport', () => {
     ]);
     assert.deepEqual(samples, [
       {
-        at: Date.parse('2026-10-05T10:00:10Z'),
-        durationMs: 10_000,
+        at: Date.parse('2026-10-05T10:00:12Z'),
+        durationMs: 4_000,
         downloadId: 'pack',
       },
     ]);
@@ -182,6 +182,24 @@ describe('pairRequestToGrab', () => {
       samples.map((s) => s.downloadId),
       ['s2']
     );
+  });
+
+  it('skips a first grab from RSS or long after the request', () => {
+    const samples = pairRequestToGrab(
+      [
+        { at: Date.parse('2026-10-05T10:00:00Z'), arrId: 1 },
+        { at: Date.parse('2026-10-05T10:00:00Z'), arrId: 2 },
+      ],
+      [
+        grab('2026-10-05T10:01:00Z', 'rss', {
+          movieId: 1,
+          data: { releaseSource: 'Rss' },
+        }),
+        grab('2026-10-05T10:05:00Z', 'search', { movieId: 1 }),
+        grab('2026-10-05T11:00:00Z', 'late', { movieId: 2 }),
+      ]
+    );
+    assert.deepEqual(samples, []);
   });
 
   it('counts a grab two requests reach once, for the later request', () => {

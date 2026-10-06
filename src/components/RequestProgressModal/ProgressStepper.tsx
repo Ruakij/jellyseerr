@@ -52,6 +52,9 @@ interface ProgressStepperProps {
     estimate?: string;
     range?: string;
     episodes?: string;
+    counts?: string;
+    failed?: string;
+    waiting?: string;
   };
 }
 
@@ -63,7 +66,16 @@ const ProgressStepper = ({
 }: ProgressStepperProps) => (
   <ol className="flex items-start">
     {steps.map((step, i) => {
-      const { percent, time, estimate, range, episodes } = stats(step);
+      const {
+        percent,
+        time,
+        estimate,
+        range,
+        episodes,
+        counts,
+        failed,
+        waiting,
+      } = stats(step);
       const running = step.status === 'running';
       return (
         <Fragment key={step.key}>
@@ -75,14 +87,20 @@ const ProgressStepper = ({
           >
             <div className="flex h-14 items-center">
               <div
-                className={`flex items-center justify-center overflow-hidden rounded-full transition-all duration-500 ${
+                className={`relative flex items-center justify-center overflow-hidden rounded-full transition-all duration-500 ${
                   running ? 'h-14 w-14' : 'h-10 w-10'
                 } ${circleClass[step.status]}`}
               >
+                {running && (
+                  <div
+                    className="absolute inset-x-0 bottom-0 bg-indigo-500/60 transition-[height] duration-700 ease-out"
+                    style={{ height: `${(step.progress ?? 0) * 100}%` }}
+                  />
+                )}
                 <StepGraphic
                   step={step}
                   downloads={downloads}
-                  className={running ? 'h-12 w-12' : 'h-5 w-5'}
+                  className={`relative ${running ? 'h-12 w-12' : 'h-5 w-5'}`}
                 />
               </div>
             </div>
@@ -101,7 +119,12 @@ const ProgressStepper = ({
               {percent !== undefined && (
                 <span className="font-semibold text-gray-200">{percent}%</span>
               )}
+              {counts && (
+                <span className="font-semibold text-gray-200">{counts}</span>
+              )}
+              {failed && <span className="text-red-400">{failed}</span>}
               {time && <span className="text-gray-400">{time}</span>}
+              {waiting && <span className="text-yellow-500">{waiting}</span>}
               {estimate && <span className="text-gray-500">{estimate}</span>}
               {range && (
                 <span className="hidden text-gray-600 sm:inline">{range}</span>
