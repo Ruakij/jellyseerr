@@ -976,6 +976,50 @@ describe('syncRequests', () => {
     await syncRequests([media.id], tracker);
     assert.equal(tracker.get(media.id, false), undefined);
   });
+  it('keeps a completed request until its run is ready', async () => {
+    const { media, tracker } = await setup();
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    const requests = getRepository(MediaRequest);
+    const request = await requests.save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy: user,
+      })
+    );
+    // An older completed request of the media never joins the run.
+    await requests.save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.COMPLETED,
+        media,
+        requestedBy: user,
+      })
+    );
+    tracker.start({ mediaId: media.id, is4k: false, requestId: request.id });
+    const finished: string[] = [];
+    tracker.on('finished', (p) =>
+      finished.push(p.steps.find((s) => s.key === 'playable')!.status)
+    );
+    reach(tracker, media.id, 'grabbed');
+
+    await requests.update(request.id, {
+      status: MediaRequestStatus.COMPLETED,
+    });
+    await syncRequests([media.id], tracker);
+    assert.deepEqual(
+      tracker.get(media.id, false)!.requests.map((r) => r.id),
+      [request.id]
+    );
+    assert.deepEqual(finished, []);
+
+    reach(tracker, media.id, 'playable');
+    assert.deepEqual(finished, ['done']);
+    await syncRequests([media.id], tracker);
+    assert.equal(tracker.get(media.id, false), undefined);
+    assert.deepEqual(finished, ['done']);
+  });
 });
 
 describe('requestStarts', () => {

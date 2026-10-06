@@ -42,6 +42,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   total: 'Total',
   watch: 'Watch',
   finished: 'Finished {date}',
+  ended: 'Ended {date}',
   failed: 'Something went wrong at this step.',
   searchAgain: 'Search again',
   searchAvailableIn: 'Available again in {duration}',
@@ -281,10 +282,8 @@ const RequestProgressModal = ({
         : intl.formatMessage(messages.failed)
       : undefined;
   // Ready means Jellyfin has every unit, not only that a link exists
-  const playUrl =
-    step?.key === 'playable' && step.status === 'done'
-      ? progress?.playUrl
-      : undefined;
+  const playableDone = step?.key === 'playable' && step.status === 'done';
+  const playUrl = playableDone ? progress?.playUrl : undefined;
   const canSearch =
     finishedAt === undefined &&
     !!progress?.search?.allowed &&
@@ -450,12 +449,16 @@ const RequestProgressModal = ({
               )}
               {finishedAt !== undefined && (
                 <div className="mt-1 text-xs text-gray-500">
-                  {intl.formatMessage(messages.finished, {
-                    date: intl.formatDate(finishedAt, {
-                      dateStyle: 'medium',
-                      timeStyle: 'short',
-                    }),
-                  })}
+                  {/* Finished only once Ready; a failed or dropped run ended */}
+                  {intl.formatMessage(
+                    playableDone ? messages.finished : messages.ended,
+                    {
+                      date: intl.formatDate(finishedAt, {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      }),
+                    }
+                  )}
                 </div>
               )}
             </div>

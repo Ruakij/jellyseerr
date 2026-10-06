@@ -613,6 +613,7 @@
   "components.RequestProgressModal.ago": "{duration} ago",
   "components.RequestProgressModal.awaitingApproval": "Waiting for approval",
   "components.RequestProgressModal.details": "Details",
+  "components.RequestProgressModal.ended": "Ended {date}",
   "components.RequestProgressModal.estimate": "~{duration}",
   "components.RequestProgressModal.estimateRange": "~{duration} ({low}-{high})",
   "components.RequestProgressModal.failed": "Something went wrong at this step.",
