@@ -30,6 +30,7 @@ import {
   rememberEpisode,
   requestProgressStats,
   requestStarts,
+  syncRequests,
 } from '@server/lib/requestProgress/events';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
 import progressTracker, {
@@ -200,7 +201,7 @@ describe('refreshServer', () => {
     const request = await getRepository(MediaRequest).save(
       new MediaRequest({
         type: MediaType.TV,
-        status: MediaRequestStatus.PENDING,
+        status: MediaRequestStatus.APPROVED,
         media,
         requestedBy: await getRepository(User).findOneByOrFail({ id: 1 }),
         seasons: [new SeasonRequest({ seasonNumber: 2 })],
@@ -319,7 +320,10 @@ describe('refreshServer', () => {
     });
     assert.deepEqual(
       progress.timeline?.map((e) => [e.kind, e.units]),
-      [['grabbed', ['S02E01-E02']]]
+      [
+        ['requested', undefined],
+        ['grabbed', ['S02E01-E02']],
+      ]
     );
 
     // The pack finished; its first episode is imported.
@@ -758,14 +762,12 @@ describe('reconstructProgress', () => {
     assert.equal(statusOf(tracker, media.id, 'searching').status, 'pending');
   });
 
-  it('fails a declined request', async () => {
+  it('has no run for a declined request', async () => {
     const { media, tracker } = await setupRequest(MediaRequestStatus.DECLINED);
 
     await reconstructProgress([{ mediaId: media.id, is4k: false }], tracker);
 
-    const requested = statusOf(tracker, media.id, 'requested');
-    assert.equal(requested.status, 'failed');
-    assert.equal(requested.error, 'Request declined');
+    assert.equal(tracker.entry(media.id, false), undefined);
   });
 
   it('leaves media with a tracked run alone', async () => {
@@ -776,6 +778,53 @@ describe('reconstructProgress', () => {
     await reconstructProgress(undefined, tracker);
 
     assert.deepEqual(tracker.get(media.id, false), before);
+  });
+});
+
+describe('syncRequests', () => {
+  it('drops a deleted request and keeps the other one of the media', async () => {
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 1,
+        tvdbId: 2,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PROCESSING,
+      })
+    );
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    const requests = getRepository(MediaRequest);
+    const [s1, s2] = await requests.save(
+      [1, 2].map(
+        (seasonNumber) =>
+          new MediaRequest({
+            type: MediaType.TV,
+            status: MediaRequestStatus.APPROVED,
+            media,
+            requestedBy: user,
+            seasons: [new SeasonRequest({ seasonNumber })],
+          })
+      )
+    );
+    const tracker = new ProgressTracker(new StepStats());
+    tracker.start({ mediaId: media.id, is4k: false, requestId: s1.id });
+
+    await syncRequests([media.id], tracker);
+    assert.deepEqual(
+      tracker.get(media.id, false)!.requests.map((r) => r.seasons),
+      [[1], [2]]
+    );
+
+    await requests.remove(s1);
+    await syncRequests([media.id], tracker);
+    const progress = tracker.get(media.id, false)!;
+    assert.deepEqual(
+      progress.requests.map((r) => [r.id, r.seasons]),
+      [[s2.id, [2]]]
+    );
+
+    await requests.remove(s2);
+    await syncRequests([media.id], tracker);
+    assert.equal(tracker.get(media.id, false), undefined);
   });
 });
 

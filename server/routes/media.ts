@@ -336,6 +336,7 @@ mediaRoutes.get<{ mediaId: string }>(
     const untracked: RequestProgress = {
       mediaId,
       is4k,
+      requests: [],
       steps: STEP_KEYS.map((key) => ({
         key,
         status: key === 'playable' && available ? 'done' : 'pending',
@@ -395,7 +396,11 @@ mediaRoutes.get<{ mediaId: string }>(
         send(progress);
       }
     };
+    const onRemoved = (removedId: number, removed4k: boolean) => {
+      if (removedId === mediaId && removed4k === is4k) send(untracked);
+    };
     progressTracker.on('change', onChange);
+    progressTracker.on('removed', onRemoved);
     if (!progressTracker.entry(mediaId, is4k)) {
       reconstructProgress([{ mediaId, is4k }]).catch((e: Error) =>
         logger.warn(`Reconstructing the progress failed: ${e.message}`, {
@@ -412,6 +417,7 @@ mediaRoutes.get<{ mediaId: string }>(
     req.on('close', () => {
       clearInterval(heartbeat);
       progressTracker.off('change', onChange);
+      progressTracker.off('removed', onRemoved);
     });
   }
 );
