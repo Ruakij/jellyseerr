@@ -43,11 +43,7 @@ const showsProgress = ({ mediaId, status }: StatusBadgeProps) =>
 
 const StatusBadge = (props: StatusBadgeProps) =>
   showsProgress(props) ? (
-    <RequestProgressTrigger
-      mediaId={props.mediaId}
-      is4k={props.is4k}
-      subTitle={Array.isArray(props.title) ? props.title[0] : props.title}
-    >
+    <RequestProgressTrigger mediaId={props.mediaId} is4k={props.is4k}>
       {(open) => (
         <button
           type="button"

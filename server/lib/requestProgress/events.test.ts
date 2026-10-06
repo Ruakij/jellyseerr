@@ -62,6 +62,7 @@ let monitored = true;
 let lastSearchTime: string | undefined;
 let removed = false;
 let isAvailable = true;
+let releases: { digitalRelease?: string; physicalRelease?: string } = {};
 // Radarr ids whose history and movie the fakes served, in order.
 const reads = { history: [] as number[], state: [] as number[] };
 Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
@@ -73,7 +74,7 @@ Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
       if (removed) {
         throw new Error('Not found', { cause: { response: { status: 404 } } });
       }
-      return { hasFile, monitored, lastSearchTime, isAvailable };
+      return { hasFile, monitored, lastSearchTime, isAvailable, ...releases };
     },
   configurable: true,
 });
@@ -138,6 +139,7 @@ async function setup(overrides: Partial<Media> = {}) {
   lastSearchTime = undefined;
   removed = false;
   isAvailable = true;
+  releases = {};
   reads.history = [];
   reads.state = [];
   return { media, tracker };
@@ -306,11 +308,17 @@ describe('refreshServer', () => {
         ...episodeOf(203, 2, 3),
         airDateUtc: new Date(now + 86_400_000).toISOString(),
       },
+      // Airs earlier, but not requested.
+      {
+        ...episodeOf(102, 1, 2),
+        airDateUtc: new Date(now + 3_600_000).toISOString(),
+      },
     ];
 
     await refreshServer('sonarr-0', tracker);
 
     const progress = tracker.get(media.id, false)!;
+    assert.equal(progress.releaseDate, sonarrEpisodes[3].airDateUtc);
     const grabbed = statusOf(tracker, media.id, 'grabbed');
     assert.equal(grabbed.status, 'running');
     assert.equal(grabbed.startedAt, at(3));
@@ -406,10 +414,18 @@ describe('refreshServer', () => {
     );
 
     isAvailable = false;
+    const day = (d: number) =>
+      new Date(Date.now() + d * 86_400_000).toISOString();
+    // The digital release is past, the physical one is next.
+    releases = { digitalRelease: day(-1), physicalRelease: day(30) };
     await refreshServer('radarr-0', tracker);
     const unreleased = statusOf(tracker, media.id, 'searching');
     assert.equal(unreleased.detail, WAITING_FOR_RELEASE);
     assert.equal(unreleased.waiting, 'release');
+    assert.equal(
+      tracker.get(media.id, false)!.releaseDate,
+      releases.physicalRelease
+    );
   });
 
   it('goes back to searching when the files disappear after the import', async () => {

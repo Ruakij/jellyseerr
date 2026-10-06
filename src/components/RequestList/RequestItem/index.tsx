@@ -562,11 +562,7 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
                   }
                 />
               )}
-              <RequestProgressIcon
-                request={requestData}
-                subTitle={isMovie(title) ? title.title : title.name}
-                className="ml-2"
-              />
+              <RequestProgressIcon request={requestData} className="ml-2" />
             </div>
             <div className="card-field">
               {hasPermission(

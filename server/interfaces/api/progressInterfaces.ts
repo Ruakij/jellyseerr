@@ -1,3 +1,5 @@
+import type { MediaType } from '@server/constants/media';
+
 export type ProgressStepKey =
   | 'requested'
   | 'searching'
@@ -75,6 +77,7 @@ export interface ProgressRequest {
   id: number;
   seasons?: number[]; // series only
   requestedBy?: string; // display name
+  requestedAt?: string; // ISO
   step: ProgressStepKey; // of its least advanced unit; requested while it awaits approval
   status: ProgressStepStatus;
   waiting?: 'release' | 'rss'; // searching with no search running
@@ -100,9 +103,12 @@ export interface RequestProgress {
   estimatePercentile: EstimatePercentile;
   playUrl?: string; // Jellyfin deep link once playable
   dormant?: boolean; // waits for a release with nothing running; its waiting time does not tick
+  releaseDate?: string; // ISO; next Radarr digital/physical release, or Sonarr air date of a missing requested episode; future only
   downloads?: ProgressDownload[]; // queue items of units without a file
   timeline?: ProgressTimelineEntry[]; // last 100 events, oldest first; on the stream only when changed
   search?: ProgressSearch; // computed per viewer
+  tmdbId?: number; // of the media, set per stream
+  mediaType?: MediaType;
   finishedAt?: string; // ISO; set on a run that is over (stored, or its requests left the tracker), shown read-only
 }
 

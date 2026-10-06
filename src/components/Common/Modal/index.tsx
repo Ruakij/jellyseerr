@@ -13,7 +13,7 @@ import { useIntl } from 'react-intl';
 
 interface ModalProps {
   title?: string;
-  subTitle?: string;
+  subTitle?: React.ReactNode;
   onCancel?: (e?: MouseEvent<HTMLElement>) => void;
   onOk?: (e?: MouseEvent<HTMLButtonElement>) => void;
   onSecondary?: (e?: MouseEvent<HTMLButtonElement>) => void;

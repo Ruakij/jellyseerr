@@ -23,11 +23,10 @@ export const ACTIVE_REQUEST = [
 
 interface ProgressButtonProps {
   media?: Media;
-  subTitle?: string;
 }
 
 // One button per variant with an active request or a stored past run, whatever the media status
-const ProgressButton = ({ media, subTitle }: ProgressButtonProps) => {
+const ProgressButton = ({ media }: ProgressButtonProps) => {
   const intl = useIntl();
   const variants = [false, true].filter((is4k) =>
     media?.requests?.some(
@@ -44,7 +43,6 @@ const ProgressButton = ({ media, subTitle }: ProgressButtonProps) => {
           key={String(is4k)}
           mediaId={media?.id}
           is4k={is4k}
-          subTitle={subTitle}
         >
           {(open) => (
             <Button
@@ -69,14 +67,12 @@ const ProgressButton = ({ media, subTitle }: ProgressButtonProps) => {
 
 interface RequestProgressIconProps {
   request: Pick<MediaRequest, 'id' | 'is4k' | 'media' | 'hasProgressRun'>;
-  subTitle?: string;
   className?: string;
 }
 
 // Opens the stored past run of one request
 export const RequestProgressIcon = ({
   request,
-  subTitle,
   className,
 }: RequestProgressIconProps) => {
   const intl = useIntl();
@@ -86,7 +82,6 @@ export const RequestProgressIcon = ({
       mediaId={request.media?.id}
       is4k={request.is4k}
       requestId={request.id}
-      subTitle={subTitle}
     >
       {(open) => (
         <Tooltip content={intl.formatMessage(messages.pastProgress)}>

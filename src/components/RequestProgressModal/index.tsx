@@ -18,6 +18,8 @@ import type {
   ProgressTimelineEntry,
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
+import type { MovieDetails } from '@server/models/Movie';
+import type { TvDetails } from '@server/models/Tv';
 import axios from 'axios';
 import {
   createContext,
@@ -27,9 +29,14 @@ import {
   useState,
 } from 'react';
 import { useIntl } from 'react-intl';
+import useSWR from 'swr';
 
 const messages = defineMessages('components.RequestProgressModal', {
   title: 'Request Progress',
+  seasons: '{count, plural, one {Season} other {Seasons}} {seasons}',
+  requestedBy: 'requested by {users}',
+  requestedByAt: '{user} on {date}',
+  expected: 'Expected {date} ({relative})',
   requested: 'Requested',
   searching: 'Searching',
   grabbed: 'Downloading',
@@ -108,6 +115,15 @@ export const formatDuration = (ms: number): string => {
 const seasonLabel = (seasons?: number[]) =>
   seasons?.map((n) => `S${n}`).join(', ');
 
+// The largest unit that keeps a release a few weeks out from reading as days: in 5 weeks, in 3 months
+const relativeUnit = (ms: number): [number, Intl.RelativeTimeFormatUnit] => {
+  const days = Math.round(ms / 86_400_000);
+  if (days < 14) return [days, 'day'];
+  if (days < 60) return [Math.round(days / 7), 'week'];
+  if (days < 730) return [Math.round(days / 30.44), 'month'];
+  return [Math.round(days / 365.25), 'year'];
+};
+
 // Time searches ran, without the waiting between them
 const searchTime = (step: ProgressStep, now: number): number | undefined =>
   step.searchMs === undefined && !step.searchStartedAt
@@ -166,14 +182,12 @@ const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
 interface RequestProgressModalProps {
   show: boolean;
   progress?: RequestProgress;
-  subTitle?: string;
   onClose: () => void;
 }
 
 const RequestProgressModal = ({
   show,
   progress,
-  subTitle,
   onClose,
 }: RequestProgressModalProps) => {
   const intl = useIntl();
@@ -231,12 +245,79 @@ const RequestProgressModal = ({
     return () => clearInterval(timer);
   }, [ticking]);
 
+  // Opened from lists and settings too, so the pop-up names the media itself
+  const { data: details } = useSWR<MovieDetails | TvDetails>(
+    progress?.tmdbId && progress.mediaType
+      ? `/api/v1/${progress.mediaType}/${progress.tmdbId}`
+      : null
+  );
+  const mediaTitle =
+    details && ('title' in details ? details.title : details.name);
+  const shortDate = (iso: string) =>
+    intl.formatDate(iso, {
+      day: 'numeric',
+      month: 'short',
+      year:
+        new Date(iso).getFullYear() === new Date(clock).getFullYear()
+          ? undefined
+          : 'numeric',
+    });
+  const requests = progress?.requests ?? [];
+  const seasons = [...new Set(requests.flatMap((r) => r.seasons ?? []))].sort(
+    (a, b) => a - b
+  );
+  const requesters = requests.flatMap((r) =>
+    !r.requestedBy
+      ? []
+      : r.requestedAt
+        ? intl.formatMessage(messages.requestedByAt, {
+            user: r.requestedBy,
+            date: shortDate(r.requestedAt),
+          })
+        : r.requestedBy
+  );
+  const requestLine = [
+    seasons.length > 0 &&
+      intl.formatMessage(messages.seasons, {
+        count: seasons.length,
+        seasons: seasons.join(', '),
+      }),
+    progress?.is4k && '4K',
+    requesters.length > 0 &&
+      intl.formatMessage(messages.requestedBy, {
+        users: intl.formatList(requesters),
+      }),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const searchStep = progress?.steps.find((s) => s.key === 'searching');
+  // The date Radarr/Sonarr waits for, else what TMDB announces; a past one says nothing
+  const tmdbDate =
+    details &&
+    ('title' in details
+      ? details.releaseDate
+      : details.nextEpisodeToAir?.airDate);
+  const releaseAt =
+    searchStep?.status === 'running' && searchStep.waiting === 'release'
+      ? [progress?.releaseDate, tmdbDate]
+          .map((d) => (d ? Date.parse(d) : NaN))
+          .find((t) => t > clock)
+      : undefined;
+  const expected =
+    releaseAt !== undefined &&
+    intl.formatMessage(messages.expected, {
+      date: intl.formatDate(releaseAt, { dateStyle: 'medium' }),
+      relative: intl.formatRelativeTime(...relativeUnit(releaseAt - clock), {
+        numeric: 'auto',
+      }),
+    });
+
   const firstStart = progress?.steps.find((s) => s.startedAt)?.startedAt;
   const lastEnd = progress?.steps
     .map((s) => s.finishedAt)
     .filter((f): f is string => !!f)
     .pop();
-  const searchStep = progress?.steps.find((s) => s.key === 'searching');
   const waitedMs = searchStep
     ? Math.max(
         0,
@@ -384,12 +465,6 @@ const RequestProgressModal = ({
     };
   };
 
-  // The stepper shows the current step and its time; a line names the request only
-  const requestLines = (progress?.requests ?? []).flatMap((r) => {
-    const parts = [seasonLabel(r.seasons), r.requestedBy].filter(Boolean);
-    return parts.length > 0 ? [<li key={r.id}>{parts.join(' · ')}</li>] : [];
-  });
-
   // Absolute time, the date only for another day; the age on hover
   const timelineTime = (e: ProgressTimelineEntry) => {
     const at = new Date(e.at);
@@ -426,16 +501,26 @@ const RequestProgressModal = ({
       <Modal
         loading={!progress}
         backgroundClickable
-        title={intl.formatMessage(messages.title)}
-        subTitle={subTitle}
+        title={mediaTitle ?? intl.formatMessage(messages.title)}
+        subTitle={
+          (requestLine || expected) && (
+            <>
+              {requestLine && (
+                <span className="block truncate">{requestLine}</span>
+              )}
+              {expected && (
+                <span className="block truncate text-sm font-normal text-gray-400">
+                  {expected}
+                </span>
+              )}
+            </>
+          )
+        }
         onCancel={onClose}
         cancelText={intl.formatMessage(globalMessages.close)}
       >
         {/* Sections in one spacing scale, a line between each */}
         <div className="divide-y divide-gray-700 [&>*]:py-4 [&>:first-child]:pt-0 [&>:last-child]:pb-0">
-          {requestLines.length > 0 && (
-            <ul className="space-y-1 text-sm text-gray-300">{requestLines}</ul>
-          )}
           {progress && (
             <div>
               <ProgressStepper
@@ -604,7 +689,6 @@ interface ProgressTarget {
   is4k: boolean;
   // a past run of this request rather than the live run of the media
   requestId?: number;
-  subTitle?: string;
 }
 
 const OpenProgressContext = createContext<(target: ProgressTarget) => void>(
@@ -634,12 +718,7 @@ export const RequestProgressProvider = ({
   return (
     <OpenProgressContext.Provider value={open}>
       {children}
-      <RequestProgressModal
-        show={show}
-        progress={progress}
-        subTitle={target?.subTitle}
-        onClose={close}
-      />
+      <RequestProgressModal show={show} progress={progress} onClose={close} />
     </OpenProgressContext.Provider>
   );
 };
@@ -648,7 +727,6 @@ interface RequestProgressTriggerProps {
   mediaId?: number;
   is4k?: boolean;
   requestId?: number;
-  subTitle?: string;
   children: (open: () => void) => React.ReactNode;
 }
 
@@ -657,15 +735,10 @@ export const RequestProgressTrigger = ({
   mediaId,
   is4k = false,
   requestId,
-  subTitle,
   children,
 }: RequestProgressTriggerProps) => {
   const open = useContext(OpenProgressContext);
-  return (
-    <>
-      {children(() => mediaId && open({ mediaId, is4k, requestId, subTitle }))}
-    </>
-  );
+  return <>{children(() => mediaId && open({ mediaId, is4k, requestId }))}</>;
 };
 
 export default RequestProgressModal;

@@ -629,11 +629,10 @@ const MovieDetails = ({ movie }: MovieDetailsProps) => {
           <RequestButton
             mediaType="movie"
             media={data.mediaInfo}
-            title={data.title}
             tmdbId={data.id}
             onUpdate={() => revalidate()}
           />
-          <ProgressButton media={data.mediaInfo} subTitle={data.title} />
+          <ProgressButton media={data.mediaInfo} />
           {(data.mediaInfo?.status === MediaStatus.AVAILABLE ||
             (settings.currentSettings.movie4kEnabled &&
               hasPermission(

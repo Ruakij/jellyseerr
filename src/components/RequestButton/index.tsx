@@ -51,8 +51,6 @@ interface RequestButtonProps {
   onUpdate: () => void;
   tmdbId: number;
   media?: Media;
-  /** The media name, the subtitle of the progress pop-up */
-  title?: string;
   isShowComplete?: boolean;
   is4kShowComplete?: boolean;
 }
@@ -61,7 +59,6 @@ const RequestButton = ({
   tmdbId,
   onUpdate,
   media,
-  title,
   mediaType,
   isShowComplete = false,
   is4kShowComplete = false,
@@ -387,7 +384,6 @@ const RequestButton = ({
       <RequestProgressModal
         show={progressIs4k !== undefined}
         progress={progress}
-        subTitle={title}
         onClose={() => setProgressIs4k(undefined)}
       />
       {buttonOne && (
