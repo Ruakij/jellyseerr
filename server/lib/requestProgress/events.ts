@@ -786,13 +786,14 @@ const queued = (entry: TrackedProgress) =>
 /**
  * Sets which units of the tracked media Jellyfin has and whether they are ready to play. A
  * series with a Jellyfin item lists its episodes there; without one, an available season counts
- * all its units.
+ * all its units. `only` limits it to some runs, as it asks Jellyfin once per run.
  */
 export async function reconcileJellyfin(
   addedAt?: number,
-  tracker: ProgressTracker = progressTracker
+  tracker: ProgressTracker = progressTracker,
+  only: (entry: TrackedProgress) => boolean = () => true
 ): Promise<void> {
-  const entries = tracker.tracked();
+  const entries = tracker.tracked().filter(only);
   if (entries.length === 0) return;
   const media = await loadMedia(entries);
   let client: Promise<JellyfinAPI | undefined> | undefined;
@@ -934,7 +935,7 @@ export async function reconstructProgress(
       mediaIds: created.map((e) => e.mediaId),
     });
   }
-  await reconcileJellyfin(undefined, tracker);
+  await reconcileJellyfin(undefined, tracker, (e) => created.includes(e));
 }
 
 // Queue events keep coming while anything downloads, so the refresh runs at least this often;
@@ -1011,15 +1012,31 @@ const polls = new KeyedDebouncer(async (key) => {
   if (!jellyfinRecentScanner.status().running) {
     await jellyfinRecentScanner.run();
   }
-  await reconcileJellyfin();
+  await reconcileJellyfin(
+    undefined,
+    progressTracker,
+    (e) => !progressTracker.dormant(e)
+  );
 });
+
+// Added items cannot be matched to runs by id: Jellyfin reports episodes, the media holds series.
+// The importing step counts too, as Jellyfin can add a file before the refresh saw its import.
+const awaitsJellyfin = (entry: TrackedProgress) =>
+  !progressTracker.finished(entry) &&
+  (['importing', 'inJellyfin', 'playable'] as const).some(
+    (k) => entry.steps[k].status === 'running'
+  );
 
 const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
   async (_key, batches) => {
     await jellyfinItemScanner.runItems([
       ...new Set(batches.flatMap((b) => b.ids)),
     ]);
-    await reconcileJellyfin(Math.min(...batches.map((b) => b.at)));
+    await reconcileJellyfin(
+      Math.min(...batches.map((b) => b.at)),
+      progressTracker,
+      awaitsJellyfin
+    );
   }
 );
 
@@ -1031,7 +1048,11 @@ export const REMOVAL_MAX_WAIT_MS = 5 * 60_000;
 const mediaRemovals = new KeyedDebouncer(
   async (key) => {
     await availabilitySync.syncMedia(Number(key));
-    await reconcileJellyfin();
+    await reconcileJellyfin(
+      undefined,
+      progressTracker,
+      (e) => e.mediaId === Number(key)
+    );
   },
   REMOVAL_DEBOUNCE_MS,
   REMOVAL_MAX_WAIT_MS
