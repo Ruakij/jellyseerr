@@ -673,7 +673,7 @@ async function jellyfinEpisodes(
 }
 
 /**
- * Sets which units of the tracked media Jellyfin has and whether Seerr shows them available. A
+ * Sets which units of the tracked media Jellyfin has and whether they are ready to play. A
  * series with a Jellyfin item lists its episodes there; without one, an available season counts
  * all its units.
  */
@@ -708,9 +708,13 @@ export async function reconcileJellyfin(
         present = (u) => available.has(u.seasonNumber as number);
       }
     }
+    // Radarr/Sonarr scans mark the media available once the file exists, before Jellyfin has it.
     tracker.setJellyfin(mediaId, is4k, {
       present,
-      available: isAvailable(is4k ? m.status4k : m.status),
+      available:
+        isAvailable(is4k ? m.status4k : m.status) &&
+        !!itemId &&
+        [...entry.units.values()].every(present),
       playUrl: is4k ? m.mediaUrl4k : m.mediaUrl,
       at: addedAt,
       cause: 'Jellyfin',

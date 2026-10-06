@@ -133,7 +133,7 @@ export interface TrackedProgress {
   releases: Map<string, { title?: string; indexer?: string }>;
   /** Queue items by download, as last seen. */
   queue: Map<string, QueueItemState>;
-  /** Seerr shows the media available or partially available. */
+  /** Seerr shows the media available and Jellyfin has its item with every unit. */
   available: boolean;
   playUrl?: string;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
@@ -751,7 +751,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   /**
-   * Sets which units Jellyfin has and whether Seerr shows the media available. A unit Radarr/Sonarr
+   * Sets which units Jellyfin has and whether the media is ready to play. A unit Radarr/Sonarr
    * lists no file for does not count as in Jellyfin, which notices deletions later.
    */
   public setJellyfin(

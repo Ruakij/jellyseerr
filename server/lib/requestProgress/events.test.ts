@@ -13,6 +13,7 @@ import {
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
+import Season from '@server/entity/Season';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
 import availabilitySync from '@server/lib/availabilitySync';
@@ -697,6 +698,28 @@ describe('reconcileJellyfin', () => {
     const progress = tracker.get(media.id, false)!;
     assert.ok(progress.steps.every((s) => s.status === 'done'));
     assert.match(progress.playUrl ?? '', /id=abc/);
+  });
+
+  it('waits for the Jellyfin item before an available series is ready', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      status: MediaStatus.AVAILABLE,
+      seasons: [
+        Object.assign(new Season(), {
+          seasonNumber: 1,
+          status: MediaStatus.AVAILABLE,
+        }),
+      ],
+    });
+    tracker.start({ mediaId: media.id, is4k: false, seasons: [1] });
+    tracker.setUnits(media.id, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+    ]);
+
+    await reconcileJellyfin(undefined, tracker);
+
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
+    assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
   });
 
   it('reopens the Jellyfin step when the item left Jellyfin', async () => {
