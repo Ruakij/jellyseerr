@@ -2,6 +2,7 @@ import Button from '@app/components/Common/Button';
 import LoadingSpinner from '@app/components/Common/LoadingSpinner';
 import PageTitle from '@app/components/Common/PageTitle';
 import Table from '@app/components/Common/Table';
+import { formatDuration } from '@app/components/RequestProgressModal';
 import useToasts from '@app/hooks/useToasts';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
@@ -64,14 +65,6 @@ const STEPS = [
   'inJellyfin',
   'playable',
 ] as const;
-
-function formatDuration(ms: number): string {
-  const minutes = Math.round(ms / 60_000);
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 48 * 60) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  return `${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h`;
-}
 
 const fields = [
   'historyMaxAgeDays',

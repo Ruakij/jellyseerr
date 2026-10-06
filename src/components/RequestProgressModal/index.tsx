@@ -88,7 +88,7 @@ const PUBLIC_ERRORS = [
   'Not monitored in Radarr',
 ];
 
-// The two largest units, the second only from hours on: 45s, 12m, 13h 5m, 2d 4h
+// The two largest units from minutes on, a zero second one left out: 45s, 1m 10s, 12m, 13h 5m, 2d 4h
 export const formatDuration = (ms: number): string => {
   const s = Math.max(0, Math.round(ms / 1000));
   const two = (
@@ -99,7 +99,7 @@ export const formatDuration = (ms: number): string => {
   ) =>
     small > 0 ? `${big}${bigUnit} ${small}${smallUnit}` : `${big}${bigUnit}`;
   if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 3600) return two(Math.floor(s / 60), 'm', s % 60, 's');
   if (s < 86400) {
     return two(Math.floor(s / 3600), 'h', Math.floor(s / 60) % 60, 'm');
   }
