@@ -56,18 +56,11 @@ const messages = defineMessages('components.Settings.SettingsRequestProgress', {
   grabbed: 'Grabbed',
   importing: 'Downloading and Importing',
   inJellyfin: 'In Media Server',
-  playable: 'Playable',
   total: 'Total (End to End)',
 });
 
 const PERCENTILES = [50, 90, 95, 99] as const;
-const STEPS = [
-  'searching',
-  'grabbed',
-  'importing',
-  'inJellyfin',
-  'playable',
-] as const;
+const STEPS = ['searching', 'grabbed', 'importing', 'inJellyfin'] as const;
 
 const fields = [
   'historyMaxAgeDays',

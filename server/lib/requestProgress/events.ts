@@ -743,32 +743,55 @@ const probed = (item?: JellyfinLibraryItemExtended) =>
     s.MediaStreams?.some((m) => m.Type === 'Video')
   );
 
-/** `season:episode` of the probed episodes Jellyfin has of a series; undefined when it cannot tell. */
-async function jellyfinEpisodes(
+/** Clock differences and polling delays between Radarr/Sonarr and Jellyfin. */
+export const JELLYFIN_ADDED_SLACK_MS = 30_000;
+
+/**
+ * Jellyfin keeps listing the item of a deleted file until a scan notices it, so a unit a download
+ * delivered counts only with an item Jellyfin created after the import.
+ */
+const newEnough = (unit: Unit, item: JellyfinLibraryItemExtended) =>
+  !unit.downloadId ||
+  (unit.importedAt !== undefined &&
+    (!item.DateCreated ||
+      Date.parse(item.DateCreated) >=
+        unit.importedAt - JELLYFIN_ADDED_SLACK_MS));
+
+const unitKey = (season?: number, episode?: number) => `${season}:${episode}`;
+
+/**
+ * The items Jellyfin lists for the units of a movie or series by unitKey: the movie under the key
+ * of its unit, an episode under each episode its file holds. Undefined when it cannot tell.
+ */
+async function jellyfinItems(
   client: JellyfinAPI | undefined,
+  tv: boolean,
   itemId: string
-): Promise<Set<string> | undefined> {
+): Promise<Map<string, JellyfinLibraryItemExtended> | undefined> {
   if (!client) return undefined;
   try {
+    const items = new Map<string, JellyfinLibraryItemExtended>();
+    if (!tv) {
+      const movie = await client.getItemData(itemId);
+      if (movie) items.set(unitKey(), movie);
+      return items;
+    }
     const episodes = await client.getEpisodes(itemId, undefined, {
       includeMediaInfo: true,
     });
-    const have = new Set<string>();
     for (const e of episodes) {
       if (e.ParentIndexNumber == null || e.IndexNumber == null) continue;
-      if (!probed(e)) continue;
-      // A file of several episodes is one item.
       for (
         let n = e.IndexNumber;
         n <= (e.IndexNumberEnd ?? e.IndexNumber);
         n++
       ) {
-        have.add(`${e.ParentIndexNumber}:${n}`);
+        items.set(unitKey(e.ParentIndexNumber, n), e);
       }
     }
-    return have;
+    return items;
   } catch (e) {
-    logger.warn(`Listing the episodes in Jellyfin failed: ${e.message}`, {
+    logger.warn(`Loading the item from Jellyfin failed: ${e.message}`, {
       label: 'Request Progress',
       itemId,
     });
@@ -776,18 +799,41 @@ async function jellyfinEpisodes(
   }
 }
 
-/** Whether Jellyfin has probed the movie item; undefined when it cannot tell. */
-async function jellyfinMovie(
+// ponytail: new items are looked up among the newest ones only; one Jellyfin added long before the
+// run is linked by the scans instead.
+const NEWEST_ITEMS = 50;
+
+/** The id of the Jellyfin item of the media, by its provider ids. */
+function providerMatch(
+  items: JellyfinLibraryItemExtended[],
+  m: Media
+): string | undefined {
+  const tv = m.mediaType === MediaType.TV;
+  return items.find((item) => {
+    if (item.Type !== (tv ? 'Series' : 'Movie')) return false;
+    const ids = item.ProviderIds ?? {};
+    const tmdb = Number(ids.Tmdb || ids.TheMovieDb || NaN);
+    return (
+      tmdb === m.tmdbId ||
+      (tv
+        ? !!m.tvdbId && Number(ids.Tvdb) === m.tvdbId
+        : !!m.imdbId && ids.Imdb === m.imdbId)
+    );
+  })?.Id;
+}
+
+/** The newest Jellyfin item of the media by its provider ids. */
+async function providerItem(
   client: JellyfinAPI | undefined,
-  itemId: string
-): Promise<boolean | undefined> {
+  m: Media
+): Promise<string | undefined> {
   if (!client) return undefined;
   try {
-    return probed(await client.getItemData(itemId));
+    return providerMatch(await client.getNewestItems(NEWEST_ITEMS), m);
   } catch (e) {
-    logger.warn(`Loading the movie from Jellyfin failed: ${e.message}`, {
+    logger.warn(`Looking up the item in Jellyfin failed: ${e.message}`, {
       label: 'Request Progress',
-      itemId,
+      mediaId: m.id,
     });
     return undefined;
   }
@@ -813,16 +859,11 @@ async function seasonUrl(
   }
 }
 
-/** Radarr/Sonarr still downloads or imports a unit, e.g. one re-grabbed after its import. */
-const queued = (entry: TrackedProgress) =>
-  [...entry.queue.values()].some(
-    (q) => q.state !== 'failed' && q.unitIds.some((id) => entry.units.has(id))
-  );
-
 /**
- * Sets which units of the tracked media Jellyfin has and whether they are ready to play. A
- * series with a Jellyfin item lists its episodes there; without one, an available season counts
- * all its units. `only` limits it to some runs, as it asks Jellyfin once per run.
+ * Sets which units of the tracked media Jellyfin has, new enough and probed. A Jellyfin item that
+ * lists none of the units may be stale, e.g. of a deleted series, so the newest item with the
+ * provider ids of the media takes its place. `only` limits it to some runs, as it asks Jellyfin
+ * once per run.
  */
 export async function reconcileJellyfin(
   addedAt?: number,
@@ -835,49 +876,49 @@ export async function reconcileJellyfin(
   let client: Promise<JellyfinAPI | undefined> | undefined;
   for (const entry of entries) {
     const { mediaId, is4k } = entry;
-    const m = media.get(mediaId);
+    let m = media.get(mediaId);
     if (!m) continue;
-    const itemId = is4k ? m.jellyfinMediaId4k : m.jellyfinMediaId;
-    let present: (unit: Unit) => boolean = () => !!itemId;
-    if (m.mediaType === MediaType.MOVIE && itemId) {
-      client ??= jellyfinClient();
-      const has = await jellyfinMovie(await client, itemId);
-      if (has === undefined) continue;
-      present = () => has;
-    } else if (m.mediaType === MediaType.TV && entry.unitsKnown) {
-      if (itemId) {
-        client ??= jellyfinClient();
-        const have = await jellyfinEpisodes(await client, itemId);
-        if (!have) continue;
-        present = (u) => have.has(`${u.seasonNumber}:${u.episodeNumber}`);
-      } else {
-        const available = new Set(
-          m.seasons
-            .filter(
-              (s) => (is4k ? s.status4k : s.status) === MediaStatus.AVAILABLE
-            )
-            .map((s) => s.seasonNumber)
-        );
-        present = (u) => available.has(u.seasonNumber as number);
+    let itemId = (is4k ? m.jellyfinMediaId4k : m.jellyfinMediaId) ?? undefined;
+    const tv = m.mediaType === MediaType.TV;
+    client ??= jellyfinClient();
+    const units = [...entry.units.values()];
+    const key = (u: Unit) => unitKey(u.seasonNumber, u.episodeNumber);
+    // A series without its episodes known counts as a whole.
+    const whole = tv && !entry.unitsKnown;
+    let items =
+      itemId && !whole
+        ? await jellyfinItems(await client, tv, itemId)
+        : undefined;
+    const found = whole
+      ? !!itemId
+      : !!items && units.some((u) => items?.has(key(u)));
+    if (!found) {
+      const linked = await providerItem(await client, m);
+      if (linked && linked !== itemId) {
+        await jellyfinItemScanner.runItems([linked]);
+        itemId = linked;
+        m = (await loadMedia([entry])).get(mediaId) ?? m;
+        if (!whole) items = await jellyfinItems(await client, tv, linked);
       }
     }
-    // Radarr/Sonarr scans mark the media available once the file exists, before Jellyfin has it.
-    const available =
-      isAvailable(is4k ? m.status4k : m.status) &&
-      !!itemId &&
-      [...entry.units.values()].every(present) &&
-      !queued(entry);
-    let playUrl = is4k ? m.mediaUrl4k : m.mediaUrl;
-    if (available && itemId && m.mediaType === MediaType.TV) {
+    if (!whole && itemId && !items) continue;
+    const listed = items;
+    const present = whole
+      ? () => !!itemId
+      : (u: Unit) => {
+          const item = listed?.get(key(u));
+          return !!item && probed(item) && newEnough(u, item);
+        };
+    let playUrl = (is4k ? m.mediaUrl4k : m.mediaUrl) ?? undefined;
+    if (tv && itemId && units.every(present)) {
       // Looked up once, when the run becomes ready.
-      client ??= jellyfinClient();
-      playUrl = entry.available
-        ? entry.playUrl
-        : await seasonUrl(await client, entry, itemId, playUrl);
+      playUrl =
+        entry.steps.playable.status === 'done' && entry.playUrl
+          ? entry.playUrl
+          : await seasonUrl(await client, entry, itemId, playUrl);
     }
     tracker.setJellyfin(mediaId, is4k, {
       present,
-      available,
       playUrl,
       at: addedAt,
       cause: 'Jellyfin',
@@ -1059,7 +1100,7 @@ const polls = new KeyedDebouncer(async (key) => {
 // The importing step counts too, as Jellyfin can add a file before the refresh saw its import.
 const awaitsJellyfin = (entry: TrackedProgress) =>
   !progressTracker.finished(entry) &&
-  (['importing', 'inJellyfin', 'playable'] as const).some(
+  (['importing', 'inJellyfin'] as const).some(
     (k) => entry.steps[k].status === 'running'
   );
 
@@ -1076,60 +1117,18 @@ const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
   }
 );
 
-// ponytail: new items are looked up among the newest ones only; one Jellyfin added long before the
-// run is linked by the scans instead.
-const NEWEST_ITEMS = 50;
-
 const inJellyfinSteps =
   (tracker: ProgressTracker) => (entry: TrackedProgress) =>
-    !tracker.finished(entry) &&
-    (['inJellyfin', 'playable'] as const).some(
-      (k) => entry.steps[k].status === 'running'
-    );
-
-/** The id of the Jellyfin item of the media, by its provider ids. */
-function providerMatch(
-  items: JellyfinLibraryItemExtended[],
-  m: Media
-): string | undefined {
-  const tv = m.mediaType === MediaType.TV;
-  return items.find((item) => {
-    if (item.Type !== (tv ? 'Series' : 'Movie')) return false;
-    const ids = item.ProviderIds ?? {};
-    const tmdb = Number(ids.Tmdb || ids.TheMovieDb || NaN);
-    return (
-      tmdb === m.tmdbId ||
-      (tv
-        ? !!m.tvdbId && Number(ids.Tvdb) === m.tvdbId
-        : !!m.imdbId && ids.Imdb === m.imdbId)
-    );
-  })?.Id;
-}
+    !tracker.finished(entry) && entry.steps.inJellyfin.status === 'running';
 
 /**
  * Asks Jellyfin about the runs waiting for it, as the socket gets no library events with an API
- * key and the webhook can miss them. Media without a Jellyfin item gets it linked by provider id.
+ * key and the webhook can miss them.
  */
 export async function pollJellyfin(
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
-  const waits = inJellyfinSteps(tracker);
-  const entries = tracker.tracked().filter(waits);
-  if (entries.length === 0) return;
-  const media = await loadMedia(entries);
-  const unlinked = entries.flatMap((e) => {
-    const m = media.get(e.mediaId);
-    return m && !(e.is4k ? m.jellyfinMediaId4k : m.jellyfinMediaId) ? [m] : [];
-  });
-  if (unlinked.length > 0) {
-    const client = await jellyfinClient();
-    const newest = client ? await client.getNewestItems(NEWEST_ITEMS) : [];
-    const ids = unlinked
-      .map((m) => providerMatch(newest, m))
-      .filter((id): id is string => !!id);
-    if (ids.length > 0) await jellyfinItemScanner.runItems([...new Set(ids)]);
-  }
-  await reconcileJellyfin(undefined, tracker, waits);
+  await reconcileJellyfin(undefined, tracker, inJellyfinSteps(tracker));
 }
 
 /**
