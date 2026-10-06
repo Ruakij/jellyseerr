@@ -615,6 +615,7 @@
   "components.RequestProgressModal.estimate": "~{duration}",
   "components.RequestProgressModal.estimateRange": "~{duration} ({low}-{high})",
   "components.RequestProgressModal.failed": "Something went wrong at this step.",
+  "components.RequestProgressModal.finished": "Finished {date}",
   "components.RequestProgressModal.grabbed": "Downloading",
   "components.RequestProgressModal.importing": "Importing",
   "components.RequestProgressModal.inJellyfin": "Adding to Jellyfin",

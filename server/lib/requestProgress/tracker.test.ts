@@ -146,7 +146,7 @@ describe('ProgressTracker', () => {
     it('is gone once its last request is', () => {
       const { tracker, s2At } = twoSeasons();
       const removed: [number, boolean][] = [];
-      tracker.on('removed', (...args) => removed.push(args));
+      tracker.on('removed', (id, is4k) => removed.push([id, is4k]));
       tracker.setRequests(1, false, [{ id: 2, seasons: [2], at: s2At }]);
       assert.ok(tracker.get(1, false));
       tracker.setRequests(1, false, []);
@@ -386,6 +386,39 @@ describe('ProgressTracker', () => {
     tracker.imported(1, false, { downloadId: 'D', unitIds: [0] });
     assert.equal(statuses().importing, 'done');
     assert.equal(tracker.active().length, 1);
+  });
+
+  it('reports a finished run once, and a dropped one when its requests leave', () => {
+    const { tracker, tick } = setup();
+    const finished: [RequestProgress, number[]][] = [];
+    const removed: RequestProgress[] = [];
+    tracker.on('finished', (p, ids) => finished.push([p, ids]));
+    tracker.on('removed', (_id, _4k, last) => removed.push(last));
+    tracker.start({ mediaId: 1, is4k: false, requestId: 7 });
+    tracker.grab(1, false, { downloadId: 'D', unitIds: [0], title: 'Movie' });
+    tracker.imported(1, false, { downloadId: 'D', unitIds: [0] });
+    assert.equal(finished.length, 0);
+    tick(1_000);
+    tracker.setJellyfin(1, false, { present: () => true, available: true });
+    tracker.setJellyfin(1, false, {
+      present: () => true,
+      available: true,
+      playUrl: 'http://jf',
+    });
+    tracker.setRequests(1, false, []);
+    assert.equal(finished.length, 1);
+    const [progress, ids] = finished[0];
+    assert.deepEqual(ids, [7]);
+    assert.ok(progress.finishedAt);
+    assert.equal(progress.steps.at(-1)?.status, 'done');
+    assert.equal(removed[0].finishedAt, progress.finishedAt);
+    assert.ok(removed[0].timeline?.length);
+
+    tracker.start({ mediaId: 2, is4k: false, requestId: 8 });
+    tracker.setRequests(2, false, []);
+    assert.equal(finished.length, 2);
+    assert.deepEqual(finished[1][1], [8]);
+    assert.equal(finished[1][0].steps[1].status, 'running');
   });
 
   it('shows the failure reason of a failed request over the send error', () => {
