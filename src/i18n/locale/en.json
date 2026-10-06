@@ -620,6 +620,7 @@
   "components.RequestProgressModal.importing": "Importing",
   "components.RequestProgressModal.inJellyfin": "Adding to Jellyfin",
   "components.RequestProgressModal.lastSearched": "Last searched {duration} ago",
+  "components.RequestProgressModal.pastProgress": "Request Progress",
   "components.RequestProgressModal.playable": "Ready",
   "components.RequestProgressModal.progress": "Progress",
   "components.RequestProgressModal.progress4k": "4K Progress",
