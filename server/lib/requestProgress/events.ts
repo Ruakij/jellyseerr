@@ -468,7 +468,7 @@ const ARR_STEPS = ['searching', 'grabbed', 'importing'] as const;
  * Brings the tracked media of one Radarr/Sonarr server up to date from its history (grab and
  * import times, download ids, release titles), queue (downloads, blocked or failed ones) and item
  * state. With `scope`, only runs it names, runs in the queue and unfinished runs in a Radarr/Sonarr
- * step are read; without it, every tracked run.
+ * step that are not dormant are read; without it, every tracked run.
  */
 export async function refreshServer(
   key: string,
@@ -506,12 +506,19 @@ export async function refreshServer(
     scope.arrIds?.includes(arrIdOf(entry) ?? -1);
   const moving = (entry: TrackedProgress) =>
     !tracker.finished(entry) &&
+    !tracker.dormant(entry) &&
     (entry.queue.size > 0 ||
       ARR_STEPS.some((k) => entry.steps[k].status === 'running'));
   const touched = new Set(
     all.filter((e) => arrIdOf(e) !== undefined && (named(e) || moving(e)))
   );
-  if (touched.size === 0) return;
+  // A waiting run wakes once its item shows up in the queue.
+  if (
+    touched.size === 0 &&
+    all.every((e) => tracker.finished(e) || arrIdOf(e) === undefined)
+  ) {
+    return;
+  }
 
   const queue = (await api.getQueue()) as (Awaited<
     ReturnType<typeof api.getQueue>
@@ -521,6 +528,7 @@ export async function refreshServer(
   for (const item of queue) {
     for (const entry of inQueue(item)) touched.add(entry);
   }
+  if (touched.size === 0) return;
   await syncRequests(
     [...touched].map((e) => e.mediaId),
     tracker
@@ -1035,6 +1043,12 @@ export const FULL_SYNC_MAX_WAIT_MS = 30 * 60_000;
 
 const fullSync = new KeyedDebouncer(
   async () => {
+    // Waiting runs are refreshed only by events naming them; this catches a missed one.
+    for (const key of new Set(
+      progressTracker.tracked().flatMap((e) => e.serverKey ?? [])
+    )) {
+      serverRefresh.push(key, { all: true });
+    }
     await availabilitySync.run();
     await reconcileJellyfin();
   },
