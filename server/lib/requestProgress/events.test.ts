@@ -25,6 +25,7 @@ import {
   REMOVAL_DEBOUNCE_MS,
   SERVER_REFRESH_MAX_WAIT_MS,
   handleCommand,
+  loadUnits,
   onJellyfinRemoved,
   onSignalRMessage,
   pollJellyfin,
@@ -826,6 +827,88 @@ describe('handleCommand', () => {
       tracker
     );
     assert.equal(tracker.entry(media.id, false), undefined);
+  });
+});
+
+describe('units at run start', () => {
+  const episode = (id: number, seasonNumber: number) => ({
+    id,
+    seasonNumber,
+    episodeNumber: id % 100,
+    hasFile: false,
+    monitored: true,
+    airDateUtc: '2020-01-01T00:00:00Z',
+  });
+
+  async function series(tracker: ProgressTracker) {
+    getSettings().sonarr = [
+      { id: 0, name: 'Sonarr', hostname: 'localhost', port: 8989, apiKey: 'k' },
+    ] as SonarrSettings[];
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        tmdbId: 61,
+        tvdbId: 62,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 63,
+      })
+    );
+    tracker.start({
+      mediaId: media.id,
+      is4k: false,
+      requestId: 1,
+      seasons: [1],
+      serverKey: 'sonarr-0',
+    });
+    return media;
+  }
+
+  const seriesSearch = (id: number) => ({
+    type: 'command' as const,
+    id,
+    name: 'SeriesSearch',
+    status: 'started' as const,
+    seriesId: 63,
+  });
+
+  it('loads the units of the requested seasons when the request is sent', async () => {
+    const { tracker } = await setup();
+    const media = await series(tracker);
+    sonarrEpisodes = [episode(101, 1), episode(102, 1), episode(201, 2)];
+    try {
+      await loadUnits(media.id, false, tracker);
+      assert.deepEqual(
+        [...tracker.entry(media.id, false)!.units.keys()],
+        [101, 102]
+      );
+    } finally {
+      sonarrEpisodes = [];
+    }
+  });
+
+  it('loads them on the search start before any debounced refresh, once per search', async () => {
+    const { tracker } = await setup();
+    const media = await series(tracker);
+    const sonarr = { type: 'sonarr', serverId: 0 } as const;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      // Sonarr has not created the episodes of the new series yet.
+      const first = commandId++;
+      await handleCommand(sonarr, seriesSearch(first), tracker);
+      assert.equal(tracker.entry(media.id, false)!.unitsKnown, false);
+
+      sonarrEpisodes = [episode(101, 1), episode(102, 1)];
+      await handleCommand(sonarr, seriesSearch(first), tracker);
+      assert.equal(tracker.entry(media.id, false)!.unitsKnown, false);
+
+      await handleCommand(sonarr, seriesSearch(commandId++), tracker);
+      assert.equal(tracker.entry(media.id, false)!.units.size, 2);
+      assert.deepEqual(reads.history, []);
+    } finally {
+      mock.timers.reset();
+      sonarrEpisodes = [];
+    }
   });
 });
 

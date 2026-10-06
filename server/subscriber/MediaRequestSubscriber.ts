@@ -413,6 +413,7 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
             media[entity.is4k ? 'serviceId4k' : 'serviceId'] =
               radarrSettings?.id;
             await mediaRepository.save(media);
+            progressTracker.emit('sent', entity.media.id, entity.is4k);
 
             if (entity.retryCount) {
               entity.retryCount = 0;
@@ -796,6 +797,7 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
             media[entity.is4k ? 'serviceId4k' : 'serviceId'] =
               sonarrSettings?.id;
             await mediaRepository.save(media);
+            progressTracker.emit('sent', entity.media.id, entity.is4k);
 
             if (entity.retryCount) {
               entity.retryCount = 0;
