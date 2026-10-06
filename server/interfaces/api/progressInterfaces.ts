@@ -109,6 +109,7 @@ export interface RequestProgress {
   downloads?: ProgressDownload[]; // queue items of units without a file
   timeline?: ProgressTimelineEntry[]; // last 100 events, oldest first; on the stream only when changed
   search?: ProgressSearch; // computed per viewer
+  finishedAt?: string; // ISO; set on a run that is over (stored, or its requests left the tracker), shown read-only
 }
 
 // Manual search via POST /api/v1/media/:mediaId/progress/search

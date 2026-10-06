@@ -107,7 +107,10 @@ describe('GET /media/:mediaId/progress', () => {
     progressTracker.start({ mediaId: media.id, is4k: false, requestId: 3 });
     const update = parse(await stream.next());
     assert.equal(update.is4k, false);
-    assert.equal(update.requestId, 3);
+    assert.deepEqual(
+      update.requests.map((r: { id: number }) => r.id),
+      [3]
+    );
 
     await stream.close();
     await new Promise((r) => setTimeout(r, 50));

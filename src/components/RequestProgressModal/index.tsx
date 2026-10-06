@@ -41,6 +41,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   awaitingApproval: 'Waiting for approval',
   total: 'Total',
   watch: 'Watch',
+  finished: 'Finished {date}',
   failed: 'Something went wrong at this step.',
   searchAgain: 'Search again',
   searchAvailableIn: 'Available again in {duration}',
@@ -179,7 +180,12 @@ const RequestProgressModal = ({
   const { hasPermission } = useUser();
   const canManage = hasPermission(Permission.MANAGE_REQUESTS);
   const { addToast } = useToasts();
-  const [now, setNow] = useState(Date.now());
+  const [clock, setClock] = useState(Date.now());
+  // A run that is over keeps its times as they were when it ended
+  const finishedAt = progress?.finishedAt
+    ? Date.parse(progress.finishedAt)
+    : undefined;
+  const now = finishedAt ?? clock;
   const [searching, setSearching] = useState(false);
   // From a 429 Retry-After, until the next progress event carries retryAfter
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number>();
@@ -192,6 +198,7 @@ const RequestProgressModal = ({
     step?.key === 'searching' ? progress?.search?.lastSearchedAt : undefined;
   const ticking =
     show &&
+    finishedAt === undefined &&
     (running ||
       !!lastSearchedAt ||
       !!progress?.requests.some((r) => r.waitingSince) ||
@@ -212,8 +219,8 @@ const RequestProgressModal = ({
 
   useEffect(() => {
     if (!ticking) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    setClock(Date.now());
+    const timer = setInterval(() => setClock(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [ticking]);
 
@@ -279,6 +286,7 @@ const RequestProgressModal = ({
       ? progress?.playUrl
       : undefined;
   const canSearch =
+    finishedAt === undefined &&
     !!progress?.search?.allowed &&
     step?.key === 'searching' &&
     (step.status === 'running' || step.status === 'failed');
@@ -383,11 +391,11 @@ const RequestProgressModal = ({
   // Absolute time, the date only for another day; the age on hover
   const timelineTime = (e: ProgressTimelineEntry) => {
     const at = new Date(e.at);
-    const today = at.toDateString() === new Date(now).toDateString();
+    const today = at.toDateString() === new Date(clock).toDateString();
     return (
       <Tooltip
         content={intl.formatMessage(messages.ago, {
-          duration: formatDuration(now - at.getTime()),
+          duration: formatDuration(clock - at.getTime()),
         })}
       >
         <time
@@ -437,7 +445,17 @@ const RequestProgressModal = ({
               {totalMs !== undefined && (
                 <div className="mt-3 text-xs tabular-nums text-gray-300">
                   {intl.formatMessage(messages.total)} {formatDuration(totalMs)}{' '}
-                  {estimate(estimateOf(progress))}
+                  {finishedAt === undefined && estimate(estimateOf(progress))}
+                </div>
+              )}
+              {finishedAt !== undefined && (
+                <div className="mt-1 text-xs text-gray-500">
+                  {intl.formatMessage(messages.finished, {
+                    date: intl.formatDate(finishedAt, {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                    }),
+                  })}
                 </div>
               )}
             </div>

@@ -375,7 +375,7 @@ mediaRoutes.get<{ mediaId: string }>(
       progress = {
         ...progress,
         search: {
-          allowed: access.allowed && !playable,
+          allowed: access.allowed && !playable && !progress.finishedAt,
           retryAfter:
             access.retryAfter !== undefined
               ? new Date(access.retryAfter).toISOString()
@@ -396,8 +396,15 @@ mediaRoutes.get<{ mediaId: string }>(
         send(progress);
       }
     };
-    const onRemoved = (removedId: number, removed4k: boolean) => {
-      if (removedId === mediaId && removed4k === is4k) send(untracked);
+    // The final state keeps the pop-up showing the run that just ended.
+    const onRemoved = (
+      removedId: number,
+      removed4k: boolean,
+      last: RequestProgress
+    ) => {
+      if (removedId === mediaId && removed4k === is4k) {
+        send(last);
+      }
     };
     progressTracker.on('change', onChange);
     progressTracker.on('removed', onRemoved);
