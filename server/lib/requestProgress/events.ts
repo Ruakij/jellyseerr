@@ -22,7 +22,10 @@ import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import { User } from '@server/entity/User';
-import type { RequestProgressStatsResponse } from '@server/interfaces/api/progressInterfaces';
+import type {
+  RequestProgress,
+  RequestProgressStatsResponse,
+} from '@server/interfaces/api/progressInterfaces';
 import availabilitySync from '@server/lib/availabilitySync';
 import downloadTracker from '@server/lib/downloadtracker';
 import {
@@ -31,7 +34,7 @@ import {
 } from '@server/lib/requestProgress/debounce';
 import {
   storeRun,
-  unreadyCompletedRequests,
+  unfinishedCompletedRequests,
 } from '@server/lib/requestProgress/history';
 import type { RequestStart } from '@server/lib/requestProgress/stepStats';
 import stepStats from '@server/lib/requestProgress/stepStats';
@@ -812,7 +815,7 @@ export async function reconcileJellyfin(
  * Starts entries for media with active requests the tracker never saw, e.g. ones sent before a
  * restart, and fills them in from Radarr/Sonarr history, queue and files and from Jellyfin, as a
  * run would have. Without `targets`, covers every active request. Completed requests whose stored
- * run never reached Ready count as active. Their times are not measured.
+ * run is unfinished or never reached Ready count as active. Their times are not measured.
  */
 export async function reconstructProgress(
   targets?: { mediaId: number; is4k: boolean }[],
@@ -826,7 +829,7 @@ export async function reconstructProgress(
         ...(mediaIds ? { media: { id: In(mediaIds) } } : {}),
       },
     })),
-    ...(await unreadyCompletedRequests(mediaIds)),
+    ...(await unfinishedCompletedRequests(mediaIds)),
   ].sort((a, b) => a.id - b.id);
   const variants = new Map<string, MediaRequest[]>();
   for (const request of requests) {
@@ -1196,6 +1199,38 @@ export function restartJellyfinSocket(): void {
   }
 }
 
+/**
+ * Stores every run with requests when it starts, debounced while it changes, and its final state
+ * when it ends, so a restart can rebuild the runs that were unfinished.
+ */
+export function storeRuns(tracker: ProgressTracker = progressTracker): void {
+  // One write at a time: an unfinished snapshot never lands after the final one.
+  let writes = Promise.resolve();
+  const write = (progress: RequestProgress, requestIds: number[]) => {
+    writes = writes.then(() =>
+      storeRun(progress, requestIds).catch((e: Error) => {
+        logger.warn(`Storing the run failed: ${e.message}`, {
+          label: 'Request Progress',
+          mediaId: progress.mediaId,
+        });
+      })
+    );
+  };
+  const unfinished = new KeyedDebouncer((key) => {
+    const [mediaId, is4k] = key.split(':');
+    const entry = tracker.entry(Number(mediaId), is4k === 'true');
+    if (entry && entry.requests.size > 0 && entry.finishedAt === undefined) {
+      write(tracker.snapshot(entry), [...entry.requests.keys()]);
+    }
+  });
+  tracker.on('change', (progress) => {
+    if (progress.requests.length > 0) {
+      unfinished.push(`${progress.mediaId}:${progress.is4k}`);
+    }
+  });
+  tracker.on('finished', write);
+}
+
 export function startProgressEvents(): void {
   stepStats.load().catch((e: Error) =>
     logger.warn(`Loading step samples failed: ${e.message}`, {
@@ -1210,14 +1245,7 @@ export function startProgressEvents(): void {
   progressTracker.on('requests', (mediaId) =>
     requestSyncs.push(String(mediaId))
   );
-  progressTracker.on('finished', (progress, requestIds) =>
-    storeRun(progress, requestIds).catch((e: Error) =>
-      logger.warn(`Storing the finished run failed: ${e.message}`, {
-        label: 'Request Progress',
-        mediaId: progress.mediaId,
-      })
-    )
-  );
+  storeRuns();
   servarrSignalR.on('connected', onSignalRConnected);
   servarrSignalR.on('reconnected', onSignalRConnected);
   setInterval(refreshAllStepHistory, STEP_HISTORY_INTERVAL_MS).unref();

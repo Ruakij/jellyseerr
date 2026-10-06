@@ -5,7 +5,7 @@ import { RequestProgressRun } from '@server/entity/RequestProgressRun';
 import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
 import { In } from 'typeorm';
 
-/** Stores the final run for each of its requests, replacing their previous run. */
+/** Stores the run for each of its requests, replacing their previous run; unfinished without `finishedAt`. */
 export async function storeRun(
   progress: RequestProgress,
   requestIds: number[]
@@ -19,7 +19,7 @@ export async function storeRun(
         request: { id } as RequestProgressRun['request'],
       });
     run.is4k = progress.is4k;
-    run.finishedAt = new Date(progress.finishedAt ?? Date.now());
+    run.finishedAt = progress.finishedAt ? new Date(progress.finishedAt) : null;
     run.snapshot = snapshot;
     await repo.save(run);
   }
@@ -36,21 +36,21 @@ export async function storedRun(
       is4k,
       request: { id: requestId, media: { id: mediaId } },
     },
-    order: { finishedAt: 'DESC' },
+    order: { finishedAt: { direction: 'DESC', nulls: 'FIRST' } },
   });
   return (
     run && {
       ...JSON.parse(run.snapshot),
-      finishedAt: run.finishedAt.toISOString(),
+      finishedAt: run.finishedAt?.toISOString(),
     }
   );
 }
 
 /**
- * Completed requests whose stored run never reached Ready: their run left the tracker early, so
- * it is rebuilt and stored again once Ready.
+ * Completed requests whose stored run is unfinished or never reached Ready: their run was cut short
+ * by a restart or left the tracker early, so it is rebuilt and stored again once it ends.
  */
-export async function unreadyCompletedRequests(
+export async function unfinishedCompletedRequests(
   mediaIds?: number[]
 ): Promise<MediaRequest[]> {
   const runs = await getRepository(RequestProgressRun).find({
@@ -65,6 +65,7 @@ export async function unreadyCompletedRequests(
   return runs
     .filter(
       (run) =>
+        !run.finishedAt ||
         (JSON.parse(run.snapshot) as RequestProgress).steps.find(
           (s) => s.key === 'playable'
         )?.status !== 'done'

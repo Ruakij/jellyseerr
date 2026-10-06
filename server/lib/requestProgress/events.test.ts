@@ -14,6 +14,7 @@ import {
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
+import { RequestProgressRun } from '@server/entity/RequestProgressRun';
 import Season from '@server/entity/Season';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
@@ -33,6 +34,7 @@ import {
   rememberEpisode,
   requestProgressStats,
   requestStarts,
+  storeRuns,
   syncRequests,
 } from '@server/lib/requestProgress/events';
 import { storeRun } from '@server/lib/requestProgress/history';
@@ -951,6 +953,32 @@ describe('reconstructProgress', () => {
     assert.equal(statusOf(tracker, media.id, 'importing').status, 'done');
   });
 
+  it('rebuilds a completed request whose stored run is unfinished', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.COMPLETED);
+    const request = await getRepository(MediaRequest).findOneByOrFail({
+      media: { id: media.id },
+    });
+    hasFile = true;
+
+    // Ready already, but cut short before its final state was stored.
+    await storeRun(
+      {
+        mediaId: media.id,
+        is4k: false,
+        requests: [],
+        steps: [{ key: 'playable', status: 'done' }],
+        estimatePercentile: 50,
+      },
+      [request.id]
+    );
+    await reconstructProgress(undefined, tracker);
+
+    assert.deepEqual(
+      tracker.get(media.id, false)!.requests.map((r) => r.id),
+      [request.id]
+    );
+  });
+
   it('leaves media with a tracked run alone', async () => {
     const { media, tracker } = await setupRequest(MediaRequestStatus.APPROVED);
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
@@ -959,6 +987,46 @@ describe('reconstructProgress', () => {
     await reconstructProgress(undefined, tracker);
 
     assert.deepEqual(tracker.get(media.id, false), before);
+  });
+});
+
+describe('storeRuns', () => {
+  it('stores a run unfinished when it starts and final when it ends', async () => {
+    const { media } = await setup();
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    const request = await getRepository(MediaRequest).save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: user,
+        modifiedBy: user,
+      })
+    );
+    const tracker = new ProgressTracker(new StepStats());
+    storeRuns(tracker);
+    const stored = () =>
+      getRepository(RequestProgressRun).findOne({
+        where: { request: { id: request.id } },
+      });
+
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      tracker.start({ mediaId: media.id, is4k: false, requestId: request.id });
+      mock.timers.tick(DEBOUNCE_MS);
+      await settle();
+    } finally {
+      mock.timers.reset();
+    }
+    const unfinished = await stored();
+    assert.equal(unfinished?.finishedAt, null);
+    assert.equal(JSON.parse(unfinished!.snapshot).requests[0].id, request.id);
+
+    reach(tracker, media.id, 'playable');
+    await settle();
+    const final = await stored();
+    assert.ok(final?.finishedAt);
+    assert.equal(final.id, unfinished!.id);
   });
 });
 
