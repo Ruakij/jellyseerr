@@ -377,6 +377,59 @@ describe('ProgressTracker', () => {
     assert.equal(stats.total('radarr-0').localCount, 0);
   });
 
+  it('keeps the search of a new command running when a grab of the previous one comes late', () => {
+    const { tracker, tick } = setup();
+    const startedAt = tick(0);
+    tracker.start({ mediaId: 1, is4k: false, serverKey: 'sonarr-0' });
+    tracker.setUnits(1, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: false },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: false },
+    ]);
+    tick(1_000);
+    tracker.setSearch(1, false, { searchCommandId: 1 });
+    const grabAt = tick(10_000);
+    const secondAt = tick(10_000);
+    tracker.setSearch(1, false, { searchCommandId: 2 });
+    // The pack the first command grabbed shows up in the history after the second started.
+    tracker.grab(1, false, {
+      downloadId: 'pack',
+      unitIds: [101, 102],
+      at: grabAt,
+    });
+    tick(1_000);
+    tracker.downloadFailed(1, false, {
+      downloadId: 'pack',
+      reason: 'Download failed',
+    });
+    const progress = () => tracker.get(1, false)!;
+    const searching = () =>
+      progress().steps.find((s) => s.key === 'searching')!;
+    assert.equal(searching().searchStartedAt, new Date(secondAt).toISOString());
+    assert.equal(searching().waiting, undefined);
+    assert.equal(searching().detail, 'Searching');
+    assert.equal(progress().requests.length, 0);
+    assert.equal(searching().searchMs, grabAt - startedAt);
+
+    tick(9_000);
+    tracker.searchFinished(1, false, { commandId: 2 });
+    assert.equal(searching().searchStartedAt, undefined);
+    assert.equal(searching().searchMs, grabAt - startedAt + 10_000);
+  });
+
+  it('never shows waiting while a search command runs', () => {
+    const { tracker } = setup();
+    tracker.start({ mediaId: 1, is4k: false, requestId: 1 });
+    tracker.setSearch(1, false, { searchCommandId: 1 });
+    // A search that started without a window, e.g. one whose start predates a restart.
+    tracker.entry(1, false)!.searchStartedAt = undefined;
+    tracker.setSearch(1, false, { unreleased: true });
+    const progress = tracker.get(1, false)!;
+    const searching = progress.steps.find((s) => s.key === 'searching')!;
+    assert.equal(searching.waiting, undefined);
+    assert.equal(searching.detail, 'Searching');
+    assert.equal(progress.requests[0].waiting, undefined);
+  });
+
   it('takes a grab while waiting as RSS, without a search sample', () => {
     const { tracker, stats, tick } = setup();
     tracker.start({ mediaId: 1, is4k: false, serverKey: 'radarr-0' });
