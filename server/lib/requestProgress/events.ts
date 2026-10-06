@@ -232,6 +232,8 @@ export async function handleCommand(
         cause,
       });
     } else {
+      // Once per search, which retries a series Sonarr had no episodes of at send time.
+      const loadNow = !entry.unitsKnown && entry.searchCommandId !== event.id;
       const indexers = event.message?.match(/(\d+) active indexers?/)?.[1];
       tracker.setSearch(
         media.id,
@@ -247,6 +249,7 @@ export async function handleCommand(
         },
         { cause }
       );
+      if (loadNow) await loadUnits(media.id, is4k, tracker);
     }
   }
   if (event.status === 'completed') serverRefresh.push(key);
@@ -404,6 +407,38 @@ async function arrState(
       return { removed: true, monitored: false, released: true, units: [] };
     }
     throw e;
+  }
+}
+
+/**
+ * Reads the units of one run right away, not debounced, so its search shows the count from the
+ * start. Sonarr may not list the episodes of a series it just added yet.
+ */
+export async function loadUnits(
+  mediaId: number,
+  is4k: boolean,
+  tracker: ProgressTracker = progressTracker
+): Promise<void> {
+  const entry = tracker.entry(mediaId, is4k);
+  if (!entry?.serverKey || tracker.finished(entry)) return;
+  try {
+    const media = await getRepository(Media).findOne({
+      where: { id: mediaId },
+    });
+    const arrId = media && externalId(media, is4k);
+    const [type, serverId] = entry.serverKey.split('-');
+    const api = servarrApi(type as ServarrType, Number(serverId));
+    if (!arrId || !api) return;
+    const state = await arrState(api, arrId, requestedSeasons(entry));
+    tracker.setUnits(mediaId, is4k, state.units, {
+      cause: `${entry.serverKey} start`,
+    });
+  } catch (e) {
+    logger.warn(`Loading the units of the run failed: ${e.message}`, {
+      label: 'Request Progress',
+      mediaId,
+      is4k,
+    });
   }
 }
 
@@ -1432,6 +1467,7 @@ export function startProgressEvents(): void {
   progressTracker.on('requests', (mediaId) =>
     requestSyncs.push(String(mediaId))
   );
+  progressTracker.on('sent', (mediaId, is4k) => void loadUnits(mediaId, is4k));
   storeRuns();
   servarrSignalR.on('connected', onSignalRConnected);
   servarrSignalR.on('reconnected', onSignalRConnected);

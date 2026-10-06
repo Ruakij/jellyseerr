@@ -245,6 +245,8 @@ interface TrackerEvents {
   removed: [mediaId: number, is4k: boolean, last: RequestProgress];
   /** A request of the media was changed or removed in the database. */
   requests: [mediaId: number];
+  /** Radarr/Sonarr added the media of a run, so its item can be read. */
+  sent: [mediaId: number, is4k: boolean];
 }
 
 export class ProgressTracker extends EventEmitter<TrackerEvents> {
