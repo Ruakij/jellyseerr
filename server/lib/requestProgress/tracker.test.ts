@@ -220,7 +220,7 @@ describe('ProgressTracker', () => {
     const estimates = stats.get('radarr-0');
     assert.equal(estimates.searching.percentiles[90]?.valueMs, 5_000);
     assert.equal(estimates.grabbed.percentiles[90]?.valueMs, 3_000);
-    assert.equal(estimates.importing.percentiles[90]?.valueMs, 7_000);
+    assert.equal(estimates.importing.percentiles[90]?.valueMs, 4_000);
     assert.equal(estimates.inJellyfin.percentiles[90]?.valueMs, 10_000);
     // Ready completes with the last unit in Jellyfin, so it takes no time of its own.
     assert.equal(estimates.playable.localCount, 0);
@@ -232,6 +232,59 @@ describe('ProgressTracker', () => {
       progress.timeline?.map((e) => e.kind),
       ['grabbed', 'downloaded', 'imported', 'inJellyfin', 'playable']
     );
+  });
+
+  it('records one sample per step and a total for a series run', () => {
+    const { tracker, stats, tick } = setup();
+    tracker.start({
+      mediaId: 1,
+      is4k: false,
+      serverKey: 'sonarr-0',
+      seasons: [1],
+    });
+    tracker.setUnits(1, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: false },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: false },
+    ]);
+    tick(5_000);
+    tracker.grab(1, false, { downloadId: 'D1', unitIds: [101], title: 'E1' });
+    tick(2_000);
+    tracker.grab(1, false, { downloadId: 'D2', unitIds: [102], title: 'E2' });
+    tick(3_000);
+    const item = (downloadId: string, unitId: number) => ({
+      downloadId,
+      unitIds: [unitId],
+      title: downloadId,
+      size: 100,
+      sizeLeft: 0,
+      state: 'downloaded' as const,
+    });
+    tracker.setQueue(1, false, [item('D1', 101), item('D2', 102)]);
+    tick(1_000);
+    tracker.imported(1, false, { downloadId: 'D1', unitIds: [101] });
+    tick(2_000);
+    tracker.imported(1, false, { downloadId: 'D2', unitIds: [102] });
+    tick(10_000);
+    tracker.setUnits(1, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: true },
+    ]);
+    tracker.setJellyfin(1, false, {
+      present: () => true,
+      playUrl: 'http://jf',
+    });
+
+    assert.ok(tracker.get(1, false)!.steps.every((s) => s.status === 'done'));
+    const estimates = stats.get('sonarr-0');
+    const sample = (k: keyof typeof estimates) => [
+      estimates[k].localCount,
+      estimates[k].percentiles[90]?.valueMs,
+    ];
+    assert.deepEqual(sample('searching'), [1, 7_000]);
+    assert.deepEqual(sample('grabbed'), [1, 5_000]);
+    assert.deepEqual(sample('importing'), [1, 3_000]);
+    assert.deepEqual(sample('inJellyfin'), [1, 12_000]);
+    assert.equal(stats.total('sonarr-0').percentiles[90]?.valueMs, 23_000);
   });
 
   it('shows a step estimate from five samples on', () => {
