@@ -210,6 +210,8 @@ export interface RequestProgressSettings {
   estimatePercentile: EstimatePercentile;
   /** Adds the 95% confidence interval to the estimates. */
   showConfidenceInterval: boolean;
+  /** Seconds between checks of Jellyfin for runs waiting to appear there; 0 disables them. */
+  jellyfinCheckSeconds: number;
 }
 
 export interface DnsCacheSettings {
@@ -988,6 +990,7 @@ class Settings {
         localMaxSamples: 200,
         estimatePercentile: 90,
         showConfidenceInterval: false,
+        jellyfinCheckSeconds: 10,
       },
       migrations: [],
     };

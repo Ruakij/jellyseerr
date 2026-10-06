@@ -25,7 +25,11 @@ import type { Library } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { getHostname } from '@server/utils/getHostname';
+import { EventEmitter } from 'events';
 import { uniqWith } from 'lodash';
+
+/** Emits `done` after any Jellyfin scan ends, so its results reach consumers like request progress. */
+export const jellyfinScans = new EventEmitter();
 
 interface JellyfinSyncStatus extends StatusBase {
   currentLibrary: Library;
@@ -525,6 +529,7 @@ class JellyfinScanner
       this.log('Sync interrupted', 'error', { errorMessage: e.message });
     } finally {
       this.endRun(sessionId);
+      jellyfinScans.emit('done');
     }
   }
 
@@ -585,6 +590,7 @@ class JellyfinScanner
       this.log('Item sync interrupted', 'error', { errorMessage: e.message });
     } finally {
       this.endRun(sessionId);
+      jellyfinScans.emit('done');
     }
   }
 

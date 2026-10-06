@@ -1165,6 +1165,8 @@
   "components.Settings.SettingsRequestProgress.historyMaxSamplesTip": "Newest durations kept per step; 0 for no limit",
   "components.Settings.SettingsRequestProgress.importing": "Downloading and Importing",
   "components.Settings.SettingsRequestProgress.inJellyfin": "In Media Server",
+  "components.Settings.SettingsRequestProgress.jellyfinCheckSeconds": "Jellyfin Check Interval (Seconds)",
+  "components.Settings.SettingsRequestProgress.jellyfinCheckSecondsTip": "Seconds between checks of Jellyfin for requests waiting to appear there; a missed webhook or event is caught within it; 0 to disable",
   "components.Settings.SettingsRequestProgress.localCount": "Local",
   "components.Settings.SettingsRequestProgress.localMaxAgeDays": "Local Maximum Age (Days)",
   "components.Settings.SettingsRequestProgress.localMaxAgeDaysTip": "Durations measured by Seerr itself; 0 for no limit",
