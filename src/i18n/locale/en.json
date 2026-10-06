@@ -1174,7 +1174,6 @@
   "components.Settings.SettingsRequestProgress.localMaxSamplesTip": "Newest durations kept per step; 0 for no limit",
   "components.Settings.SettingsRequestProgress.noInterval": "too few samples for an interval",
   "components.Settings.SettingsRequestProgress.noServers": "No Radarr or Sonarr servers configured.",
-  "components.Settings.SettingsRequestProgress.playable": "Playable",
   "components.Settings.SettingsRequestProgress.requestProgress": "Request Progress",
   "components.Settings.SettingsRequestProgress.requestProgressSettings": "Request Progress Settings",
   "components.Settings.SettingsRequestProgress.requestProgressSettingsDescription": "Configure which measured durations the request progress estimates are based on.",

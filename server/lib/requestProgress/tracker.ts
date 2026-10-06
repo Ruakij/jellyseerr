@@ -133,8 +133,7 @@ export interface TrackedProgress {
   releases: Map<string, { title?: string; indexer?: string }>;
   /** Queue items by download, as last seen. */
   queue: Map<string, QueueItemState>;
-  /** Seerr shows the media available and Jellyfin has its item with every unit. */
-  available: boolean;
+  /** The Watch link, shown once the run is ready. */
   playUrl?: string;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
   reconstructed?: boolean;
@@ -338,7 +337,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       unitsKnown: false,
       releases: new Map(),
       queue: new Map(),
-      available: false,
       timeline: [],
       seen: new Set(),
       steps: Object.fromEntries(
@@ -758,21 +756,19 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   /**
-   * Sets which units Jellyfin has and whether the media is ready to play. A unit Radarr/Sonarr
-   * lists no file for does not count as in Jellyfin, which notices deletions later.
+   * Sets which units Jellyfin has, ready to play. A unit Radarr/Sonarr lists no file for does not
+   * count as in Jellyfin, which notices deletions later. The run is ready with the last unit.
    */
   public setJellyfin(
     mediaId: number,
     is4k: boolean,
     {
       present,
-      available,
       playUrl,
       at = this.now(),
       cause,
     }: {
       present: (unit: Unit) => boolean;
-      available: boolean;
       playUrl?: string;
     } & Change
   ): void {
@@ -802,15 +798,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           source: 'jellyfin',
         });
       }
-      if (available && !entry.available) {
-        this.note(entry, at, cause, {
-          step: 'playable',
-          kind: 'playable',
-          source: 'jellyfin',
-        });
-      }
-      entry.available = available;
-      entry.playUrl = available ? (playUrl ?? entry.playUrl) : undefined;
+      entry.playUrl = playUrl ?? entry.playUrl;
     });
   }
 
@@ -978,7 +966,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     const series = entry.unitsKnown && units[0]?.seasonNumber !== undefined;
     const steps = STEP_KEYS.map((k) => {
       const state = entry.steps[k];
-      const stats = k === 'requested' ? undefined : estimates?.[k];
+      // Ready is no phase of its own: it completes with the last unit in Jellyfin.
+      const stats =
+        k === 'requested' || k === 'playable' ? undefined : estimates?.[k];
       const estimate =
         stats && stats.historyCount + stats.localCount >= MIN_STEP_SAMPLES
           ? stats.percentiles[p]
@@ -1055,7 +1045,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       totalEstimateRangeMs:
         single && showConfidenceInterval ? total?.rangeMs : undefined,
       estimatePercentile: p,
-      playUrl: entry.playUrl,
+      playUrl:
+        entry.steps.playable.status === 'done' ? entry.playUrl : undefined,
       dormant: this.dormant(entry) || undefined,
       downloads:
         entry.steps.playable.status === 'done' || downloads.length === 0
@@ -1499,7 +1490,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       }
       const stage = unitStage(unit);
       for (let i = 0; i < stage; i++) counts[i].done++;
-      if (stage === PLAYABLE && entry.available) counts[PLAYABLE].done++;
+      if (stage === PLAYABLE) counts[PLAYABLE].done++;
       else counts[stage].active++;
       if (stage > GRABBED) downloaded++;
       else if (stage === GRABBED) {
@@ -1525,7 +1516,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
             ? 'failed'
             : c.done === total
               ? 'done'
-              : c.active > 0 || c.done > 0
+              : k !== 'playable' && (c.active > 0 || c.done > 0)
                 ? 'running'
                 : 'pending',
         error: allFailed && c.failed > 0 ? reasons[i] : undefined,
@@ -1570,33 +1561,42 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         counts: state.counts,
         cause,
       });
+      if (k === 'playable' && state.status === 'done') {
+        this.note(entry, at, cause, {
+          step: 'playable',
+          kind: 'playable',
+          source: 'jellyfin',
+        });
+      }
       if (
-        state.status === 'done' &&
-        total === 1 &&
-        entry.serverKey &&
-        !entry.reconstructed &&
-        startedAt !== undefined &&
-        (k === 'inJellyfin' || k === 'playable')
+        state.status !== 'done' ||
+        total !== 1 ||
+        !entry.serverKey ||
+        entry.reconstructed ||
+        startedAt === undefined
       ) {
+        continue;
+      }
+      if (k === 'inJellyfin') {
         this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
           at,
           downloadId: units[0].downloadId,
         });
-        const requestedAt = entry.steps.requested.startedAt ?? at;
-        // A search ran from the request to the grab, so the total holds no waiting.
-        const waited =
-          (units[0].grabbedAt ?? requestedAt) - requestedAt - entry.searchMs;
-        if (
-          k === 'playable' &&
-          entry.seen.has(SEARCH_SAMPLE) &&
-          waited <= SEARCH_GAP_MS
-        ) {
-          this.stats.recordTotal(
-            entry.serverKey,
-            Math.max(0, at - requestedAt),
-            at
-          );
-        }
+      }
+      const requestedAt = entry.steps.requested.startedAt ?? at;
+      // A search ran from the request to the grab, so the total holds no waiting.
+      const waited =
+        (units[0].grabbedAt ?? requestedAt) - requestedAt - entry.searchMs;
+      if (
+        k === 'playable' &&
+        entry.seen.has(SEARCH_SAMPLE) &&
+        waited <= SEARCH_GAP_MS
+      ) {
+        this.stats.recordTotal(
+          entry.serverKey,
+          Math.max(0, at - requestedAt),
+          at
+        );
       }
     }
   }
