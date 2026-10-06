@@ -960,30 +960,6 @@ describe('reconcileJellyfin', () => {
     assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
   });
 
-  it('does not count the old Jellyfin item while Radarr downloads a new file', async () => {
-    const { media, tracker } = await setup({
-      status: MediaStatus.AVAILABLE,
-      jellyfinMediaId: 'abc',
-    });
-    tracker.start({ mediaId: media.id, is4k: false });
-    tracker.setQueue(media.id, false, [
-      {
-        downloadId: 'D2',
-        unitIds: [0],
-        title: 'Movie.Proper',
-        size: 100,
-        sizeLeft: 50,
-        state: 'downloading',
-      },
-    ]);
-    const item = jellyfinItem(video);
-
-    await reconcileJellyfin(undefined, tracker);
-    item.mock.restore();
-
-    assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
-  });
-
   it('counts probed episodes only and links the lowest requested season', async () => {
     const { media, tracker } = await setup({
       mediaType: MediaType.TV,
@@ -1037,7 +1013,7 @@ describe('reconcileJellyfin', () => {
     assert.match(tracker.get(media.id, false)!.playUrl ?? '', /id=season2&/);
   });
 
-  it('counts only episodes Jellyfin added after their import', async () => {
+  it('counts probed episodes whatever the date of their item', async () => {
     const { media, tracker } = await setup({
       mediaType: MediaType.TV,
       status: MediaStatus.AVAILABLE,
@@ -1055,12 +1031,11 @@ describe('reconcileJellyfin', () => {
       unitIds: [101, 102],
       at: importedAt,
     });
-    const created = (ms: number) => new Date(importedAt + ms).toISOString();
-    // Jellyfin has not noticed the deletion of the files of the earlier request yet.
-    let episodes = [1, 2].map((n) => ({
+    // Created a day before the import, e.g. an item Jellyfin kept for a replaced file.
+    const episodes = [1, 2].map((n) => ({
       ParentIndexNumber: 1,
       IndexNumber: n,
-      DateCreated: created(-86_400_000),
+      DateCreated: new Date(importedAt - 86_400_000).toISOString(),
       ...video,
     }));
     const listed = mock.method(
@@ -1074,15 +1049,6 @@ describe('reconcileJellyfin', () => {
       async () => []
     );
     try {
-      await reconcileJellyfin(undefined, tracker);
-      assert.equal(statusOf(tracker, media.id, 'inJellyfin').counts?.done, 0);
-
-      episodes[0] = { ...episodes[0], DateCreated: created(60_000) };
-      await reconcileJellyfin(undefined, tracker);
-      assert.equal(statusOf(tracker, media.id, 'inJellyfin').counts?.done, 1);
-      assert.equal(statusOf(tracker, media.id, 'playable').status, 'pending');
-
-      episodes = episodes.map((e) => ({ ...e, DateCreated: created(65_000) }));
       await reconcileJellyfin(undefined, tracker);
       assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
       assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
