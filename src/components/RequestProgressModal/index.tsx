@@ -274,7 +274,11 @@ const RequestProgressModal = ({
         ? step.error
         : intl.formatMessage(messages.failed)
       : undefined;
-  const playUrl = step?.key === 'playable' ? progress?.playUrl : undefined;
+  // Ready means Jellyfin has every unit, not only that a link exists
+  const playUrl =
+    step?.key === 'playable' && step.status === 'done'
+      ? progress?.playUrl
+      : undefined;
   const canSearch =
     !!progress?.search?.allowed &&
     step?.key === 'searching' &&
