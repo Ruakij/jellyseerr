@@ -743,20 +743,6 @@ const probed = (item?: JellyfinLibraryItemExtended) =>
     s.MediaStreams?.some((m) => m.Type === 'Video')
   );
 
-/** Clock differences and polling delays between Radarr/Sonarr and Jellyfin. */
-export const JELLYFIN_ADDED_SLACK_MS = 30_000;
-
-/**
- * Jellyfin keeps listing the item of a deleted file until a scan notices it, so a unit a download
- * delivered counts only with an item Jellyfin created after the import.
- */
-const newEnough = (unit: Unit, item: JellyfinLibraryItemExtended) =>
-  !unit.downloadId ||
-  (unit.importedAt !== undefined &&
-    (!item.DateCreated ||
-      Date.parse(item.DateCreated) >=
-        unit.importedAt - JELLYFIN_ADDED_SLACK_MS));
-
 const unitKey = (season?: number, episode?: number) => `${season}:${episode}`;
 
 /**
@@ -907,7 +893,7 @@ export async function reconcileJellyfin(
       ? () => !!itemId
       : (u: Unit) => {
           const item = listed?.get(key(u));
-          return !!item && probed(item) && newEnough(u, item);
+          return !!item && probed(item);
         };
     let playUrl = (is4k ? m.mediaUrl4k : m.mediaUrl) ?? undefined;
     if (tv && itemId && units.every(present)) {
