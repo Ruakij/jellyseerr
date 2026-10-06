@@ -649,6 +649,7 @@
   "components.RequestProgressModal.unitCounts": "{done}/{total}",
   "components.RequestProgressModal.unitsFailed": "{failed} failed",
   "components.RequestProgressModal.waitingFor": "for {duration}",
+  "components.RequestProgressModal.waitingGrab": "Waiting for a new grab",
   "components.RequestProgressModal.waitingRelease": "Waiting for release",
   "components.RequestProgressModal.waitingRss": "Waiting for RSS",
   "components.RequestProgressModal.watch": "Watch",
