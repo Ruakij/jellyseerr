@@ -219,6 +219,8 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
         {
           params: {
             includeEpisode: true,
+            // The default page of 10 misses downloads of a large request.
+            pageSize: 1000,
           },
         }
       );

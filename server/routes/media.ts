@@ -356,7 +356,16 @@ mediaRoutes.get<{ mediaId: string }>(
       'X-Accel-Buffering': 'no',
     });
     const request = await searchableRequest(mediaId, is4k).catch(() => null);
+    // The timeline goes out only when it changed; clients keep the last one.
+    let sentTimeline: string | undefined;
     const send = (progress: RequestProgress) => {
+      const timeline = JSON.stringify(progress.timeline ?? []);
+      progress = {
+        ...progress,
+        timeline:
+          timeline === sentTimeline ? undefined : (progress.timeline ?? []),
+      };
+      sentTimeline = timeline;
       const access = searchAccess(req.user, request);
       const entry = progressTracker.entry(mediaId, is4k);
       const lastSearchedAt = entry?.lastSearchedAt;

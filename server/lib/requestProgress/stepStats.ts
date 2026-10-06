@@ -32,6 +32,9 @@ const TOTAL = 'total';
 /** Below this many end-to-end samples, the total estimate is the sum of the step estimates. */
 export const MIN_TOTAL_SAMPLES = 20;
 
+/** Below this many samples of a step, it shows no estimate. */
+export const MIN_STEP_SAMPLES = 5;
+
 export interface Sample {
   /** When the step finished, ms since epoch; orders the sample window. */
   at: number;
@@ -114,12 +117,15 @@ function estimate(
 }
 
 /**
- * Grab -> import durations from history records in any order. Per downloadId, the first grab is
- * paired with the first import after it, so a season pack (one grab, one import per episode)
- * counts once with the time until its first episode was usable.
+ * Grab -> import durations per episode from history records in any order. Per downloadId, the
+ * first grab is paired with the last import after it and the time divided by the episodes it
+ * imported, so a season pack counts as one sample of its per-episode time.
  */
 export function pairGrabToImport(records: HistoryRecord[]): Sample[] {
-  const byDownload = new Map<string, { grabs: number[]; imports: number[] }>();
+  const byDownload = new Map<
+    string,
+    { grabs: number[]; imports: { at: number; unit: number }[] }
+  >();
   for (const record of records) {
     if (
       !record.downloadId ||
@@ -135,17 +141,19 @@ export function pairGrabToImport(records: HistoryRecord[]): Sample[] {
       entry = { grabs: [], imports: [] };
       byDownload.set(record.downloadId, entry);
     }
-    (record.eventType === 'grabbed' ? entry.grabs : entry.imports).push(at);
+    if (record.eventType === 'grabbed') entry.grabs.push(at);
+    else entry.imports.push({ at, unit: record.episodeId ?? record.id });
   }
 
   const samples: Sample[] = [];
   for (const [downloadId, { grabs, imports }] of byDownload) {
     if (grabs.length === 0) continue;
     const grab = Math.min(...grabs);
-    const imported = imports.filter((at) => at >= grab);
+    const imported = imports.filter((i) => i.at >= grab);
     if (imported.length === 0) continue;
-    const at = Math.min(...imported);
-    samples.push({ at, durationMs: at - grab, downloadId });
+    const at = Math.max(...imported.map((i) => i.at));
+    const units = new Set(imported.map((i) => i.unit)).size;
+    samples.push({ at, durationMs: (at - grab) / units, downloadId });
   }
   return samples.sort((a, b) => b.at - a.at);
 }
@@ -157,9 +165,14 @@ export interface RequestStart {
   seasons?: number[];
 }
 
+// ponytail: history tells a grab from RSS but not from a later scheduled search; a pair longer than
+// this counts as waiting. Search command times from the history would replace it.
+export const MAX_HISTORY_SEARCH_MS = 30 * 60 * 1000;
+
 /**
  * Request -> grab durations: each request is paired with the first grab of its item (and season)
- * at or after it. A grab several requests reach counts once, with the shortest duration.
+ * at or after it. A grab several requests reach counts once, with the shortest duration. A grab
+ * from RSS, or one too long after the request, came while waiting and gives no sample.
  */
 export function pairRequestToGrab(
   requests: RequestStart[],
@@ -180,7 +193,13 @@ export function pairRequestToGrab(
           !record.episode ||
           request.seasons.includes(record.episode.seasonNumber))
     );
-    if (!grab) continue;
+    if (
+      !grab ||
+      grab.record.data?.releaseSource === 'Rss' ||
+      grab.at - request.at > MAX_HISTORY_SEARCH_MS
+    ) {
+      continue;
+    }
     const key = grab.record.downloadId ?? `record-${grab.record.id}`;
     const durationMs = grab.at - request.at;
     if (durationMs < (byGrab.get(key)?.durationMs ?? Infinity)) {

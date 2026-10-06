@@ -1,6 +1,7 @@
 import Layout from '@app/components/Layout';
 import LoadingBar from '@app/components/LoadingBar';
 import PWAHeader from '@app/components/PWAHeader';
+import { RequestProgressProvider } from '@app/components/RequestProgressModal';
 import ServiceWorkerSetup from '@app/components/ServiceWorkerSetup';
 import StatusChecker from '@app/components/StatusChecker';
 import { InteractionProvider } from '@app/context/InteractionContext';
@@ -218,7 +219,9 @@ const CoreApp: Omit<NextAppComponentType, 'origGetInitialProps'> = ({
               </Head>
               <StatusChecker />
               <ServiceWorkerSetup />
-              <UserContext initialUser={user}>{component}</UserContext>
+              <UserContext initialUser={user}>
+                <RequestProgressProvider>{component}</RequestProgressProvider>
+              </UserContext>
               <Toaster
                 position="top-right"
                 toastOptions={{ duration: 4000 }}

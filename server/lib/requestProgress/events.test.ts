@@ -35,6 +35,7 @@ import { StepStats } from '@server/lib/requestProgress/stepStats';
 import progressTracker, {
   ProgressTracker,
   WAITING_FOR_RELEASE,
+  WAITING_FOR_RSS,
 } from '@server/lib/requestProgress/tracker';
 import { radarrScanner } from '@server/lib/scanners/radarr';
 import { sonarrScanner } from '@server/lib/scanners/sonarr';
@@ -48,13 +49,14 @@ let hasFile = false;
 let monitored = true;
 let lastSearchTime: string | undefined;
 let removed = false;
+let isAvailable = true;
 Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
   set() {},
   get: () => async () => {
     if (removed) {
       throw new Error('Not found', { cause: { response: { status: 404 } } });
     }
-    return { hasFile, monitored, lastSearchTime };
+    return { hasFile, monitored, lastSearchTime, isAvailable };
   },
   configurable: true,
 });
@@ -116,6 +118,7 @@ async function setup(overrides: Partial<Media> = {}) {
   monitored = true;
   lastSearchTime = undefined;
   removed = false;
+  isAvailable = true;
   return { media, tracker };
 }
 
@@ -124,6 +127,23 @@ let commandId = 1;
 
 const statusOf = (tracker: ProgressTracker, id: number, key: string) =>
   tracker.get(id, false)!.steps.find((s) => s.key === key)!;
+
+/** Moves the single unit of a movie to `step` done (`grabbed`: assigned a download). */
+function reach(
+  tracker: ProgressTracker,
+  mediaId: number,
+  step: 'grabbed' | 'inJellyfin' | 'playable',
+  at = Date.now()
+) {
+  tracker.grab(mediaId, false, { downloadId: 'D', unitIds: [0], at });
+  if (step === 'grabbed') return;
+  tracker.imported(mediaId, false, { downloadId: 'D', unitIds: [0], at });
+  tracker.setJellyfin(mediaId, false, {
+    present: () => true,
+    available: step === 'playable',
+    at,
+  });
+}
 
 describe('refreshServer', () => {
   it('advances grab and import from history', async () => {
@@ -140,10 +160,12 @@ describe('refreshServer', () => {
 
     await refreshServer('radarr-0', tracker);
 
-    assert.equal(statusOf(tracker, media.id, 'grabbed').finishedAt, grab);
+    // History has no download end; the import ends the download too.
+    assert.equal(statusOf(tracker, media.id, 'grabbed').startedAt, grab);
+    assert.equal(statusOf(tracker, media.id, 'grabbed').finishedAt, imported);
     assert.equal(statusOf(tracker, media.id, 'importing').finishedAt, imported);
     assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
-    assert.equal(tracker.entry(media.id, false)!.downloadId, 'D');
+    assert.equal(tracker.entry(media.id, false)!.units.get(0)?.downloadId, 'D');
   });
 
   it('ignores history from before the request', async () => {
@@ -193,9 +215,10 @@ describe('refreshServer', () => {
     });
     const now = Date.now();
     const at = (s: number) => new Date(now + s * 1000).toISOString();
-    const episode = (seasonNumber: number) => ({
-      seasonNumber,
-      episodeNumber: 1,
+    const aired = new Date(now - 86_400_000).toISOString();
+    const ep = (id: number, seasonNumber: number, episodeNumber: number) => ({
+      episodeId: id,
+      episode: { seasonNumber, episodeNumber },
     });
     history = [
       {
@@ -204,32 +227,32 @@ describe('refreshServer', () => {
         seriesId: 34,
         downloadId: 'S1',
         sourceTitle: 'Show.S01E01',
-        episode: episode(1),
+        ...ep(101, 1, 1),
       },
       {
         eventType: 'downloadFolderImported',
         date: at(2),
         seriesId: 34,
         downloadId: 'S1',
-        episode: episode(1),
+        ...ep(101, 1, 1),
       },
-      {
-        eventType: 'grabbed',
+      ...[201, 202].map((id) => ({
+        eventType: 'grabbed' as const,
         date: at(3),
         seriesId: 34,
         downloadId: 'S2',
         sourceTitle: 'Show.S02',
-        episode: episode(2),
-      },
+        ...ep(id, 2, id - 200),
+      })),
     ];
     queue = [
       {
         seriesId: 34,
         downloadId: 'S1',
         title: 'Show.S01E01',
-        episode: episode(1),
+        ...ep(101, 1, 1),
       },
-      ...[1, 2].map((episodeNumber) => ({
+      ...[201, 202].map((id) => ({
         seriesId: 34,
         downloadId: 'S2',
         title: 'Show.S02',
@@ -237,30 +260,50 @@ describe('refreshServer', () => {
         size: 1000,
         sizeleft: 400,
         timeleft: '00:01:30',
-        episode: { seasonNumber: 2, episodeNumber },
+        trackedDownloadState: 'downloading',
+        ...ep(id, 2, id - 200),
       })),
     ];
-
-    const stats = (episodeFileCount: number, episodeCount: number) => ({
-      episodeFileCount,
-      episodeCount,
+    sonarrSeasons = [];
+    const episodeOf = (
+      id: number,
+      seasonNumber: number,
+      episodeNumber: number
+    ) => ({
+      id,
+      seasonNumber,
+      episodeNumber,
+      hasFile: false,
+      monitored: true,
+      airDateUtc: aired,
     });
-    sonarrSeasons = [
-      { seasonNumber: 1, statistics: stats(10, 10) },
-      { seasonNumber: 2, statistics: stats(0, 12) },
-    ];
     sonarrEpisodes = [
-      { seasonNumber: 1, hasFile: true, monitored: true },
-      { seasonNumber: 2, hasFile: false, monitored: true },
+      { ...episodeOf(101, 1, 1), hasFile: true },
+      episodeOf(201, 2, 1),
+      episodeOf(202, 2, 2),
+      // Not aired yet: no unit.
+      {
+        ...episodeOf(203, 2, 3),
+        airDateUtc: new Date(now + 86_400_000).toISOString(),
+      },
     ];
 
     await refreshServer('sonarr-0', tracker);
 
     const progress = tracker.get(media.id, false)!;
     const grabbed = statusOf(tracker, media.id, 'grabbed');
-    assert.equal(grabbed.finishedAt, at(3));
+    assert.equal(grabbed.status, 'running');
+    assert.equal(grabbed.startedAt, at(3));
     assert.equal(grabbed.detail, 'Show.S02');
-    assert.equal(statusOf(tracker, media.id, 'importing').status, 'running');
+    assert.deepEqual(grabbed.counts, {
+      done: 0,
+      active: 2,
+      failed: 0,
+      total: 2,
+    });
+    assert.equal(grabbed.progress, 0.6);
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'done');
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'pending');
     assert.deepEqual(progress.downloads, [
       {
         title: 'Show.S02',
@@ -272,18 +315,36 @@ describe('refreshServer', () => {
     ]);
     assert.deepEqual(statusOf(tracker, media.id, 'importing').episodes, {
       imported: 0,
-      total: 12,
+      total: 2,
     });
+    assert.deepEqual(
+      progress.timeline?.map((e) => [e.kind, e.units]),
+      [['grabbed', ['S02E01-E02']]]
+    );
 
-    // An episode file event refreshes the server with the counts as they are then.
-    sonarrSeasons[1].statistics = stats(7, 12);
+    // The pack finished; its first episode is imported.
+    for (const item of queue) item.trackedDownloadState = 'importing';
+    history.push({
+      eventType: 'downloadFolderImported',
+      date: at(4),
+      seriesId: 34,
+      downloadId: 'S2',
+      ...ep(201, 2, 1),
+    });
     sonarrEpisodes[1].hasFile = true;
     await refreshServer('sonarr-0', tracker);
 
     const importing = statusOf(tracker, media.id, 'importing');
-    assert.equal(importing.status, 'done');
-    assert.deepEqual(importing.episodes, { imported: 7, total: 12 });
-    assert.equal(statusOf(tracker, media.id, 'grabbed').episodes, undefined);
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'done');
+    assert.equal(importing.status, 'running');
+    assert.deepEqual(importing.counts, {
+      done: 1,
+      active: 1,
+      failed: 0,
+      total: 2,
+    });
+    assert.deepEqual(importing.episodes, { imported: 1, total: 2 });
+    assert.equal(importing.progress, 0.5);
   });
 
   it('fails a blocked import as manual interaction', async () => {
@@ -311,23 +372,38 @@ describe('refreshServer', () => {
   it('waits for a release after a search without results', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
-    lastSearchTime = '2026-10-05T12:00:00.000Z';
+    lastSearchTime = new Date(Date.now() + 1000).toISOString();
 
     await refreshServer('radarr-0', tracker);
 
     const step = statusOf(tracker, media.id, 'searching');
     assert.equal(step.status, 'running');
-    assert.equal(step.detail, WAITING_FOR_RELEASE);
+    assert.equal(step.detail, WAITING_FOR_RSS);
+    assert.equal(step.waiting, 'rss');
+    assert.equal(step.waitingSince, lastSearchTime);
+    assert.equal(step.searchStartedAt, undefined);
     assert.equal(
       tracker.entry(media.id, false)!.lastSearchedAt,
       Date.parse(lastSearchTime)
     );
+
+    isAvailable = false;
+    await refreshServer('radarr-0', tracker);
+    const unreleased = statusOf(tracker, media.id, 'searching');
+    assert.equal(unreleased.detail, WAITING_FOR_RELEASE);
+    assert.equal(unreleased.waiting, 'release');
   });
 
   it('goes back to searching when the files disappear after the import', async () => {
     const { media, tracker } = await setup();
-    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
-    tracker.advance(media.id, false, 'playable');
+    const at = Date.now() - 60_000;
+    tracker.start({
+      mediaId: media.id,
+      is4k: false,
+      serverKey: 'radarr-0',
+      at,
+    });
+    reach(tracker, media.id, 'playable', at);
 
     await refreshServer('radarr-0', tracker);
 
@@ -357,12 +433,12 @@ describe('refreshServer', () => {
   it('keeps an unmonitored item with a running download', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
-    tracker.advance(media.id, false, 'grabbed');
+    reach(tracker, media.id, 'grabbed');
     monitored = false;
 
     await refreshServer('radarr-0', tracker);
 
-    assert.equal(statusOf(tracker, media.id, 'importing').status, 'running');
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'running');
   });
 });
 
@@ -381,7 +457,7 @@ const search = (
 });
 
 describe('handleCommand', () => {
-  it('shows a running search with its indexers, then waits for a release', async () => {
+  it('shows a running search with its indexers, then waits for RSS', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
     const id = commandId++;
@@ -410,7 +486,8 @@ describe('handleCommand', () => {
     );
     const step = statusOf(tracker, media.id, 'searching');
     assert.equal(step.status, 'running');
-    assert.equal(step.detail, WAITING_FOR_RELEASE);
+    assert.equal(step.detail, WAITING_FOR_RSS);
+    assert.equal(step.searchStartedAt, undefined);
     assert.ok(tracker.entry(media.id, false)!.lastSearchedAt);
   });
 
@@ -441,8 +518,9 @@ describe('handleCommand', () => {
       },
     ];
     await refreshServer('radarr-0', tracker);
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'failed');
     assert.equal(
-      statusOf(tracker, media.id, 'importing').error,
+      statusOf(tracker, media.id, 'grabbed').error,
       'Download failed'
     );
 
@@ -464,14 +542,18 @@ describe('handleCommand', () => {
       downloadId: 'new',
     });
     await refreshServer('radarr-0', tracker);
-    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'done');
-    assert.equal(tracker.entry(media.id, false)!.downloadId, 'new');
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'done');
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'running');
+    assert.equal(
+      tracker.entry(media.id, false)!.units.get(0)?.downloadId,
+      'new'
+    );
   });
 
   it('ignores an automatic search on a grabbed item', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
-    tracker.advance(media.id, false, 'grabbed');
+    reach(tracker, media.id, 'grabbed');
     await handleCommand(
       radarr,
       search('started', { trigger: 'unspecified' }),
@@ -482,8 +564,8 @@ describe('handleCommand', () => {
       search('completed', { trigger: 'unspecified', reportsDownloaded: 0 }),
       tracker
     );
-    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'done');
-    assert.equal(statusOf(tracker, media.id, 'importing').status, 'running');
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'done');
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'running');
   });
 
   it('maps a Sonarr episode search to its series', async () => {
@@ -586,7 +668,7 @@ describe('reconcileJellyfin', () => {
   it('reopens the Jellyfin step when the item left Jellyfin', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false });
-    tracker.advance(media.id, false, 'inJellyfin');
+    reach(tracker, media.id, 'inJellyfin');
 
     await reconcileJellyfin(undefined, tracker);
 
@@ -653,7 +735,8 @@ describe('reconstructProgress', () => {
     const searching = statusOf(tracker, media.id, 'searching');
     assert.equal(searching.status, 'running');
     assert.equal(searching.startedAt, requestedAt);
-    assert.equal(searching.detail, WAITING_FOR_RELEASE);
+    assert.equal(searching.detail, WAITING_FOR_RSS);
+    assert.equal(searching.waiting, 'rss');
   });
 
   it('takes a file in Radarr as imported', async () => {
@@ -831,6 +914,10 @@ describe('request status', () => {
       .steps.find((s) => s.key === 'searching')!;
     assert.equal(step.status, 'failed');
     assert.equal(step.error, 'Request failed');
+    // The singleton outlives the test; Jellyfin checks below would recover its run.
+    (
+      progressTracker as unknown as { entries: Map<string, unknown> }
+    ).entries.clear();
   });
 });
 
