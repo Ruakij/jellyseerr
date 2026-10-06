@@ -83,6 +83,8 @@ interface StepState {
   error?: string;
   counts?: ProgressCounts;
   progress?: number;
+  /** Running with no unit in it: the units are past it, failed at it or not there yet. */
+  idleSince?: number;
 }
 
 export interface TrackedProgress {
@@ -814,7 +816,15 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
               (state.error === REQUEST_FAILED
                 ? (entry.arrError ?? REQUEST_FAILED)
                 : state.error)),
-        ...(k === 'searching' ? this.searchTimes(entry) : {}),
+        ...(k === 'searching'
+          ? this.searchTimes(entry)
+          : {
+              waiting:
+                k === 'grabbed' && state.idleSince !== undefined
+                  ? ('grab' as const)
+                  : undefined,
+              waitingSince: iso(state.idleSince),
+            }),
         detail:
           k === 'searching' && state.status === 'running'
             ? this.searchingDetail(entry)
@@ -1287,7 +1297,13 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
             ? finishedAt
             : at
           : undefined;
-      entry.steps[k] = { ...state, startedAt, finishedAt };
+      // Searching has its own waiting, see searchTimes.
+      const idle =
+        k !== 'searching' &&
+        state.status === 'running' &&
+        state.counts?.active === 0;
+      const idleSince = idle ? (prev.idleSince ?? at) : undefined;
+      entry.steps[k] = { ...state, startedAt, finishedAt, idleSince };
       if (prev.status === state.status) continue;
       logger.debug(`Step ${k}: ${prev.status} -> ${state.status}`, {
         label: 'Request Progress',
