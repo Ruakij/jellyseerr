@@ -49,6 +49,7 @@ import progressTracker from '@server/lib/requestProgress/tracker';
 import {
   jellyfinItemScanner,
   jellyfinRecentScanner,
+  jellyfinScans,
 } from '@server/lib/scanners/jellyfin';
 import { radarrScanner } from '@server/lib/scanners/radarr';
 import { sonarrScanner } from '@server/lib/scanners/sonarr';
@@ -1040,6 +1041,99 @@ const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
   }
 );
 
+// ponytail: new items are looked up among the newest ones only; one Jellyfin added long before the
+// run is linked by the scans instead.
+const NEWEST_ITEMS = 50;
+
+const inJellyfinSteps =
+  (tracker: ProgressTracker) => (entry: TrackedProgress) =>
+    !tracker.finished(entry) &&
+    (['inJellyfin', 'playable'] as const).some(
+      (k) => entry.steps[k].status === 'running'
+    );
+
+/** The id of the Jellyfin item of the media, by its provider ids. */
+function providerMatch(
+  items: JellyfinLibraryItemExtended[],
+  m: Media
+): string | undefined {
+  const tv = m.mediaType === MediaType.TV;
+  return items.find((item) => {
+    if (item.Type !== (tv ? 'Series' : 'Movie')) return false;
+    const ids = item.ProviderIds ?? {};
+    const tmdb = Number(ids.Tmdb || ids.TheMovieDb || NaN);
+    return (
+      tmdb === m.tmdbId ||
+      (tv
+        ? !!m.tvdbId && Number(ids.Tvdb) === m.tvdbId
+        : !!m.imdbId && ids.Imdb === m.imdbId)
+    );
+  })?.Id;
+}
+
+/**
+ * Asks Jellyfin about the runs waiting for it, as the socket gets no library events with an API
+ * key and the webhook can miss them. Media without a Jellyfin item gets it linked by provider id.
+ */
+export async function pollJellyfin(
+  tracker: ProgressTracker = progressTracker
+): Promise<void> {
+  const waits = inJellyfinSteps(tracker);
+  const entries = tracker.tracked().filter(waits);
+  if (entries.length === 0) return;
+  const media = await loadMedia(entries);
+  const unlinked = entries.flatMap((e) => {
+    const m = media.get(e.mediaId);
+    return m && !(e.is4k ? m.jellyfinMediaId4k : m.jellyfinMediaId) ? [m] : [];
+  });
+  if (unlinked.length > 0) {
+    const client = await jellyfinClient();
+    const newest = client ? await client.getNewestItems(NEWEST_ITEMS) : [];
+    const ids = unlinked
+      .map((m) => providerMatch(newest, m))
+      .filter((id): id is string => !!id);
+    if (ids.length > 0) await jellyfinItemScanner.runItems([...new Set(ids)]);
+  }
+  await reconcileJellyfin(undefined, tracker, waits);
+}
+
+/**
+ * Polls Jellyfin while a run waits for it. A safety net: the scans the Jellyfin webhook triggers
+ * reconcile the runs first.
+ */
+export function watchJellyfin(
+  tracker: ProgressTracker = progressTracker
+): void {
+  let timer: NodeJS.Timeout | undefined;
+  const schedule = () => {
+    if (timer || !tracker.tracked().some(inJellyfinSteps(tracker))) return;
+    // Read per check, so a changed interval applies from the next one. Disabled, it keeps checking the
+    // setting at the default interval.
+    const seconds = getSettings().requestProgress.jellyfinCheckSeconds;
+    timer = setTimeout(
+      async () => {
+        try {
+          if (seconds > 0) await pollJellyfin(tracker);
+        } catch (e) {
+          logger.warn(`Polling Jellyfin failed: ${e.message}`, {
+            label: 'Request Progress',
+          });
+        } finally {
+          timer = undefined;
+          schedule();
+        }
+      },
+      (seconds || 10) * 1000
+    );
+  };
+  tracker.on('change', schedule);
+}
+
+// Scheduled and webhook triggered scans link and update media the runs wait for.
+const jellyfinScanned = new KeyedDebouncer(() =>
+  reconcileJellyfin(undefined, progressTracker, awaitsJellyfin)
+);
+
 // Long enough for Jellyfin to notice a deletion Radarr/Sonarr reported (its library monitor waits
 // 60s by default): the check marks a version deleted only when both lost it.
 export const REMOVAL_DEBOUNCE_MS = 90_000;
@@ -1344,6 +1438,8 @@ export function startProgressEvents(): void {
   setInterval(refreshAllStepHistory, STEP_HISTORY_INTERVAL_MS).unref();
   servarrSignalR.on('message', onSignalRMessage);
 
+  watchJellyfin();
+  jellyfinScans.on('done', () => jellyfinScanned.push('scan'));
   const jellyfinPoll = () => polls.push('jellyfin');
   jellyfinSocket.on('connected', jellyfinPoll);
   jellyfinSocket.on('reconnected', jellyfinPoll);
