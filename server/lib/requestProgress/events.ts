@@ -200,14 +200,21 @@ export async function handleCommand(
     }
     const entry = tracker.entry(media.id, is4k);
     if (!entry) continue;
-    if (ended) {
-      // A search without results leaves the units waiting: RSS may still bring a release.
+    if (event.status === 'completed') {
+      // Applied once the refresh read the history: before it, a grab of this search still looks
+      // like no result and the units would flash waiting for RSS.
+      serverRefresh.push(key, {
+        tracker,
+        mediaId: media.id,
+        is4k,
+        commandId: event.id,
+        at: Date.now(),
+        cause,
+      });
+    } else if (ended) {
       tracker.searchFinished(media.id, is4k, {
         commandId: event.id,
-        error:
-          event.status === 'completed'
-            ? undefined
-            : `Search failed${event.message ? `: ${event.message}` : ''}`,
+        error: `Search failed${event.message ? `: ${event.message}` : ''}`,
         cause,
       });
     } else {
@@ -229,6 +236,15 @@ export async function handleCommand(
     }
   }
   if (event.status === 'completed') serverRefresh.push(key);
+}
+
+interface FinishedSearch {
+  tracker: ProgressTracker;
+  mediaId: number;
+  is4k: boolean;
+  commandId: number;
+  at: number;
+  cause: string;
 }
 
 interface ArrItem {
@@ -779,7 +795,19 @@ export async function reconstructProgress(
   await reconcileJellyfin(undefined, tracker);
 }
 
-const serverRefresh = new KeyedDebouncer((key) => refreshServer(key));
+const serverRefresh = new KeyedDebouncer<FinishedSearch | void>(
+  async (key, values) => {
+    const finished = values.filter((v): v is FinishedSearch => !!v);
+    try {
+      await refreshServer(key, finished[0]?.tracker);
+    } finally {
+      // A search without results leaves the units waiting: RSS may still bring a release.
+      for (const { tracker, mediaId, is4k, ...search } of finished) {
+        tracker.searchFinished(mediaId, is4k, search);
+      }
+    }
+  }
+);
 
 // Request hooks fire inside their transaction; the debounce reads the committed state.
 const requestSyncs = new KeyedDebouncer(async (key) => {

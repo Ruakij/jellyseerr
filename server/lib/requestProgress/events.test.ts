@@ -479,8 +479,7 @@ describe('handleCommand', () => {
     );
     assert.equal(tracker.entry(media.id, false)!.lastSearchedAt, undefined);
 
-    await handleCommand(
-      radarr,
+    await completeSearch(
       search('completed', {
         id,
         message: 'Completed search for 1 movies. 0 reports downloaded.',
@@ -493,6 +492,38 @@ describe('handleCommand', () => {
     assert.equal(step.detail, WAITING_FOR_RSS);
     assert.equal(step.searchStartedAt, undefined);
     assert.ok(tracker.entry(media.id, false)!.lastSearchedAt);
+  });
+
+  it('never waits for RSS when the history has the grab of the completed search', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    const id = commandId++;
+    await handleCommand(radarr, search('started', { id }), tracker);
+    const waited: unknown[] = [];
+    tracker.on('change', () => {
+      waited.push(statusOf(tracker, media.id, 'searching').waiting);
+    });
+
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      await handleCommand(radarr, search('completed', { id }), tracker);
+      history = [
+        {
+          eventType: 'grabbed',
+          date: new Date(Date.now() + 1000).toISOString(),
+          movieId: 42,
+          downloadId: 'D',
+        },
+      ];
+      mock.timers.tick(DEBOUNCE_MS);
+      await settle();
+    } finally {
+      mock.timers.reset();
+    }
+
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'done');
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'running');
+    assert.ok(!waited.includes('rss'));
   });
 
   it('fails the search on a failed search command', async () => {
@@ -563,8 +594,7 @@ describe('handleCommand', () => {
       search('started', { trigger: 'unspecified' }),
       tracker
     );
-    await handleCommand(
-      radarr,
+    await completeSearch(
       search('completed', { trigger: 'unspecified', reportsDownloaded: 0 }),
       tracker
     );
@@ -648,7 +678,7 @@ describe('handleCommand media cache', () => {
     await handleCommand(radarr, search('started', { id }), tracker);
     assert.equal(tracker.entry(media.id, false), undefined);
 
-    await handleCommand(radarr, search('completed', { id }), tracker);
+    await completeSearch(search('completed', { id }), tracker);
     await handleCommand(radarr, search('started', { id }), tracker);
     assert.ok(tracker.entry(media.id, false));
   });
@@ -1015,6 +1045,18 @@ describe('onSignalRMessage', () => {
     }
   });
 });
+
+/** Sends a completed search command and lets the debounced refresh behind it run. */
+async function completeSearch(event: CommandEvent, tracker: ProgressTracker) {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await handleCommand(radarr, event, tracker);
+    mock.timers.tick(DEBOUNCE_MS);
+    await settle();
+  } finally {
+    mock.timers.reset();
+  }
+}
 
 // Lets the database lookups behind the handlers finish; only setTimeout is mocked.
 async function settle() {
