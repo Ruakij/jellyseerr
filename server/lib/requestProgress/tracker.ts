@@ -1,6 +1,7 @@
 import type {
   ProgressCounts,
   ProgressDownload,
+  ProgressRequest,
   ProgressStepKey,
   ProgressStepStatus,
   ProgressTimelineEntry,
@@ -76,6 +77,16 @@ export interface QueueItemState {
   reason?: string;
 }
 
+export interface TrackedRequest {
+  id: number;
+  /** Seasons of a series request; absent for a movie. */
+  seasons?: number[];
+  requestedBy?: string;
+  /** When it was sent to Radarr/Sonarr, or made while it awaits approval. */
+  at: number;
+  awaitingApproval?: boolean;
+}
+
 interface StepState {
   status: ProgressStepStatus;
   startedAt?: number;
@@ -83,15 +94,17 @@ interface StepState {
   error?: string;
   counts?: ProgressCounts;
   progress?: number;
+  /** Running with no unit in it: the units are past it, failed at it or not there yet. */
+  idleSince?: number;
 }
 
 export interface TrackedProgress {
   mediaId: number;
   is4k: boolean;
-  requestId?: number;
+  /** The active requests of the media; their units make up the run. */
+  requests: Map<number, TrackedRequest>;
   /** StepStats key, e.g. `radarr-0`; absent until the serving Radarr/Sonarr is known. */
   serverKey?: string;
-  awaitingApproval?: boolean;
   /** Radarr/Sonarr search command running for the media, if any. */
   searchCommandId?: number;
   /** Indexers the running search queries, from its messages. */
@@ -132,6 +145,16 @@ export interface TrackedProgress {
 }
 
 const key = (mediaId: number, is4k: boolean) => `${mediaId}:${is4k}`;
+
+/** Every request awaits approval, so nothing was sent to Radarr/Sonarr yet. */
+const awaitingApproval = (entry: TrackedProgress) =>
+  entry.requests.size > 0 &&
+  [...entry.requests.values()].every((r) => r.awaitingApproval);
+
+const covers = (request: TrackedRequest, unit: Unit) =>
+  !request.seasons ||
+  unit.seasonNumber === undefined ||
+  request.seasons.includes(unit.seasonNumber);
 
 export const REQUEST_FAILED = 'Request failed';
 
@@ -214,6 +237,10 @@ interface Change {
 
 interface TrackerEvents {
   change: [RequestProgress];
+  /** The last active request of the media is gone, and its run with it. */
+  removed: [mediaId: number, is4k: boolean];
+  /** A request of the media was changed or removed in the database. */
+  requests: [mediaId: number];
 }
 
 export class ProgressTracker extends EventEmitter<TrackerEvents> {
@@ -242,33 +269,64 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     return this.injectedStats ?? stepStats;
   }
 
-  /** Starts a fresh run, replacing any previous one of the same media. */
+  /**
+   * Starts a fresh run, replacing a previous one of the same media, or adds the request to the
+   * unfinished run of other requests.
+   */
   public start({
     mediaId,
     is4k,
     requestId,
+    seasons,
+    requestedBy,
     serverKey,
     at = this.now(),
-    awaitingApproval,
+    awaitingApproval: awaiting,
     reconstructed,
   }: {
     mediaId: number;
     is4k: boolean;
     requestId?: number;
+    seasons?: number[];
+    requestedBy?: string;
     serverKey?: string;
     /** When the request was made, for a run rebuilt later. */
     at?: number;
     awaitingApproval?: boolean;
     reconstructed?: boolean;
   }): TrackedProgress {
+    const request: TrackedRequest | undefined =
+      requestId === undefined
+        ? undefined
+        : {
+            id: requestId,
+            seasons,
+            requestedBy,
+            at,
+            awaitingApproval: awaiting,
+          };
+    const current = this.entry(mediaId, is4k);
+    if (
+      current &&
+      request &&
+      !this.finished(current) &&
+      [...current.requests.keys()].some((id) => id !== request.id)
+    ) {
+      this.mutate(mediaId, is4k, at, 'request added', (entry) => {
+        entry.serverKey ??= serverKey;
+        this.putRequest(entry, request);
+        // A request goes out with searchNow.
+        if (!awaiting && !reconstructed) entry.searchStartedAt ??= at;
+      });
+      return current;
+    }
     const entry: TrackedProgress = {
       mediaId,
       is4k,
-      requestId,
+      requests: new Map(request ? [[request.id, request]] : []),
       serverKey,
-      awaitingApproval,
       reconstructed,
-      searchStartedAt: awaitingApproval || reconstructed ? undefined : at,
+      searchStartedAt: awaiting || reconstructed ? undefined : at,
       searchMs: 0,
       units: new Map([[0, newUnit(0)]]),
       unitsKnown: false,
@@ -283,9 +341,111 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     };
     this.cancelEviction(key(mediaId, is4k));
     this.entries.set(key(mediaId, is4k), entry);
+    if (request) this.noteRequest(entry, request);
     this.recompute(entry, at, 'request started');
     this.changed(entry);
     return entry;
+  }
+
+  /**
+   * Sets the active requests of a run. Units no remaining request covers leave it, and step times
+   * start no earlier than the oldest remaining request. Without requests, the run is gone; a run
+   * that never had one, e.g. of media added in Radarr/Sonarr directly, stays.
+   */
+  public setRequests(
+    mediaId: number,
+    is4k: boolean,
+    requests: TrackedRequest[],
+    { at = this.now(), cause }: Change = {}
+  ): void {
+    const entry = this.entry(mediaId, is4k);
+    if (!entry) return;
+    if (requests.length === 0) {
+      if (entry.requests.size > 0) this.remove(entry);
+      return;
+    }
+    this.mutate(mediaId, is4k, at, cause ?? 'requests', () => {
+      const removed = [...entry.requests.keys()].some(
+        (id) => !requests.some((r) => r.id === id)
+      );
+      const known = entry.requests;
+      entry.requests = new Map();
+      for (const request of requests) {
+        this.putRequest(entry, request, known.get(request.id));
+      }
+      if (removed) this.dropUncovered(entry);
+    });
+  }
+
+  /** Tells the request syncing that a request of the media changed in the database. */
+  public requestsChanged(mediaId: number): void {
+    this.emit('requests', mediaId);
+  }
+
+  /** Adds or updates a request; it keeps its time unless it was approved since. */
+  private putRequest(
+    entry: TrackedProgress,
+    request: TrackedRequest,
+    known = entry.requests.get(request.id)
+  ): void {
+    const approved = known?.awaitingApproval && !request.awaitingApproval;
+    entry.requests.set(request.id, {
+      ...request,
+      at: known && !approved ? known.at : request.at,
+    });
+    if (!known) this.noteRequest(entry, request);
+  }
+
+  private noteRequest(entry: TrackedProgress, request: TrackedRequest): void {
+    this.note(entry, request.at, 'request added', {
+      step: 'requested',
+      kind: 'requested',
+      detail: request.requestedBy,
+      source: 'request',
+      seasons: request.seasons,
+    });
+  }
+
+  /** Forgets units, timeline entries and times of seasons no request asks for anymore. */
+  private dropUncovered(entry: TrackedProgress): void {
+    const requests = [...entry.requests.values()];
+    if (entry.unitsKnown) {
+      for (const [id, unit] of entry.units) {
+        if (!requests.some((r) => covers(r, unit))) entry.units.delete(id);
+      }
+      if (entry.units.size === 0) {
+        entry.units.set(0, newUnit(0));
+        entry.unitsKnown = false;
+      }
+    }
+    const asked = (season: number) =>
+      requests.some((r) => !r.seasons || r.seasons.includes(season));
+    entry.timeline = entry.timeline.filter(
+      (e) => !e.seasons || e.seasons.some(asked)
+    );
+    const since = Math.min(...requests.map((r) => r.at));
+    for (const state of Object.values(entry.steps)) {
+      if (state.startedAt !== undefined && state.startedAt < since) {
+        state.startedAt = since;
+      }
+      if (state.idleSince !== undefined && state.idleSince < since) {
+        state.idleSince = since;
+      }
+    }
+    if ((entry.lastSearchedAt ?? Infinity) < since) {
+      entry.lastSearchedAt = undefined;
+    }
+    if (entry.lastSearch && entry.lastSearch.end < since) {
+      entry.lastSearch = undefined;
+      entry.searchMs = 0;
+    }
+  }
+
+  private remove(entry: TrackedProgress): void {
+    const k = key(entry.mediaId, entry.is4k);
+    this.cancelEviction(k);
+    this.entries.delete(k);
+    this.emit('removed', entry.mediaId, entry.is4k);
   }
 
   public ensure(args: Parameters<ProgressTracker['start']>[0]) {
@@ -814,7 +974,15 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
               (state.error === REQUEST_FAILED
                 ? (entry.arrError ?? REQUEST_FAILED)
                 : state.error)),
-        ...(k === 'searching' ? this.searchTimes(entry) : {}),
+        ...(k === 'searching'
+          ? this.searchTimes(entry)
+          : {
+              waiting:
+                k === 'grabbed' && state.idleSince !== undefined
+                  ? ('grab' as const)
+                  : undefined,
+              waitingSince: iso(state.idleSince),
+            }),
         detail:
           k === 'searching' && state.status === 'running'
             ? this.searchingDetail(entry)
@@ -855,7 +1023,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     return {
       mediaId: entry.mediaId,
       is4k: entry.is4k,
-      requestId: entry.requestId,
+      requests: this.requestStates(entry),
       steps,
       totalEstimateMs: !single
         ? undefined
@@ -899,6 +1067,69 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       waiting,
       waitingSince: waiting && since > 0 ? iso(since) : undefined,
     };
+  }
+
+  /**
+   * Where each request stands: the step of its least advanced unit. A season without aired
+   * episodes has no unit and waits for its release. Waiting counts from the request or the last
+   * search after it.
+   */
+  private requestStates(entry: TrackedProgress): ProgressRequest[] {
+    return [...entry.requests.values()]
+      .sort((a, b) => a.id - b.id)
+      .map((request) => {
+        const base = {
+          id: request.id,
+          seasons: request.seasons,
+          requestedBy: request.requestedBy,
+        };
+        if (request.awaitingApproval) {
+          return { ...base, step: 'requested' as const, status: 'running' };
+        }
+        const failedStep = entry.requestError
+          ? STEP_KEYS.find((k) => entry.steps[k].status === 'failed')
+          : undefined;
+        if (failedStep) return { ...base, step: failedStep, status: 'failed' };
+        const units = entry.unitsKnown
+          ? [...entry.units.values()].filter((u) => covers(request, u))
+          : [...entry.units.values()];
+        const failed = units.map(failedAt);
+        if (
+          units.length > 0 &&
+          entry.searchCommandId === undefined &&
+          failed.every((f) => f !== undefined)
+        ) {
+          return {
+            ...base,
+            step: PROGRESS_STEPS[Math.min(...(failed as number[]))],
+            status: 'failed',
+          };
+        }
+        const stage = units.length
+          ? Math.min(...units.map(unitStage))
+          : SEARCHING;
+        if (stage === PLAYABLE) {
+          return { ...base, step: 'playable' as const, status: 'done' };
+        }
+        const searching =
+          stage === SEARCHING && entry.searchStartedAt === undefined;
+        const since = Math.max(
+          request.at,
+          entry.lastSearch?.end ?? 0,
+          entry.lastSearchedAt ?? 0
+        );
+        return {
+          ...base,
+          step: PROGRESS_STEPS[stage],
+          status: 'running',
+          waiting: !searching
+            ? undefined
+            : units.length === 0 || entry.unreleased
+              ? 'release'
+              : 'rss',
+          waitingSince: searching ? iso(since) : undefined,
+        };
+      });
   }
 
   private searchingDetail(entry: TrackedProgress): string {
@@ -1134,6 +1365,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     {
       units,
       downloadId,
+      seasons,
       ...rest
     }: {
       step: ProgressStepKey;
@@ -1143,6 +1375,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       downloadId?: string;
       detail?: string;
       source: ProgressTimelineSource;
+      /** Default: those of the units, else those of the requests. */
+      seasons?: number[];
     }
   ): void {
     const atIso = new Date(at).toISOString();
@@ -1163,10 +1397,19 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       prev.source === rest.source;
     const all = merge ? [...prevUnits.units, ...units] : units;
     const labels = all && unitLabels(all);
+    const seasonList = [
+      ...new Set(
+        seasons ??
+          (all?.some((u) => u.seasonNumber !== undefined)
+            ? all.flatMap((u) => u.seasonNumber ?? [])
+            : [...entry.requests.values()].flatMap((r) => r.seasons ?? []))
+      ),
+    ].sort((a, b) => a - b);
     const item: ProgressTimelineEntry = {
       at: atIso,
       ...rest,
       units: labels?.length ? labels : undefined,
+      seasons: seasonList.length ? seasonList : undefined,
     };
     if (all) this.timelineUnits.set(item, { units: all, downloadId });
     if (merge) {
@@ -1243,15 +1486,16 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       }
     }
 
+    const awaiting = awaitingApproval(entry);
     const next: Record<string, StepState> = {
       requested: {
-        status: entry.awaitingApproval ? 'running' : 'done',
+        status: awaiting ? 'running' : 'done',
       },
     };
     PROGRESS_STEPS.forEach((k, i) => {
       const c = counts[i];
       next[k] = {
-        status: entry.awaitingApproval
+        status: awaiting
           ? 'pending'
           : allFailed && c.failed > 0
             ? 'failed'
@@ -1287,7 +1531,13 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
             ? finishedAt
             : at
           : undefined;
-      entry.steps[k] = { ...state, startedAt, finishedAt };
+      // Searching has its own waiting, see searchTimes.
+      const idle =
+        k !== 'searching' &&
+        state.status === 'running' &&
+        state.counts?.active === 0;
+      const idleSince = idle ? (prev.idleSince ?? at) : undefined;
+      entry.steps[k] = { ...state, startedAt, finishedAt, idleSince };
       if (prev.status === state.status) continue;
       logger.debug(`Step ${k}: ${prev.status} -> ${state.status}`, {
         label: 'Request Progress',

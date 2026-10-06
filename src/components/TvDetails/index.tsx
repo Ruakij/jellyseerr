@@ -22,6 +22,10 @@ import MediaSlider from '@app/components/MediaSlider';
 import PersonCard from '@app/components/PersonCard';
 import RequestButton from '@app/components/RequestButton';
 import RequestModal from '@app/components/RequestModal';
+import { RequestProgressTrigger } from '@app/components/RequestProgressModal';
+import ProgressButton, {
+  ACTIVE_REQUEST,
+} from '@app/components/RequestProgressModal/ProgressButton';
 import Slider from '@app/components/Slider';
 import StatusBadge from '@app/components/StatusBadge';
 import Season from '@app/components/TvDetails/Season';
@@ -689,6 +693,7 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
             isShowComplete={isComplete}
             is4kShowComplete={is4kComplete}
           />
+          <ProgressButton media={data.mediaInfo} subTitle={data.name} />
           {(data.mediaInfo?.status === MediaStatus.AVAILABLE ||
             data.mediaInfo?.status === MediaStatus.PARTIALLY_AVAILABLE ||
             (settings.currentSettings.series4kEnabled &&
@@ -864,6 +869,60 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
                   return null;
                 }
 
+                const active = (is4k: boolean) =>
+                  (is4k
+                    ? [mSeason4k?.status4k, mSeason?.status4k]
+                    : [mSeason?.status]
+                  ).some(
+                    (status) =>
+                      status === MediaStatus.PENDING ||
+                      status === MediaStatus.PROCESSING
+                  ) ||
+                  (data.mediaInfo?.requests ?? []).some(
+                    (r) =>
+                      r.is4k === is4k &&
+                      ACTIVE_REQUEST.includes(r.status) &&
+                      r.seasons.some(
+                        (s) => s.seasonNumber === season.seasonNumber
+                      )
+                  );
+                // A span: the badges sit inside the accordion button
+                const progressBadges = (
+                  is4k: boolean,
+                  badges: React.ReactNode
+                ) =>
+                  active(is4k) && (!is4k || show4k) && data.mediaInfo ? (
+                    <RequestProgressTrigger
+                      mediaId={data.mediaInfo.id}
+                      is4k={is4k}
+                      subTitle={data.name}
+                    >
+                      {(openProgress) => {
+                        const onOpen = (e: React.SyntheticEvent) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openProgress();
+                        };
+                        return (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            aria-haspopup="dialog"
+                            className="flex items-center space-x-2 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 [&_*]:!cursor-pointer"
+                            onClick={onOpen}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') onOpen(e);
+                            }}
+                          >
+                            {badges}
+                          </span>
+                        );
+                      }}
+                    </RequestProgressTrigger>
+                  ) : (
+                    badges
+                  );
+
                 return (
                   <Disclosure key={`season-discoslure-${season.seasonNumber}`}>
                     {({ open }) => (
@@ -889,194 +948,222 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
                               })}
                             </Badge>
                           </div>
-                          {((!mSeason &&
-                            request?.status === MediaRequestStatus.APPROVED) ||
-                            mSeason?.status === MediaStatus.PROCESSING ||
-                            (request?.status === MediaRequestStatus.APPROVED &&
-                              mSeason?.status === MediaStatus.DELETED)) && (
+                          {progressBadges(
+                            false,
                             <>
-                              <div className="hidden md:flex">
-                                <Badge badgeType="primary">
-                                  {intl.formatMessage(globalMessages.requested)}
-                                </Badge>
-                              </div>
-                              <div className="flex md:hidden">
-                                <StatusBadgeMini
-                                  status={MediaStatus.PROCESSING}
-                                />
-                              </div>
-                            </>
-                          )}
-                          {((!mSeason &&
-                            request?.status === MediaRequestStatus.PENDING) ||
-                            mSeason?.status === MediaStatus.PENDING) && (
-                            <>
-                              <div className="hidden md:flex">
-                                <Badge badgeType="warning">
-                                  {intl.formatMessage(globalMessages.pending)}
-                                </Badge>
-                              </div>
-                              <div className="flex md:hidden">
-                                <StatusBadgeMini status={MediaStatus.PENDING} />
-                              </div>
-                            </>
-                          )}
-                          {mSeason?.status ===
-                            MediaStatus.PARTIALLY_AVAILABLE && (
-                            <>
-                              <div className="hidden md:flex">
-                                <Badge badgeType="success">
-                                  {intl.formatMessage(
-                                    globalMessages.partiallyavailable
-                                  )}
-                                </Badge>
-                              </div>
-                              <div className="flex md:hidden">
-                                <StatusBadgeMini
-                                  status={MediaStatus.PARTIALLY_AVAILABLE}
-                                />
-                              </div>
-                            </>
-                          )}
-                          {mSeason?.status === MediaStatus.AVAILABLE && (
-                            <>
-                              <div className="hidden md:flex">
-                                <Badge badgeType="success">
-                                  {intl.formatMessage(globalMessages.available)}
-                                </Badge>
-                              </div>
-                              <div className="flex md:hidden">
-                                <StatusBadgeMini
-                                  status={MediaStatus.AVAILABLE}
-                                />
-                              </div>
-                            </>
-                          )}
-                          {mSeason?.status === MediaStatus.DELETED &&
-                            request?.status !== MediaRequestStatus.APPROVED && (
-                              <>
-                                <div className="hidden md:flex">
-                                  <Badge badgeType="danger">
-                                    {intl.formatMessage(globalMessages.deleted)}
-                                  </Badge>
-                                </div>
-                                <div className="flex md:hidden">
-                                  <StatusBadgeMini
-                                    status={MediaStatus.DELETED}
-                                  />
-                                </div>
-                              </>
-                            )}
-                          {((!mSeason4k &&
-                            request4k?.status ===
-                              MediaRequestStatus.APPROVED) ||
-                            mSeason4k?.status4k === MediaStatus.PROCESSING ||
-                            (request4k?.status ===
-                              MediaRequestStatus.APPROVED &&
-                              mSeason4k?.status4k === MediaStatus.DELETED)) &&
-                            show4k && (
-                              <>
-                                <div className="hidden md:flex">
-                                  <Badge badgeType="primary">
-                                    {intl.formatMessage(messages.status4k, {
-                                      status: intl.formatMessage(
+                              {((!mSeason &&
+                                request?.status ===
+                                  MediaRequestStatus.APPROVED) ||
+                                mSeason?.status === MediaStatus.PROCESSING ||
+                                (request?.status ===
+                                  MediaRequestStatus.APPROVED &&
+                                  mSeason?.status === MediaStatus.DELETED)) && (
+                                <>
+                                  <div className="hidden md:flex">
+                                    <Badge badgeType="primary">
+                                      {intl.formatMessage(
                                         globalMessages.requested
-                                      ),
-                                    })}
-                                  </Badge>
-                                </div>
-                                <div className="flex md:hidden">
-                                  <StatusBadgeMini
-                                    status={MediaStatus.PROCESSING}
-                                    is4k={true}
-                                  />
-                                </div>
-                              </>
-                            )}
-                          {((!mSeason4k &&
-                            request4k?.status === MediaRequestStatus.PENDING) ||
-                            mSeason?.status4k === MediaStatus.PENDING) &&
-                            show4k && (
-                              <>
-                                <div className="hidden md:flex">
-                                  <Badge badgeType="warning">
-                                    {intl.formatMessage(messages.status4k, {
-                                      status: intl.formatMessage(
+                                      )}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex md:hidden">
+                                    <StatusBadgeMini
+                                      status={MediaStatus.PROCESSING}
+                                    />
+                                  </div>
+                                </>
+                              )}
+                              {((!mSeason &&
+                                request?.status ===
+                                  MediaRequestStatus.PENDING) ||
+                                mSeason?.status === MediaStatus.PENDING) && (
+                                <>
+                                  <div className="hidden md:flex">
+                                    <Badge badgeType="warning">
+                                      {intl.formatMessage(
                                         globalMessages.pending
-                                      ),
-                                    })}
-                                  </Badge>
-                                </div>
-                                <div className="flex md:hidden">
-                                  <StatusBadgeMini
-                                    status={MediaStatus.PENDING}
-                                    is4k={true}
-                                  />
-                                </div>
-                              </>
-                            )}
-                          {mSeason4k?.status4k ===
-                            MediaStatus.PARTIALLY_AVAILABLE &&
-                            show4k && (
-                              <>
-                                <div className="hidden md:flex">
-                                  <Badge badgeType="success">
-                                    {intl.formatMessage(messages.status4k, {
-                                      status: intl.formatMessage(
+                                      )}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex md:hidden">
+                                    <StatusBadgeMini
+                                      status={MediaStatus.PENDING}
+                                    />
+                                  </div>
+                                </>
+                              )}
+                              {mSeason?.status ===
+                                MediaStatus.PARTIALLY_AVAILABLE && (
+                                <>
+                                  <div className="hidden md:flex">
+                                    <Badge badgeType="success">
+                                      {intl.formatMessage(
                                         globalMessages.partiallyavailable
-                                      ),
-                                    })}
-                                  </Badge>
-                                </div>
-                                <div className="flex md:hidden">
-                                  <StatusBadgeMini
-                                    status={MediaStatus.PARTIALLY_AVAILABLE}
-                                    is4k={true}
-                                  />
-                                </div>
-                              </>
-                            )}
-                          {mSeason4k?.status4k === MediaStatus.AVAILABLE &&
-                            show4k && (
-                              <>
-                                <div className="hidden md:flex">
-                                  <Badge badgeType="success">
-                                    {intl.formatMessage(messages.status4k, {
-                                      status: intl.formatMessage(
+                                      )}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex md:hidden">
+                                    <StatusBadgeMini
+                                      status={MediaStatus.PARTIALLY_AVAILABLE}
+                                    />
+                                  </div>
+                                </>
+                              )}
+                              {mSeason?.status === MediaStatus.AVAILABLE && (
+                                <>
+                                  <div className="hidden md:flex">
+                                    <Badge badgeType="success">
+                                      {intl.formatMessage(
                                         globalMessages.available
-                                      ),
-                                    })}
-                                  </Badge>
-                                </div>
-                                <div className="flex md:hidden">
-                                  <StatusBadgeMini
-                                    status={MediaStatus.AVAILABLE}
-                                    is4k={true}
-                                  />
-                                </div>
-                              </>
-                            )}
-                          {mSeason4k?.status4k === MediaStatus.DELETED &&
-                            request4k?.status !== MediaRequestStatus.APPROVED &&
-                            show4k && (
-                              <>
-                                <div className="hidden md:flex">
-                                  <Badge badgeType="danger">
-                                    {intl.formatMessage(messages.status4k, {
-                                      status: intl.formatMessage(
-                                        globalMessages.deleted
-                                      ),
-                                    })}
-                                  </Badge>
-                                </div>
-                                <div className="flex md:hidden">
-                                  <StatusBadgeMini
-                                    status={MediaStatus.DELETED}
-                                    is4k={true}
-                                  />
-                                </div>
-                              </>
-                            )}
+                                      )}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex md:hidden">
+                                    <StatusBadgeMini
+                                      status={MediaStatus.AVAILABLE}
+                                    />
+                                  </div>
+                                </>
+                              )}
+                              {mSeason?.status === MediaStatus.DELETED &&
+                                request?.status !==
+                                  MediaRequestStatus.APPROVED && (
+                                  <>
+                                    <div className="hidden md:flex">
+                                      <Badge badgeType="danger">
+                                        {intl.formatMessage(
+                                          globalMessages.deleted
+                                        )}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex md:hidden">
+                                      <StatusBadgeMini
+                                        status={MediaStatus.DELETED}
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                            </>
+                          )}
+                          {progressBadges(
+                            true,
+                            <>
+                              {((!mSeason4k &&
+                                request4k?.status ===
+                                  MediaRequestStatus.APPROVED) ||
+                                mSeason4k?.status4k ===
+                                  MediaStatus.PROCESSING ||
+                                (request4k?.status ===
+                                  MediaRequestStatus.APPROVED &&
+                                  mSeason4k?.status4k ===
+                                    MediaStatus.DELETED)) &&
+                                show4k && (
+                                  <>
+                                    <div className="hidden md:flex">
+                                      <Badge badgeType="primary">
+                                        {intl.formatMessage(messages.status4k, {
+                                          status: intl.formatMessage(
+                                            globalMessages.requested
+                                          ),
+                                        })}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex md:hidden">
+                                      <StatusBadgeMini
+                                        status={MediaStatus.PROCESSING}
+                                        is4k={true}
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                              {((!mSeason4k &&
+                                request4k?.status ===
+                                  MediaRequestStatus.PENDING) ||
+                                mSeason?.status4k === MediaStatus.PENDING) &&
+                                show4k && (
+                                  <>
+                                    <div className="hidden md:flex">
+                                      <Badge badgeType="warning">
+                                        {intl.formatMessage(messages.status4k, {
+                                          status: intl.formatMessage(
+                                            globalMessages.pending
+                                          ),
+                                        })}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex md:hidden">
+                                      <StatusBadgeMini
+                                        status={MediaStatus.PENDING}
+                                        is4k={true}
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                              {mSeason4k?.status4k ===
+                                MediaStatus.PARTIALLY_AVAILABLE &&
+                                show4k && (
+                                  <>
+                                    <div className="hidden md:flex">
+                                      <Badge badgeType="success">
+                                        {intl.formatMessage(messages.status4k, {
+                                          status: intl.formatMessage(
+                                            globalMessages.partiallyavailable
+                                          ),
+                                        })}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex md:hidden">
+                                      <StatusBadgeMini
+                                        status={MediaStatus.PARTIALLY_AVAILABLE}
+                                        is4k={true}
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                              {mSeason4k?.status4k === MediaStatus.AVAILABLE &&
+                                show4k && (
+                                  <>
+                                    <div className="hidden md:flex">
+                                      <Badge badgeType="success">
+                                        {intl.formatMessage(messages.status4k, {
+                                          status: intl.formatMessage(
+                                            globalMessages.available
+                                          ),
+                                        })}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex md:hidden">
+                                      <StatusBadgeMini
+                                        status={MediaStatus.AVAILABLE}
+                                        is4k={true}
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                              {mSeason4k?.status4k === MediaStatus.DELETED &&
+                                request4k?.status !==
+                                  MediaRequestStatus.APPROVED &&
+                                show4k && (
+                                  <>
+                                    <div className="hidden md:flex">
+                                      <Badge badgeType="danger">
+                                        {intl.formatMessage(messages.status4k, {
+                                          status: intl.formatMessage(
+                                            globalMessages.deleted
+                                          ),
+                                        })}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex md:hidden">
+                                      <StatusBadgeMini
+                                        status={MediaStatus.DELETED}
+                                        is4k={true}
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                            </>
+                          )}
                           <ChevronDownIcon
                             className={`${
                               open ? 'rotate-180' : ''
