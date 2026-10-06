@@ -678,11 +678,10 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
             onUpdate={() => revalidate()}
             tmdbId={data?.id}
             media={data?.mediaInfo}
-            title={data.name}
             isShowComplete={isComplete}
             is4kShowComplete={is4kComplete}
           />
-          <ProgressButton media={data.mediaInfo} subTitle={data.name} />
+          <ProgressButton media={data.mediaInfo} />
           {(data.mediaInfo?.status === MediaStatus.AVAILABLE ||
             data.mediaInfo?.status === MediaStatus.PARTIALLY_AVAILABLE ||
             (settings.currentSettings.series4kEnabled &&
@@ -884,7 +883,6 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
                     <RequestProgressTrigger
                       mediaId={data.mediaInfo.id}
                       is4k={is4k}
-                      subTitle={data.name}
                     >
                       {(openProgress) => {
                         const onOpen = (e: React.SyntheticEvent) => {

@@ -30,6 +30,8 @@ export interface RadarrMovie {
   added: string;
   hasFile: boolean;
   lastSearchTime?: string;
+  digitalRelease?: string;
+  physicalRelease?: string;
   tags: number[];
   movieFile?: {
     id: number;

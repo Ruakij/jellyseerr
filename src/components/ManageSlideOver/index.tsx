@@ -276,7 +276,6 @@ const ManageSlideOver = ({
               key={`progress-${is4k}`}
               mediaId={data.mediaInfo?.id}
               is4k={is4k}
-              subTitle={isMovie(data) ? data.title : data.name}
             >
               {(open) => (
                 <Button buttonType="ghost" className="w-full" onClick={open}>

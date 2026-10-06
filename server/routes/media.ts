@@ -382,6 +382,8 @@ mediaRoutes.get<{ mediaId: string }>(
         progress.steps.find((s) => s.key === 'playable')?.status === 'done';
       progress = {
         ...progress,
+        tmdbId: media.tmdbId,
+        mediaType: media.mediaType,
         search: {
           allowed: access.allowed && !playable && !progress.finishedAt,
           retryAfter:
