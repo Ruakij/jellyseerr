@@ -2,7 +2,10 @@ import Button from '@app/components/Common/Button';
 import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestBlock from '@app/components/RequestBlock';
-import { downloadFraction } from '@app/components/RequestProgressModal/ProgressScene';
+import {
+  downloadFraction,
+  idle,
+} from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
 import useToasts from '@app/hooks/useToasts';
@@ -53,6 +56,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   searchFailed: 'Something went wrong while starting the search.',
   waitingRelease: 'Waiting for release',
   waitingRss: 'Waiting for RSS',
+  waitingGrab: 'Waiting for a new grab',
   waitingFor: 'for {duration}',
   unitCounts: '{done}/{total}',
   unitsFailed: '{failed} failed',
@@ -82,9 +86,13 @@ const PUBLIC_ERRORS = [
   'Not monitored in Radarr',
 ];
 
+// Two units at most: 45s, 3m 12s, 11h 59m, 2d 4h
 const formatDuration = (ms: number): string => {
   const s = Math.max(0, Math.round(ms / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor(s / 3600) % 24}h`;
 };
 
 // Coarse age of a past event: 45s, 12m, 3h, 2d
@@ -106,7 +114,10 @@ const searchTime = (step: ProgressStep, now: number): number | undefined =>
 const stepElapsed = (step: ProgressStep, now: number): number | undefined => {
   if (!step.startedAt) return undefined;
   const start = Date.parse(step.startedAt);
-  if (step.status === 'running') return now - start;
+  // An idle step stopped when its last unit left it
+  if (step.status === 'running') {
+    return (idle(step) ? Date.parse(step.waitingSince as string) : now) - start;
+  }
   if (step.finishedAt) return Date.parse(step.finishedAt) - start;
   return undefined;
 };
@@ -243,7 +254,9 @@ const RequestProgressModal = ({
             ? messages.waitingRelease
             : s.waiting === 'rss'
               ? messages.waitingRss
-              : messages[s.key]
+              : s.waiting === 'grab'
+                ? messages.waitingGrab
+                : messages[s.key]
     );
 
   const downloads =
@@ -309,7 +322,7 @@ const RequestProgressModal = ({
       s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
     // searching has no progress signal, elapsed time against its estimate would fake one
     const percent =
-      s.status !== 'running' || s.key === 'searching'
+      s.status !== 'running' || s.key === 'searching' || idle(s)
         ? undefined
         : fraction !== undefined
           ? Math.round(fraction * 100)
@@ -345,7 +358,7 @@ const RequestProgressModal = ({
           ? intl.formatMessage(messages.unitsFailed, { ...s.counts })
           : undefined,
       waiting:
-        s.status === 'running' && s.waitingSince
+        s.status === 'running' && s.waiting && s.waitingSince
           ? intl.formatMessage(messages.waitingFor, {
               duration: formatAge(now - Date.parse(s.waitingSince)),
             })
