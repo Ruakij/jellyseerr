@@ -44,6 +44,7 @@ export interface ProgressEpisodes {
 }
 
 export type ProgressTimelineKind =
+  | 'requested'
   | 'searchStarted'
   | 'searchFinished'
   | 'searchFailed'
@@ -71,8 +72,20 @@ export interface ProgressTimelineEntry {
   step: ProgressStepKey;
   kind: ProgressTimelineKind;
   units?: string[]; // episodes as 'S01E07' or ranges 'S01E01-E24'; absent for a movie or the whole request
-  detail?: string; // e.g. release title and indexer, failure reason
+  detail?: string; // e.g. release title and indexer, failure reason; requested: the requester
   source: ProgressTimelineSource;
+  seasons?: number[]; // series: seasons of its units, else of the requests active then
+}
+
+// One active request of the media; the run covers the units of all of them
+export interface ProgressRequest {
+  id: number;
+  seasons?: number[]; // series only
+  requestedBy?: string; // display name
+  step: ProgressStepKey; // of its least advanced unit; requested while it awaits approval
+  status: ProgressStepStatus;
+  waiting?: 'release' | 'rss'; // searching with no search running
+  waitingSince?: string; // ISO; the request or the last search after it
 }
 
 export interface ProgressDownload {
@@ -87,7 +100,7 @@ export interface ProgressDownload {
 export interface RequestProgress {
   mediaId: number;
   is4k: boolean;
-  requestId?: number;
+  requests: ProgressRequest[]; // active ones by id; empty when no request is tracked
   steps: ProgressStep[];
   totalEstimateMs?: number; // percentile of end-to-end runs from 20 of them, else the sum of the step estimates
   totalEstimateRangeMs?: [number, number]; // only when enabled and taken from end-to-end runs
