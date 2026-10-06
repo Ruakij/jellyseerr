@@ -117,15 +117,11 @@ function estimate(
 }
 
 /**
- * Grab -> import durations per episode from history records in any order. Per downloadId, the
- * first grab is paired with the last import after it and the time divided by the episodes it
- * imported, so a season pack counts as one sample of its per-episode time.
+ * Grab -> import durations from history records in any order. Per downloadId, the first grab is
+ * paired with the last import after it, so a season pack counts as one sample.
  */
 export function pairGrabToImport(records: HistoryRecord[]): Sample[] {
-  const byDownload = new Map<
-    string,
-    { grabs: number[]; imports: { at: number; unit: number }[] }
-  >();
+  const byDownload = new Map<string, { grabs: number[]; imports: number[] }>();
   for (const record of records) {
     if (
       !record.downloadId ||
@@ -142,18 +138,17 @@ export function pairGrabToImport(records: HistoryRecord[]): Sample[] {
       byDownload.set(record.downloadId, entry);
     }
     if (record.eventType === 'grabbed') entry.grabs.push(at);
-    else entry.imports.push({ at, unit: record.episodeId ?? record.id });
+    else entry.imports.push(at);
   }
 
   const samples: Sample[] = [];
   for (const [downloadId, { grabs, imports }] of byDownload) {
     if (grabs.length === 0) continue;
     const grab = Math.min(...grabs);
-    const imported = imports.filter((i) => i.at >= grab);
+    const imported = imports.filter((at) => at >= grab);
     if (imported.length === 0) continue;
-    const at = Math.max(...imported.map((i) => i.at));
-    const units = new Set(imported.map((i) => i.unit)).size;
-    samples.push({ at, durationMs: (at - grab) / units, downloadId });
+    const at = Math.max(...imported);
+    samples.push({ at, durationMs: at - grab, downloadId });
   }
   return samples.sort((a, b) => b.at - a.at);
 }
@@ -250,8 +245,8 @@ interface ServerSamples {
 
 /**
  * Duration samples per step and server. From history, request -> grab pairs count towards the
- * `searching` step and grab -> import pairs towards the `importing` step, which runs from the
- * grab until the file is imported. Recorded samples are
+ * `searching` step and grab -> import pairs towards the `grabbed` step: the history has no event
+ * for a finished download, and the import after it is short. Recorded samples are
  * kept in the database when `persist` is set, so estimates survive restarts.
  */
 export class StepStats {
@@ -302,7 +297,7 @@ export class StepStats {
         : [];
     this.server(serverKey).history = {
       searching: windowed(pairRequestToGrab(requests, grabs), window),
-      importing: windowed(pairGrabToImport([...grabs, ...imports]), window),
+      grabbed: windowed(pairGrabToImport([...grabs, ...imports]), window),
     };
   }
 
