@@ -1009,6 +1009,7 @@ describe('reconcileJellyfin', () => {
         { Id: 'season2', IndexNumber: 2 },
       ]
     );
+    const series = jellyfinItem({ Id: 'series' });
 
     await reconcileJellyfin(undefined, tracker);
     assert.equal(
@@ -1024,6 +1025,7 @@ describe('reconcileJellyfin', () => {
     await reconcileJellyfin(undefined, tracker);
     listed.mock.restore();
     seasons.mock.restore();
+    series.mock.restore();
 
     assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
     assert.match(tracker.get(media.id, false)!.playUrl ?? '', /id=season2&/);
@@ -1064,6 +1066,7 @@ describe('reconcileJellyfin', () => {
       'getNewestItems',
       async () => []
     );
+    const series = jellyfinItem({ Id: 'series' });
     try {
       await reconcileJellyfin(undefined, tracker);
       assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
@@ -1071,6 +1074,7 @@ describe('reconcileJellyfin', () => {
     } finally {
       listed.mock.restore();
       newest.mock.restore();
+      series.mock.restore();
     }
   });
 
@@ -1105,6 +1109,7 @@ describe('reconcileJellyfin', () => {
         jellyfinMediaId: 'series',
       });
     });
+    const series = jellyfinItem({ Id: 'series' });
     try {
       await reconcileJellyfin(undefined, tracker);
       assert.deepEqual(scan.mock.calls[0].arguments, [['series']]);
@@ -1113,6 +1118,7 @@ describe('reconcileJellyfin', () => {
       listed.mock.restore();
       newest.mock.restore();
       scan.mock.restore();
+      series.mock.restore();
     }
   });
 
@@ -1142,6 +1148,59 @@ describe('reconcileJellyfin', () => {
 
     assert.notEqual(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
     assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
+  });
+
+  it('counts no unit in Jellyfin for a series item while the requested episodes are unknown', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      status: MediaStatus.PARTIALLY_AVAILABLE,
+      jellyfinMediaId: 'series',
+    });
+    // Season 2 has not aired, so Sonarr lists no unit of it.
+    tracker.start({ mediaId: media.id, is4k: false, seasons: [2] });
+    const seasons = mock.method(
+      JellyfinAPI.prototype,
+      'getSeasons',
+      async () => []
+    );
+    try {
+      await reconcileJellyfin(undefined, tracker);
+      assert.notEqual(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
+      assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
+      assert.equal(seasons.mock.callCount(), 0);
+    } finally {
+      seasons.mock.restore();
+    }
+  });
+
+  it('takes a series item Jellyfin does not have anymore as lacking every unit', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'gone',
+    });
+    tracker.start({ mediaId: media.id, is4k: false, seasons: [1] });
+    tracker.setUnits(media.id, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+    ]);
+    tracker.syncFiles(media.id, false);
+    tracker.setJellyfin(media.id, false, { present: () => true });
+    const calls = [
+      mock.method(JellyfinAPI.prototype, 'getItemData', async () => undefined),
+      mock.method(JellyfinAPI.prototype, 'getEpisodes', async () => {
+        throw new Error('404');
+      }),
+      mock.method(JellyfinAPI.prototype, 'getSeasons', async () => []),
+      mock.method(JellyfinAPI.prototype, 'getNewestItems', async () => []),
+    ];
+    try {
+      await reconcileJellyfin(undefined, tracker);
+      assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+      assert.equal(calls[1].mock.callCount(), 0);
+      assert.equal(calls[2].mock.callCount(), 0);
+    } finally {
+      calls.forEach((c) => c.mock.restore());
+    }
   });
 
   it('reopens the Jellyfin step when the item left Jellyfin', async () => {
@@ -1230,6 +1289,11 @@ describe('Jellyfin poll', () => {
       'getEpisodes',
       async () => [{ ParentIndexNumber: 1, IndexNumber: 1, ...video }]
     );
+    const series = mock.method(
+      JellyfinAPI.prototype,
+      'getItemData',
+      async () => ({ Id: 'series' })
+    );
     try {
       await pollJellyfin(tracker);
       assert.deepEqual(scan.mock.calls[0].arguments, [['series']]);
@@ -1239,6 +1303,7 @@ describe('Jellyfin poll', () => {
       newest.mock.restore();
       scan.mock.restore();
       episodes.mock.restore();
+      series.mock.restore();
     }
   });
 

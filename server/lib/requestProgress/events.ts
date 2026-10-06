@@ -767,7 +767,8 @@ const unitKey = (season?: number, episode?: number) => `${season}:${episode}`;
 
 /**
  * The items Jellyfin lists for the units of a movie or series by unitKey: the movie under the key
- * of its unit, an episode under each episode its file holds. Undefined when it cannot tell.
+ * of its unit, an episode under each episode its file holds. None for an item Jellyfin does not
+ * have anymore; undefined when it cannot tell.
  */
 async function jellyfinItems(
   client: JellyfinAPI | undefined,
@@ -782,6 +783,8 @@ async function jellyfinItems(
       if (movie) items.set(unitKey(), movie);
       return items;
     }
+    // The episodes of a deleted series answer 404, logged as an error on every check.
+    if (!(await client.getItemData(itemId))) return items;
     const episodes = await client.getEpisodes(itemId, undefined, {
       includeMediaInfo: true,
     });
@@ -889,7 +892,8 @@ export async function reconcileJellyfin(
     client ??= jellyfinClient();
     const units = [...entry.units.values()];
     const key = (u: Unit) => unitKey(u.seasonNumber, u.episodeNumber);
-    // A series without its episodes known counts as a whole.
+    // The episodes of a series are not known yet, or none of the requested ones aired: the series
+    // item, e.g. with an earlier season, says nothing about them.
     const whole = tv && !entry.unitsKnown;
     let items =
       itemId && !whole
@@ -910,7 +914,7 @@ export async function reconcileJellyfin(
     if (!whole && itemId && !items) continue;
     const listed = items;
     const present = whole
-      ? () => !!itemId
+      ? () => false
       : (u: Unit) => {
           const item = listed?.get(key(u));
           return !!item && probed(item);
