@@ -589,7 +589,9 @@ class JellyfinAPI extends ExternalAPI {
         {
           params: {
             seasonId: seasonID,
-            ...(options?.includeMediaInfo && { fields: 'MediaSources' }),
+            ...(options?.includeMediaInfo && {
+              fields: 'MediaSources,DateCreated',
+            }),
           },
         }
       );

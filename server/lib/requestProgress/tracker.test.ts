@@ -162,6 +162,32 @@ describe('ProgressTracker', () => {
     });
   });
 
+  it('completes Ready together with the last unit in Jellyfin', () => {
+    const { tracker, tick, statuses } = setup();
+    tracker.start({ mediaId: 1, is4k: false, requestId: 1, seasons: [1] });
+    tracker.setUnits(1, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: true },
+    ]);
+    tracker.syncFiles(1, false);
+    tracker.setJellyfin(1, false, {
+      present: (u) => u.id === 101,
+      playUrl: 'http://jf',
+    });
+    assert.equal(statuses().inJellyfin, 'running');
+    assert.equal(statuses().playable, 'pending');
+    assert.equal(tracker.get(1, false)!.playUrl, undefined);
+
+    tick(5_000);
+    tracker.setJellyfin(1, false, { present: () => true });
+    const progress = tracker.get(1, false)!;
+    const step = (k: string) => progress.steps.find((s) => s.key === k)!;
+    assert.equal(step('playable').status, 'done');
+    assert.equal(step('playable').startedAt, step('inJellyfin').finishedAt);
+    assert.equal(step('playable').finishedAt, step('inJellyfin').finishedAt);
+    assert.equal(progress.playUrl, 'http://jf');
+  });
+
   it('walks a movie through all steps and records their durations', () => {
     const { tracker, stats, tick, statuses } = setup();
     tracker.start({ mediaId: 1, is4k: false, serverKey: 'radarr-0' });
@@ -183,11 +209,8 @@ describe('ProgressTracker', () => {
     tick(4_000);
     tracker.imported(1, false, { downloadId: 'D', unitIds: [0] });
     tick(10_000);
-    tracker.setJellyfin(1, false, { present: () => true, available: false });
-    tick(2_000);
     tracker.setJellyfin(1, false, {
       present: () => true,
-      available: true,
       playUrl: 'http://jf',
     });
 
@@ -199,8 +222,9 @@ describe('ProgressTracker', () => {
     assert.equal(estimates.grabbed.percentiles[90]?.valueMs, 3_000);
     assert.equal(estimates.importing.percentiles[90]?.valueMs, 7_000);
     assert.equal(estimates.inJellyfin.percentiles[90]?.valueMs, 10_000);
-    assert.equal(estimates.playable.percentiles[90]?.valueMs, 2_000);
-    assert.equal(stats.total('radarr-0').percentiles[90]?.valueMs, 24_000);
+    // Ready completes with the last unit in Jellyfin, so it takes no time of its own.
+    assert.equal(estimates.playable.localCount, 0);
+    assert.equal(stats.total('radarr-0').percentiles[90]?.valueMs, 22_000);
     // One sample is too few for an estimate.
     assert.equal(progress.totalEstimateMs, undefined);
     assert.ok(progress.steps.every((s) => s.estimateMs === undefined));
@@ -349,7 +373,7 @@ describe('ProgressTracker', () => {
     );
     // The run waited, so its end-to-end time is no total sample.
     tracker.imported(1, false, { downloadId: 'D', unitIds: [0] });
-    tracker.setJellyfin(1, false, { present: () => true, available: true });
+    tracker.setJellyfin(1, false, { present: () => true });
     assert.equal(stats.total('radarr-0').localCount, 0);
   });
 
@@ -399,10 +423,8 @@ describe('ProgressTracker', () => {
     tracker.imported(1, false, { downloadId: 'D', unitIds: [0] });
     assert.equal(finished.length, 0);
     tick(1_000);
-    tracker.setJellyfin(1, false, { present: () => true, available: true });
     tracker.setJellyfin(1, false, {
       present: () => true,
-      available: true,
       playUrl: 'http://jf',
     });
     tracker.setRequests(1, false, []);
@@ -466,7 +488,7 @@ describe('ProgressTracker', () => {
       tracker.grab(1, false, { downloadId: `D${i}`, unitIds: [0] });
       tracker.imported(1, false, { downloadId: `D${i}`, unitIds: [0] });
       tick(i % 2 ? 50_000 : 1_000);
-      tracker.setJellyfin(1, false, { present: () => true, available: true });
+      tracker.setJellyfin(1, false, { present: () => true });
       if (i === MIN_TOTAL_SAMPLES - 2) {
         assert.equal(tracker.get(1, false)!.totalEstimateMs, 100_000);
       }

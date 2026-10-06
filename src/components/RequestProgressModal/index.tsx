@@ -339,7 +339,8 @@ const RequestProgressModal = ({
     dormant && s.key === 'searching' && s.status === 'running';
 
   const stats = (s: ProgressStep) => {
-    if (!progress) return {};
+    // Ready is the end state, reached with the last unit in Jellyfin: no time or count of its own
+    if (!progress || s.key === 'playable') return {};
     const elapsed =
       s.key === 'searching' ? searchTime(s, now) : stepElapsed(s, now);
     const est = estimateOf(progress, s);

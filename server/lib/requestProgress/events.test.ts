@@ -153,7 +153,7 @@ const statusOf = (tracker: ProgressTracker, id: number, key: string) =>
 function reach(
   tracker: ProgressTracker,
   mediaId: number,
-  step: 'grabbed' | 'inJellyfin' | 'playable',
+  step: 'grabbed' | 'playable',
   at = Date.now()
 ) {
   tracker.grab(mediaId, false, { downloadId: 'D', unitIds: [0], at });
@@ -161,7 +161,6 @@ function reach(
   tracker.imported(mediaId, false, { downloadId: 'D', unitIds: [0], at });
   tracker.setJellyfin(mediaId, false, {
     present: () => true,
-    available: step === 'playable',
     at,
   });
 }
@@ -966,7 +965,7 @@ describe('reconcileJellyfin', () => {
     assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
   });
 
-  it('is not ready while Radarr still downloads a unit', async () => {
+  it('does not count the old Jellyfin item while Radarr downloads a new file', async () => {
     const { media, tracker } = await setup({
       status: MediaStatus.AVAILABLE,
       jellyfinMediaId: 'abc',
@@ -1030,7 +1029,9 @@ describe('reconcileJellyfin', () => {
         .counts?.done,
       1
     );
-    assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
+    // Listed but not probed: Adding to Jellyfin goes on, Ready has no phase of its own.
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+    assert.equal(statusOf(tracker, media.id, 'playable').status, 'pending');
 
     episodes = episodes.map((e) => ({ ...e, ...video }));
     await reconcileJellyfin(undefined, tracker);
@@ -1041,7 +1042,104 @@ describe('reconcileJellyfin', () => {
     assert.match(tracker.get(media.id, false)!.playUrl ?? '', /id=season2&/);
   });
 
-  it('waits for the Jellyfin item before an available series is ready', async () => {
+  it('counts only episodes Jellyfin added after their import', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'series',
+    });
+    tracker.start({ mediaId: media.id, is4k: false, seasons: [1] });
+    tracker.setUnits(media.id, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: true },
+    ]);
+    const importedAt = Date.now();
+    tracker.grab(media.id, false, { downloadId: 'D', unitIds: [101, 102] });
+    tracker.imported(media.id, false, {
+      downloadId: 'D',
+      unitIds: [101, 102],
+      at: importedAt,
+    });
+    const created = (ms: number) => new Date(importedAt + ms).toISOString();
+    // Jellyfin has not noticed the deletion of the files of the earlier request yet.
+    let episodes = [1, 2].map((n) => ({
+      ParentIndexNumber: 1,
+      IndexNumber: n,
+      DateCreated: created(-86_400_000),
+      ...video,
+    }));
+    const listed = mock.method(
+      JellyfinAPI.prototype,
+      'getEpisodes',
+      async () => episodes
+    );
+    const newest = mock.method(
+      JellyfinAPI.prototype,
+      'getNewestItems',
+      async () => []
+    );
+    try {
+      await reconcileJellyfin(undefined, tracker);
+      assert.equal(statusOf(tracker, media.id, 'inJellyfin').counts?.done, 0);
+
+      episodes[0] = { ...episodes[0], DateCreated: created(60_000) };
+      await reconcileJellyfin(undefined, tracker);
+      assert.equal(statusOf(tracker, media.id, 'inJellyfin').counts?.done, 1);
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'pending');
+
+      episodes = episodes.map((e) => ({ ...e, DateCreated: created(65_000) }));
+      await reconcileJellyfin(undefined, tracker);
+      assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+    } finally {
+      listed.mock.restore();
+      newest.mock.restore();
+    }
+  });
+
+  it('looks the series up by provider id when its item lists none of the units', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'stale',
+      tvdbId: 121361,
+    });
+    tracker.start({ mediaId: media.id, is4k: false, seasons: [1] });
+    tracker.setUnits(media.id, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+    ]);
+    const listed = mock.method(
+      JellyfinAPI.prototype,
+      'getEpisodes',
+      async (id: string) =>
+        id === 'series'
+          ? [{ ParentIndexNumber: 1, IndexNumber: 1, ...video }]
+          : []
+    );
+    const newest = mock.method(
+      JellyfinAPI.prototype,
+      'getNewestItems',
+      async () => [
+        { Id: 'series', Type: 'Series', ProviderIds: { Tvdb: '121361' } },
+      ]
+    );
+    const scan = mock.method(jellyfinItemScanner, 'runItems', async () => {
+      await getRepository(Media).update(media.id, {
+        jellyfinMediaId: 'series',
+      });
+    });
+    try {
+      await reconcileJellyfin(undefined, tracker);
+      assert.deepEqual(scan.mock.calls[0].arguments, [['series']]);
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+    } finally {
+      listed.mock.restore();
+      newest.mock.restore();
+      scan.mock.restore();
+    }
+  });
+
+  it('counts no unit in Jellyfin while the series has no Jellyfin item', async () => {
     const { media, tracker } = await setup({
       mediaType: MediaType.TV,
       status: MediaStatus.AVAILABLE,
@@ -1056,17 +1154,23 @@ describe('reconcileJellyfin', () => {
     tracker.setUnits(media.id, false, [
       { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
     ]);
+    const newest = mock.method(
+      JellyfinAPI.prototype,
+      'getNewestItems',
+      async () => []
+    );
 
     await reconcileJellyfin(undefined, tracker);
+    newest.mock.restore();
 
-    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
+    assert.notEqual(statusOf(tracker, media.id, 'inJellyfin').status, 'done');
     assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
   });
 
   it('reopens the Jellyfin step when the item left Jellyfin', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false });
-    reach(tracker, media.id, 'inJellyfin');
+    reach(tracker, media.id, 'playable');
 
     await reconcileJellyfin(undefined, tracker);
 
