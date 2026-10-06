@@ -14,7 +14,6 @@ import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
 import { MagnifyingGlassIcon, PlayIcon } from '@heroicons/react/24/solid';
 import type {
-  ProgressRequest,
   ProgressStep,
   ProgressTimelineEntry,
   RequestProgress,
@@ -375,47 +374,11 @@ const RequestProgressModal = ({
     };
   };
 
-  const requestLine = (r: ProgressRequest) => {
-    const step =
-      r.status !== 'running'
-        ? messages[r.step]
-        : r.step === 'requested'
-          ? messages.awaitingApproval
-          : r.waiting === 'release'
-            ? messages.waitingRelease
-            : r.waiting === 'rss'
-              ? messages.waitingRss
-              : messages[r.step];
-    return (
-      <li key={r.id} className="flex flex-wrap gap-x-2">
-        {[seasonLabel(r.seasons), r.requestedBy]
-          .filter((part): part is string => !!part)
-          .map((part) => (
-            <span key={part} className="text-gray-300">
-              {part} -
-            </span>
-          ))}
-        <span
-          className={
-            r.status === 'failed'
-              ? 'text-red-400'
-              : r.status === 'done'
-                ? 'text-green-400'
-                : 'text-white'
-          }
-        >
-          {intl.formatMessage(step)}
-        </span>
-        {r.waitingSince && (
-          <span className="tabular-nums text-yellow-500">
-            {intl.formatMessage(messages.waitingFor, {
-              duration: formatDuration(now - Date.parse(r.waitingSince)),
-            })}
-          </span>
-        )}
-      </li>
-    );
-  };
+  // The stepper shows the current step and its time; a line names the request only
+  const requestLines = (progress?.requests ?? []).flatMap((r) => {
+    const parts = [seasonLabel(r.seasons), r.requestedBy].filter(Boolean);
+    return parts.length > 0 ? [<li key={r.id}>{parts.join(' · ')}</li>] : [];
+  });
 
   // Absolute time, the date only for another day; the age on hover
   const timelineTime = (e: ProgressTimelineEntry) => {
@@ -458,150 +421,153 @@ const RequestProgressModal = ({
         onCancel={onClose}
         cancelText={intl.formatMessage(globalMessages.close)}
       >
-        {!!progress?.requests.length && (
-          <ul className="mb-4 space-y-1 border-b border-gray-700 pb-3 text-sm">
-            {progress.requests.map(requestLine)}
-          </ul>
-        )}
-        {progress && (
-          <>
-            <ProgressStepper
-              steps={progress.steps}
-              downloads={progress.downloads}
-              label={label}
-              stats={stats}
-            />
-            {totalMs !== undefined && (
-              <div className="mt-2 text-center text-xs tabular-nums text-gray-300">
-                {intl.formatMessage(messages.total)} {formatDuration(totalMs)}{' '}
-                {estimate(estimateOf(progress))}
-              </div>
-            )}
-          </>
-        )}
-        {(progress?.timeline ?? []).length > 0 && (
-          <details className="mt-4 text-xs text-gray-400">
-            <summary className="cursor-pointer select-none text-gray-300">
-              {intl.formatMessage(messages.details)}
-            </summary>
-            <ol className="mt-2 max-h-60 space-y-1 overflow-y-auto">
-              {[...(progress?.timeline ?? [])].reverse().map((e, i) => (
-                <li key={`tl-${i}`} className="flex gap-2">
-                  {timelineTime(e)}
-                  <span className="min-w-0 break-words">
-                    <span
-                      className={
-                        /Failed|Blocked/.test(e.kind)
-                          ? 'text-red-400'
-                          : 'text-gray-200'
-                      }
-                    >
-                      {intl.formatMessage(messages[`timeline_${e.kind}`])}
-                    </span>
-                    {e.units
-                      ? ` ${e.units.join(', ')}`
-                      : e.seasons && ` ${seasonLabel(e.seasons)}`}
-                    {(canManage || e.kind === 'requested') && e.detail && (
-                      <span className="text-gray-500"> - {e.detail}</span>
+        {/* Sections in one spacing scale, a line between each */}
+        <div className="divide-y divide-gray-700 [&>*]:py-4 [&>:first-child]:pt-0 [&>:last-child]:pb-0">
+          {requestLines.length > 0 && (
+            <ul className="space-y-1 text-sm text-gray-300">{requestLines}</ul>
+          )}
+          {progress && (
+            <div>
+              <ProgressStepper
+                steps={progress.steps}
+                downloads={progress.downloads}
+                label={label}
+                stats={stats}
+              />
+              {totalMs !== undefined && (
+                <div className="mt-3 text-xs tabular-nums text-gray-300">
+                  {intl.formatMessage(messages.total)} {formatDuration(totalMs)}{' '}
+                  {estimate(estimateOf(progress))}
+                </div>
+              )}
+            </div>
+          )}
+          {(detail ||
+            error ||
+            downloads.length > 0 ||
+            playUrl ||
+            canSearch ||
+            lastSearchedAt) && (
+            <div className="space-y-3">
+              {detail && (
+                <p className="break-words text-sm text-gray-400">{detail}</p>
+              )}
+              {error && (
+                <p className="break-words text-sm text-red-400">{error}</p>
+              )}
+              {downloads.map((dl, i) => (
+                <div key={`dl-${i}`} className="text-xs text-gray-400">
+                  {canManage && (
+                    <div className="mb-1 flex justify-between gap-2">
+                      <Tooltip content={dl.title}>
+                        <span className="truncate text-gray-300">
+                          {dl.title}
+                        </span>
+                      </Tooltip>
+                      {dl.indexer && (
+                        <span className="flex-shrink-0">{dl.indexer}</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-700">
+                      <div
+                        className="h-full bg-indigo-500 transition-all duration-500"
+                        style={{
+                          width: `${
+                            dl.size > 0
+                              ? ((dl.size - dl.sizeLeft) / dl.size) * 100
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                    {estimate(
+                      dl.etaMs === undefined ? undefined : { ms: dl.etaMs }
                     )}
-                  </span>
-                </li>
+                  </div>
+                </div>
               ))}
-            </ol>
-          </details>
-        )}
-        {(detail ||
-          error ||
-          downloads.length > 0 ||
-          playUrl ||
-          canSearch ||
-          lastSearchedAt) && (
-          <div className="mt-4 space-y-3 rounded-lg bg-gray-900/40 p-4">
-            {detail && (
-              <p className="break-words text-sm text-gray-400">{detail}</p>
-            )}
-            {error && (
-              <p className="break-words text-sm text-red-400">{error}</p>
-            )}
-            {downloads.map((dl, i) => (
-              <div key={`dl-${i}`} className="text-xs text-gray-400">
-                {canManage && (
-                  <div className="mb-1 flex justify-between gap-2">
-                    <Tooltip content={dl.title}>
-                      <span className="truncate text-gray-300">{dl.title}</span>
-                    </Tooltip>
-                    {dl.indexer && (
-                      <span className="flex-shrink-0">{dl.indexer}</span>
-                    )}
-                  </div>
-                )}
-                <div className="flex items-center gap-2">
-                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-700">
-                    <div
-                      className="h-full bg-indigo-500 transition-all duration-500"
-                      style={{
-                        width: `${
-                          dl.size > 0
-                            ? ((dl.size - dl.sizeLeft) / dl.size) * 100
-                            : 0
-                        }%`,
-                      }}
-                    />
-                  </div>
-                  {estimate(
-                    dl.etaMs === undefined ? undefined : { ms: dl.etaMs }
+              {(canSearch || lastSearchedAt) && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-400">
+                  {canSearch && (
+                    <Button
+                      buttonType="primary"
+                      buttonSize="sm"
+                      disabled={searching || searchRunning || cooldownMs > 0}
+                      onClick={searchAgain}
+                    >
+                      <MagnifyingGlassIcon />
+                      <span>{intl.formatMessage(messages.searchAgain)}</span>
+                    </Button>
+                  )}
+                  {canSearch && searchRunning && (
+                    <span>{intl.formatMessage(messages.searchRunning)}</span>
+                  )}
+                  {canSearch && !searchRunning && cooldownMs > 0 && (
+                    <span>
+                      {intl.formatMessage(messages.searchAvailableIn, {
+                        duration: formatDuration(cooldownMs),
+                      })}
+                    </span>
+                  )}
+                  {lastSearchedAt && (
+                    <span>
+                      {intl.formatMessage(messages.lastSearched, {
+                        duration: formatDuration(
+                          now - Date.parse(lastSearchedAt)
+                        ),
+                      })}
+                    </span>
                   )}
                 </div>
-              </div>
-            ))}
-            {(canSearch || lastSearchedAt) && (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-400">
-                {canSearch && (
-                  <Button
-                    buttonType="primary"
-                    buttonSize="sm"
-                    disabled={searching || searchRunning || cooldownMs > 0}
-                    onClick={searchAgain}
-                  >
-                    <MagnifyingGlassIcon />
-                    <span>{intl.formatMessage(messages.searchAgain)}</span>
-                  </Button>
-                )}
-                {canSearch && searchRunning && (
-                  <span>{intl.formatMessage(messages.searchRunning)}</span>
-                )}
-                {canSearch && !searchRunning && cooldownMs > 0 && (
-                  <span>
-                    {intl.formatMessage(messages.searchAvailableIn, {
-                      duration: formatDuration(cooldownMs),
-                    })}
-                  </span>
-                )}
-                {lastSearchedAt && (
-                  <span>
-                    {intl.formatMessage(messages.lastSearched, {
-                      duration: formatDuration(
-                        now - Date.parse(lastSearchedAt)
-                      ),
-                    })}
-                  </span>
-                )}
-              </div>
-            )}
-            {playUrl && (
-              <Button
-                as="a"
-                href={playUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                buttonType="success"
-              >
-                <PlayIcon />
-                <span>{intl.formatMessage(messages.watch)}</span>
-              </Button>
-            )}
-          </div>
-        )}
+              )}
+              {playUrl && (
+                <Button
+                  as="a"
+                  href={playUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  buttonType="success"
+                >
+                  <PlayIcon />
+                  <span>{intl.formatMessage(messages.watch)}</span>
+                </Button>
+              )}
+            </div>
+          )}
+          {(progress?.timeline ?? []).length > 0 && (
+            <details className="text-xs text-gray-400">
+              <summary className="cursor-pointer select-none font-semibold uppercase tracking-wide text-gray-400">
+                {intl.formatMessage(messages.details)}
+              </summary>
+              <ol className="mt-2 max-h-60 space-y-1 overflow-y-auto">
+                {[...(progress?.timeline ?? [])].reverse().map((e, i) => (
+                  <li key={`tl-${i}`} className="flex gap-2">
+                    {timelineTime(e)}
+                    <span className="min-w-0 break-words">
+                      <span
+                        className={
+                          /Failed|Blocked/.test(e.kind)
+                            ? 'text-red-400'
+                            : 'text-gray-200'
+                        }
+                      >
+                        {intl.formatMessage(messages[`timeline_${e.kind}`])}
+                      </span>
+                      {e.units
+                        ? ` ${e.units.join(', ')}`
+                        : e.seasons && ` ${seasonLabel(e.seasons)}`}
+                      {(canManage || e.kind === 'requested') && e.detail && (
+                        <span className="text-gray-500"> - {e.detail}</span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
+        </div>
       </Modal>
     </Transition>
   );
