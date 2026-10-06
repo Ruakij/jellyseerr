@@ -141,6 +141,8 @@ export interface TrackedProgress {
   timeline: ProgressTimelineEntry[];
   /** Keys of the events applied, so replayed history changes nothing. */
   seen: Set<string>;
+  /** When the run last became finished; cleared while it runs again. */
+  finishedAt?: number;
   steps: Record<ProgressStepKey, StepState>;
 }
 
@@ -237,8 +239,10 @@ interface Change {
 
 interface TrackerEvents {
   change: [RequestProgress];
-  /** The last active request of the media is gone, and its run with it. */
-  removed: [mediaId: number, is4k: boolean];
+  /** The run became finished, or was dropped unfinished; once per finish, carrying `finishedAt`. */
+  finished: [progress: RequestProgress, requestIds: number[]];
+  /** The last active request of the media is gone, and its run with it; `last` is its final state. */
+  removed: [mediaId: number, is4k: boolean, last: RequestProgress];
   /** A request of the media was changed or removed in the database. */
   requests: [mediaId: number];
 }
@@ -445,7 +449,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     const k = key(entry.mediaId, entry.is4k);
     this.cancelEviction(k);
     this.entries.delete(k);
-    this.emit('removed', entry.mediaId, entry.is4k);
+    if (entry.finishedAt === undefined) this.reportFinished(entry);
+    this.emit('removed', entry.mediaId, entry.is4k, this.final(entry));
   }
 
   public ensure(args: Parameters<ProgressTracker['start']>[0]) {
@@ -1590,6 +1595,18 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       );
     }
     this.emit('change', this.snapshot(entry));
+    if (!this.finished(entry)) entry.finishedAt = undefined;
+    else if (entry.finishedAt === undefined) this.reportFinished(entry);
+  }
+
+  private reportFinished(entry: TrackedProgress): void {
+    entry.finishedAt = this.now();
+    this.emit('finished', this.final(entry), [...entry.requests.keys()]);
+  }
+
+  /** The snapshot of a run that is over, read-only for the pop-up. */
+  private final(entry: TrackedProgress): RequestProgress {
+    return { ...this.snapshot(entry), finishedAt: iso(entry.finishedAt) };
   }
 
   private cancelEviction(k: string): void {
