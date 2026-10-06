@@ -13,7 +13,6 @@ import type {
 } from '@server/interfaces/api/mediaInterfaces';
 import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
 import { Permission } from '@server/lib/permissions';
-import { reconstructProgress } from '@server/lib/requestProgress/events';
 import { storedRun } from '@server/lib/requestProgress/history';
 import {
   searchAccess,
@@ -427,14 +426,6 @@ mediaRoutes.get<{ mediaId: string }>(
     };
     progressTracker.on('change', onChange);
     progressTracker.on('removed', onRemoved);
-    if (!progressTracker.entry(mediaId, is4k)) {
-      reconstructProgress([{ mediaId, is4k }]).catch((e: Error) =>
-        logger.warn(`Reconstructing the progress failed: ${e.message}`, {
-          label: 'Request Progress',
-          mediaId,
-        })
-      );
-    }
     // Proxies close idle connections; a comment line keeps it busy without an event.
     const heartbeat = setInterval(
       () => res.write(': heartbeat\n\n'),
