@@ -21,7 +21,6 @@ import ManageSlideOver from '@app/components/ManageSlideOver';
 import MediaSlider from '@app/components/MediaSlider';
 import PersonCard from '@app/components/PersonCard';
 import RequestButton from '@app/components/RequestButton';
-import RequestModal from '@app/components/RequestModal';
 import { RequestProgressTrigger } from '@app/components/RequestProgressModal';
 import ProgressButton, {
   ACTIVE_REQUEST,
@@ -126,7 +125,6 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
   const router = useRouter();
   const intl = useIntl();
   const { locale } = useLocale();
-  const [showRequestModal, setShowRequestModal] = useState(false);
   const [showManager, setShowManager] = useState(false);
   const [showIssueModal, setShowIssueModal] = useState(false);
   const [isUpdating, setIsUpdating] = useState<boolean>(false);
@@ -525,16 +523,6 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
         show={showIssueModal}
         mediaType="tv"
         tmdbId={data.id}
-      />
-      <RequestModal
-        tmdbId={data.id}
-        show={showRequestModal}
-        type="tv"
-        onComplete={() => {
-          revalidate();
-          setShowRequestModal(false);
-        }}
-        onCancel={() => setShowRequestModal(false)}
       />
       <ManageSlideOver
         data={data}
