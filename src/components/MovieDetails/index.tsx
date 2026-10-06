@@ -629,6 +629,7 @@ const MovieDetails = ({ movie }: MovieDetailsProps) => {
           <RequestButton
             mediaType="movie"
             media={data.mediaInfo}
+            title={data.title}
             tmdbId={data.id}
             onUpdate={() => revalidate()}
           />
