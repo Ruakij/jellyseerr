@@ -20,6 +20,10 @@ export const downloadFraction = (downloads?: ProgressDownload[]) => {
   return size > 0 ? (size - left) / size : undefined;
 };
 
+// Running with no unit in it; searching has its own waiting
+export const idle = (step: ProgressStep) =>
+  step.status === 'running' && step.key !== 'searching' && !!step.waitingSince;
+
 const stepIcons: Record<ProgressStepKey, typeof CheckIcon> = {
   requested: CheckIcon,
   searching: MagnifyingGlassIcon,
@@ -34,12 +38,13 @@ const delay = (i: number, step: number) => ({
   animationDelay: `${i * step}s`,
 });
 
-// One sweep of the search icon over the three indexer blocks, a third per block;
-// ps-glide and ps-light in globals.css are keyed to these thirds
-const SEARCH_CYCLE = 2.4;
-// A negative delay starts every block in phase instead of idle for its offset
-const searchTiming = (i: number) => ({
-  animationDelay: `${(i / 3 - 1) * SEARCH_CYCLE}s`,
+// The search icon goes over the three indexer blocks and back, a quarter of the cycle
+// per stop; ps-glide, ps-glow and ps-fall in globals.css are keyed to these quarters
+const SEARCH_CYCLE = 5.6;
+const SEARCH_STOPS = [0, 1, 2, 1];
+// A negative delay starts every stop in phase instead of idle for its offset
+const searchTiming = (stop: number) => ({
+  animationDelay: `${(stop / SEARCH_STOPS.length - 1) * SEARCH_CYCLE}s`,
   animationDuration: `${SEARCH_CYCLE}s`,
 });
 
@@ -70,7 +75,7 @@ const scenes: Record<
         <circle
           key={i}
           className="ps-card"
-          style={delay(i, 0.8)}
+          style={delay(i, 4 / 3)}
           cx={10 + i * 7}
           cy="42"
           r="2"
@@ -96,22 +101,34 @@ const scenes: Record<
   searching: () => (
     <>
       {[0, 1, 2].map((i) => (
-        <g key={i}>
+        <rect
+          key={i}
+          x={6 + i * 14}
+          y="24"
+          width="10"
+          height="12"
+          rx="2"
+          fill="currentColor"
+          opacity=".18"
+        />
+      ))}
+      {SEARCH_STOPS.map((block, stop) => (
+        <g key={stop}>
           <rect
-            className="ps-card"
-            style={searchTiming(i)}
-            x={6 + i * 14}
+            className="ps-glow"
+            style={searchTiming(stop)}
+            x={6 + block * 14}
             y="24"
             width="10"
             height="12"
             rx="2"
             fill="currentColor"
-            opacity=".6"
+            fillOpacity=".5"
           />
           <circle
             className="ps-fall"
-            style={searchTiming(i)}
-            cx={11 + i * 14}
+            style={searchTiming(stop)}
+            cx={11 + block * 14}
             cy="40"
             r="1.8"
             fill="currentColor"
@@ -142,7 +159,7 @@ const scenes: Record<
         <rect
           key={i}
           className="ps-stream"
-          style={delay(i, 0.4)}
+          style={delay(i, 2 / 3)}
           x={14 + i * 8}
           y="6"
           width="4"
@@ -236,7 +253,7 @@ const scenes: Record<
         <rect
           key={i}
           className="ps-slot"
-          style={delay(i, 0.4)}
+          style={delay(i, 2 / 3)}
           x={27 + i * 6}
           y="27"
           width="4.5"
@@ -276,7 +293,7 @@ interface StepGraphicProps {
 // Animated scene while a step runs (and once when ready), its icon otherwise
 const StepGraphic = ({ step, downloads, className }: StepGraphicProps) => {
   if (
-    step.status === 'running' ||
+    (step.status === 'running' && !idle(step)) ||
     (step.key === 'playable' && step.status === 'done')
   ) {
     const Scene = scenes[step.key];
