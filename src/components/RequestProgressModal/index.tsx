@@ -54,7 +54,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   searchNotInArr: 'Not in Radarr/Sonarr yet, try again later.',
   searchFailed: 'Something went wrong while starting the search.',
   waitingRelease: 'Waiting for release',
-  waitingRss: 'Waiting for RSS',
+  waitingRss: 'Waiting for a release to show up',
   waitingGrab: 'Waiting for a new grab',
   waitingFor: 'for {duration}',
   unitCounts: '{done}/{total}',
@@ -197,12 +197,15 @@ const RequestProgressModal = ({
   const running = !!progress?.steps.some((s) => s.status === 'running');
   const lastSearchedAt =
     step?.key === 'searching' ? progress?.search?.lastSearchedAt : undefined;
+  // A dormant run waits for a release, possibly for weeks; its times only move with an update
+  const dormant = !!progress?.dormant;
   const ticking =
     show &&
     finishedAt === undefined &&
-    (running ||
-      !!lastSearchedAt ||
-      !!progress?.requests.some((r) => r.waitingSince) ||
+    ((!dormant &&
+      (running ||
+        !!lastSearchedAt ||
+        !!progress?.requests.some((r) => r.waitingSince))) ||
       (retryAt !== undefined && retryAt > now));
 
   // Capture phase on window runs before React's handlers, so an enclosing
@@ -217,6 +220,10 @@ const RequestProgressModal = ({
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [show, onClose]);
+
+  useEffect(() => {
+    if (show) setClock(Date.now());
+  }, [show, progress]);
 
   useEffect(() => {
     if (!ticking) return;
@@ -327,6 +334,10 @@ const RequestProgressModal = ({
     }
   };
 
+  // The searching step of a dormant run shows its waiting text only
+  const waitingStep = (s: ProgressStep) =>
+    dormant && s.key === 'searching' && s.status === 'running';
+
   const stats = (s: ProgressStep) => {
     if (!progress) return {};
     const elapsed =
@@ -351,13 +362,13 @@ const RequestProgressModal = ({
           ? undefined
           : formatDuration(elapsed),
       estimate:
-        est === undefined || s.status === 'done'
+        est === undefined || s.status === 'done' || waitingStep(s)
           ? undefined
           : intl.formatMessage(messages.estimate, {
               duration: formatDuration(est.ms),
             }),
       range:
-        est?.rangeMs === undefined || s.status === 'done'
+        est?.rangeMs === undefined || s.status === 'done' || waitingStep(s)
           ? undefined
           : `${formatDuration(est.rangeMs[0])}-${formatDuration(est.rangeMs[1])}`,
       counts:
@@ -373,7 +384,7 @@ const RequestProgressModal = ({
           ? intl.formatMessage(messages.unitsFailed, { ...s.counts })
           : undefined,
       waiting:
-        s.status === 'running' && s.waiting && s.waitingSince
+        s.status === 'running' && s.waiting && s.waitingSince && !dormant
           ? intl.formatMessage(messages.waitingFor, {
               duration: formatDuration(now - Date.parse(s.waitingSince)),
             })

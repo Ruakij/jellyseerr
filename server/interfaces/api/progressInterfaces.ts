@@ -106,6 +106,7 @@ export interface RequestProgress {
   totalEstimateRangeMs?: [number, number]; // only when enabled and taken from end-to-end runs
   estimatePercentile: EstimatePercentile;
   playUrl?: string; // Jellyfin deep link once playable
+  dormant?: boolean; // waits for a release with nothing running; its waiting time does not tick
   downloads?: ProgressDownload[]; // queue items of units without a file
   timeline?: ProgressTimelineEntry[]; // last 100 events, oldest first; on the stream only when changed
   search?: ProgressSearch; // computed per viewer

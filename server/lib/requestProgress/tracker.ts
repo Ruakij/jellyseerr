@@ -116,7 +116,7 @@ export interface TrackedProgress {
   lastSearch?: { start: number; end: number };
   /** Time finished searches ran, up to the grab that ended one. */
   searchMs: number;
-  /** Radarr/Sonarr has nothing released to search for yet. */
+  /** Radarr/Sonarr has nothing released to search for yet; set once its item state was read. */
   unreleased?: boolean;
   /** Why Radarr/Sonarr will not deliver it, e.g. the item was removed there. */
   arrError?: string;
@@ -950,6 +950,22 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     );
   }
 
+  /**
+   * Waits for a release with nothing running: its search ended without a grab, or nothing is
+   * released. Only events naming its item, the queue holding it and the full sync refresh it.
+   */
+  public dormant(entry: TrackedProgress): boolean {
+    return (
+      entry.unreleased !== undefined &&
+      entry.steps.requested.status === 'done' &&
+      !this.finished(entry) &&
+      entry.searchCommandId === undefined &&
+      entry.searchStartedAt === undefined &&
+      entry.queue.size === 0 &&
+      [...entry.units.values()].every((u) => unitStage(u) === SEARCHING)
+    );
+  }
+
   public snapshot(entry: TrackedProgress): RequestProgress {
     const { estimatePercentile: p, showConfidenceInterval } =
       getSettings().requestProgress;
@@ -1038,6 +1054,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         single && showConfidenceInterval ? total?.rangeMs : undefined,
       estimatePercentile: p,
       playUrl: entry.playUrl,
+      dormant: this.dormant(entry) || undefined,
       downloads:
         entry.steps.playable.status === 'done' || downloads.length === 0
           ? undefined
