@@ -8,7 +8,10 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-/** The final progress run of a request, for its pop-up once it left the tracker. */
+/**
+ * The progress run of a request, for its pop-up once it left the tracker and for rebuilding it
+ * after a restart. Stored when the run starts and replaced by its final state when it ends.
+ */
 @Entity()
 export class RequestProgressRun {
   constructor(init?: Partial<RequestProgressRun>) {
@@ -25,8 +28,9 @@ export class RequestProgressRun {
   @Column({ default: false })
   public is4k: boolean;
 
-  @DbAwareColumn({ type: 'datetime' })
-  public finishedAt: Date;
+  /** Unset while the run is unfinished. */
+  @DbAwareColumn({ type: 'datetime', nullable: true })
+  public finishedAt: Date | null;
 
   /** JSON of the RequestProgress the pop-up renders. */
   @Column({ type: 'text' })
