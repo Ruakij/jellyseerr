@@ -17,7 +17,6 @@ export interface ProgressStep {
   estimateRangeMs?: [number, number]; // 95% confidence interval of estimateMs; only when enabled and enough samples
   error?: string; // set when status is 'failed'
   detail?: string; // searching while running: 'Searching (N indexers)' or the waiting text; grabbed: release title(s)
-  episodes?: ProgressEpisodes; // importing of a series request only
   counts?: ProgressCounts; // units per step; absent on `requested`
   progress?: number; // 0..1: done / total, byte-weighted for grabbed
   // searching only: search time without waiting
@@ -35,12 +34,6 @@ export interface ProgressCounts {
   active: number; // in the step
   failed: number; // last attempt failed at this step
   total: number; // units of the request
-}
-
-// Units of a series request with a file against all its units
-export interface ProgressEpisodes {
-  imported: number;
-  total: number; // monitored aired episodes of the requested seasons and those with a file
 }
 
 export type ProgressTimelineKind =

@@ -653,7 +653,6 @@
   "components.RequestProgressModal.title": "Request Progress",
   "components.RequestProgressModal.total": "Total",
   "components.RequestProgressModal.unitCounts": "{done}/{total}",
-  "components.RequestProgressModal.unitEpisodes": "{done}/{total} episodes",
   "components.RequestProgressModal.unitsFailed": "{failed} failed",
   "components.RequestProgressModal.waitingFor": "for {duration}",
   "components.RequestProgressModal.waitingGrab": "Waiting for a new grab",

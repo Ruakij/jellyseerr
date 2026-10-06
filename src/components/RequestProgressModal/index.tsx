@@ -58,7 +58,6 @@ const messages = defineMessages('components.RequestProgressModal', {
   waitingGrab: 'Waiting for a new grab',
   waitingFor: 'for {duration}',
   unitCounts: '{done}/{total}',
-  unitEpisodes: '{done}/{total} episodes',
   unitsFailed: '{failed} failed',
   details: 'Details',
   ago: '{duration} ago',
@@ -346,15 +345,11 @@ const RequestProgressModal = ({
     const est = estimateOf(progress, s);
     const fraction =
       s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
-    // searching has no progress signal, elapsed time against its estimate would fake one
+    // Only the bytes of a download; elapsed time against the estimate repeats the two times shown
     const percent =
-      s.status !== 'running' || s.key === 'searching' || idle(s)
+      s.status !== 'running' || idle(s) || fraction === undefined
         ? undefined
-        : fraction !== undefined
-          ? Math.round(fraction * 100)
-          : elapsed !== undefined && est?.ms
-            ? Math.min(99, Math.round((elapsed / est.ms) * 100))
-            : undefined;
+        : Math.round(fraction * 100);
     return {
       percent,
       // a step finished within a second (usually requested) has no time worth showing
@@ -374,11 +369,7 @@ const RequestProgressModal = ({
           : `${formatDuration(est.rangeMs[0])}-${formatDuration(est.rangeMs[1])}`,
       counts:
         s.counts && s.counts.total > 1 && s.status !== 'pending'
-          ? intl.formatMessage(
-              // episodes only come with the importing step of a series
-              s.episodes ? messages.unitEpisodes : messages.unitCounts,
-              { ...s.counts }
-            )
+          ? intl.formatMessage(messages.unitCounts, { ...s.counts })
           : undefined,
       failed:
         s.counts && s.counts.total > 1 && s.counts.failed > 0
@@ -515,9 +506,11 @@ const RequestProgressModal = ({
                         }}
                       />
                     </div>
-                    {estimate(
-                      dl.etaMs === undefined ? undefined : { ms: dl.etaMs }
-                    )}
+                    {/* A single download's ETA is the estimate of the step */}
+                    {downloads.length > 1 &&
+                      estimate(
+                        dl.etaMs === undefined ? undefined : { ms: dl.etaMs }
+                      )}
                   </div>
                 </div>
               ))}
