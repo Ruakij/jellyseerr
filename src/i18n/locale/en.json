@@ -622,6 +622,7 @@
   "components.RequestProgressModal.importing": "Importing",
   "components.RequestProgressModal.inJellyfin": "Adding to Jellyfin",
   "components.RequestProgressModal.lastSearched": "Last searched {duration} ago",
+  "components.RequestProgressModal.loadFailed": "The progress could not be loaded.",
   "components.RequestProgressModal.pastProgress": "Request Progress",
   "components.RequestProgressModal.playable": "Ready",
   "components.RequestProgressModal.progress": "Progress",

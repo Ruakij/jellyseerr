@@ -52,6 +52,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   finished: 'Finished {date}',
   ended: 'Ended {date}',
   failed: 'Something went wrong at this step.',
+  loadFailed: 'The progress could not be loaded.',
   searchAgain: 'Search again',
   searchAvailableIn: 'Available again in {duration}',
   searchRunning: 'A search is running',
@@ -188,12 +189,15 @@ const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
 interface RequestProgressModalProps {
   show: boolean;
   progress?: RequestProgress;
+  // the stream failed for good, so no progress is coming
+  error?: boolean;
   onClose: () => void;
 }
 
 const RequestProgressModal = ({
   show,
   progress,
+  error: loadFailed,
   onClose,
 }: RequestProgressModalProps) => {
   const intl = useIntl();
@@ -516,7 +520,7 @@ const RequestProgressModal = ({
       show={show}
     >
       <Modal
-        loading={!progress}
+        loading={!progress && !loadFailed}
         backgroundClickable
         title={mediaTitle ?? intl.formatMessage(messages.title)}
         subTitle={
@@ -550,6 +554,11 @@ const RequestProgressModal = ({
           )
         }
       >
+        {!progress && loadFailed && (
+          <p className="text-sm text-red-400">
+            {intl.formatMessage(messages.loadFailed)}
+          </p>
+        )}
         {/* Sections in one spacing scale, a line between each */}
         <div className="divide-y divide-gray-700 [&>*]:py-4 [&>:first-child]:pt-0 [&>:last-child]:pb-0">
           {progress && (
@@ -726,7 +735,7 @@ export const RequestProgressProvider = ({
 }) => {
   const [target, setTarget] = useState<ProgressTarget>();
   const [show, setShow] = useState(false);
-  const progress = useRequestProgress(
+  const { progress, error } = useRequestProgress(
     show ? target?.mediaId : undefined,
     !!target?.is4k,
     target?.requestId
@@ -740,7 +749,12 @@ export const RequestProgressProvider = ({
   return (
     <OpenProgressContext.Provider value={open}>
       {children}
-      <RequestProgressModal show={show} progress={progress} onClose={close} />
+      <RequestProgressModal
+        show={show}
+        progress={progress}
+        error={error}
+        onClose={close}
+      />
     </OpenProgressContext.Provider>
   );
 };
