@@ -1,6 +1,7 @@
 import StepGraphic, {
   downloadFraction,
   idle,
+  waitingForRelease,
 } from '@app/components/RequestProgressModal/ProgressScene';
 import type {
   ProgressDownload,
@@ -13,6 +14,10 @@ const circleClass: Record<ProgressStep['status'], string> = {
   failed: 'bg-red-600 text-white',
   pending: 'border border-gray-600 text-gray-600',
 };
+
+// Amber and still: nothing may suggest the next step is close
+const WAITING_CIRCLE =
+  'border-2 border-amber-500 bg-amber-500/10 text-amber-300';
 
 const labelClass: Record<ProgressStep['status'], string> = {
   done: 'text-gray-200',
@@ -43,7 +48,11 @@ const Connector = ({
   downloads?: ProgressDownload[];
 }) => {
   const fraction = stepFraction(step, downloads);
-  const shimmer = step.status === 'running' && !idle(step) && !fraction;
+  const shimmer =
+    step.status === 'running' &&
+    !idle(step) &&
+    !waitingForRelease(step) &&
+    !fraction;
 
   return (
     <div className="absolute left-1/2 top-[22px] h-1 w-full overflow-hidden rounded-full bg-gray-700 sm:top-[26px]">
@@ -84,9 +93,17 @@ const ProgressStepper = ({
 }: ProgressStepperProps) => (
   <ol className="flex">
     {steps.map((step, i) => {
-      const { percent, time, estimate, range, counts, failed, waiting } =
-        stats(step);
+      const {
+        percent,
+        time,
+        estimate,
+        range,
+        counts,
+        failed,
+        waiting: waitingFor,
+      } = stats(step);
       const running = step.status === 'running';
+      const waiting = waitingForRelease(step);
       const fraction = running ? stepFraction(step, downloads) : undefined;
       return (
         <li
@@ -104,7 +121,7 @@ const ProgressStepper = ({
                   running
                     ? 'h-12 w-12 sm:h-14 sm:w-14'
                     : 'h-9 w-9 sm:h-10 sm:w-10'
-                } ${circleClass[step.status]}`}
+                } ${waiting ? WAITING_CIRCLE : circleClass[step.status]}`}
               >
                 {fraction !== undefined && (
                   <div
@@ -116,7 +133,11 @@ const ProgressStepper = ({
                   step={step}
                   downloads={downloads}
                   className={`relative ${
-                    running ? 'h-10 w-10 sm:h-12 sm:w-12' : 'h-5 w-5'
+                    waiting
+                      ? 'h-6 w-6 sm:h-7 sm:w-7'
+                      : running
+                        ? 'h-10 w-10 sm:h-12 sm:w-12'
+                        : 'h-5 w-5'
                   }`}
                 />
               </div>
@@ -144,8 +165,10 @@ const ProgressStepper = ({
           {time && (
             <span className="w-full truncate text-gray-400">{time}</span>
           )}
-          {waiting && (
-            <span className="w-full truncate text-yellow-500">{waiting}</span>
+          {waitingFor && (
+            <span className="w-full truncate text-yellow-500">
+              {waitingFor}
+            </span>
           )}
           {estimate && (
             <span className="w-full truncate text-gray-500">{estimate}</span>

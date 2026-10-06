@@ -1,6 +1,8 @@
 import {
   ArrowDownIcon,
+  CalendarDaysIcon,
   CheckIcon,
+  ClockIcon,
   FilmIcon,
   FolderArrowDownIcon,
   MagnifyingGlassIcon,
@@ -23,6 +25,12 @@ export const downloadFraction = (downloads?: ProgressDownload[]) => {
 // Running with no unit in it; searching has its own waiting
 export const idle = (step: ProgressStep) =>
   step.status === 'running' && step.key !== 'searching' && !!step.waitingSince;
+
+// Searching with no search running until a release shows up, which can be weeks away
+export const waitingForRelease = (step: ProgressStep) =>
+  step.key === 'searching' &&
+  step.status === 'running' &&
+  (step.waiting === 'release' || step.waiting === 'rss');
 
 const stepIcons: Record<ProgressStepKey, typeof CheckIcon> = {
   requested: CheckIcon,
@@ -292,6 +300,10 @@ interface StepGraphicProps {
 
 // Animated scene while a step runs (and once when ready), its icon otherwise
 const StepGraphic = ({ step, downloads, className }: StepGraphicProps) => {
+  if (waitingForRelease(step)) {
+    const Icon = step.waiting === 'release' ? CalendarDaysIcon : ClockIcon;
+    return <Icon className={className} />;
+  }
   if (
     (step.status === 'running' && !idle(step)) ||
     (step.key === 'playable' && step.status === 'done')
