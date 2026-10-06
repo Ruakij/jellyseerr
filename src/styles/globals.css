@@ -602,80 +602,91 @@
 
 .ps-hand {
   transform-origin: 50% 100%;
-  animation: ps-spin 3s linear infinite;
+  animation: ps-spin 5s linear infinite;
 }
 .ps-glide {
-  animation: ps-glide 2.4s ease-in-out infinite;
+  animation: ps-glide 5.6s ease-in-out infinite;
 }
 .ps-card {
-  animation: ps-light 2.4s infinite;
+  animation: ps-light 4s infinite;
+}
+.ps-glow {
+  animation: ps-glow 5.6s infinite;
 }
 .ps-fall {
-  animation: ps-fall 2.4s ease-in infinite;
+  animation: ps-fall 5.6s ease-in infinite;
 }
 .ps-stream {
-  animation: ps-stream 1.2s linear infinite;
+  animation: ps-stream 2s linear infinite;
 }
 .ps-slosh {
   transform-origin: bottom;
-  animation: ps-slosh 1.6s ease-in-out infinite;
+  animation: ps-slosh 2.6s ease-in-out infinite;
 }
 .ps-file {
-  animation: ps-file 2.4s ease-in-out infinite;
+  animation: ps-file 4s ease-in-out infinite;
 }
 .ps-lid {
   transform-origin: bottom;
-  animation: ps-lid 2.4s ease-in-out infinite;
+  animation: ps-lid 4s ease-in-out infinite;
 }
 .ps-tag {
-  animation: ps-tag 2.4s ease-out infinite;
+  animation: ps-tag 4s ease-out infinite;
 }
 .ps-spin {
-  animation: ps-spin 1.6s linear infinite;
+  animation: ps-spin 2.8s linear infinite;
 }
 .ps-slot {
-  animation: ps-slot 2.4s ease-out infinite;
+  animation: ps-slot 4s ease-out infinite;
 }
 .ps-grow {
-  animation: ps-grow 0.6s ease-out both;
+  animation: ps-grow 1s ease-out both;
 }
 .ps-ripple {
-  animation: ps-ripple 1s ease-out 0.3s both;
+  animation: ps-ripple 1.6s ease-out 0.5s both;
 }
 .ps-shimmer {
-  animation: ps-shimmer 1.5s linear infinite;
+  animation: ps-shimmer 2.5s linear infinite;
 }
 
-/* A third of the cycle per indexer block: rest over it for 70%, then move on.
-   The last third fades out over the last block and back in over the first. */
+/* The search icon goes over the indexer blocks and back, 0-1-2-1: a quarter of the
+   cycle per stop, resting over the block for 70% of it, then easing to the next. */
 @keyframes ps-glide {
   0%,
-  23.33% {
+  17.5% {
     transform: translateX(0);
   }
-  33.33%,
-  56.67% {
+  25%,
+  42.5% {
     transform: translateX(14px);
   }
-  66.67%,
-  90% {
+  50%,
+  67.5% {
     transform: translateX(28px);
-    opacity: 1;
   }
-  96% {
-    transform: translateX(28px);
-    opacity: 0;
-  }
-  96.01% {
-    transform: translateX(0);
-    opacity: 0;
+  75%,
+  92.5% {
+    transform: translateX(14px);
   }
   100% {
     transform: translateX(0);
+  }
+}
+/* Delayed by a quarter of the cycle per stop: lit while ps-glide rests over its block */
+@keyframes ps-glow {
+  0%,
+  17.5% {
+    opacity: 1;
+  }
+  22%,
+  96% {
+    opacity: 0;
+  }
+  100% {
     opacity: 1;
   }
 }
-/* Delayed by a third of the cycle per block: lit while ps-glide rests over it */
+/* Delayed by a third of the cycle per dot: lit in turn */
 @keyframes ps-light {
   0%,
   23.33% {
@@ -688,14 +699,14 @@
 }
 @keyframes ps-fall {
   0%,
-  10% {
+  4% {
     transform: translateY(-4px);
     opacity: 0;
   }
-  20% {
+  9% {
     opacity: 1;
   }
-  45%,
+  20%,
   100% {
     transform: translateY(6px);
     opacity: 0;
@@ -814,9 +825,9 @@
 }
 @keyframes ps-shimmer {
   0% {
-    transform: translateX(-100%);
+    transform: translateY(-100%);
   }
   100% {
-    transform: translateX(250%);
+    transform: translateY(250%);
   }
 }
