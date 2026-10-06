@@ -29,7 +29,10 @@ import {
   DEBOUNCE_MS,
   KeyedDebouncer,
 } from '@server/lib/requestProgress/debounce';
-import { storeRun } from '@server/lib/requestProgress/history';
+import {
+  storeRun,
+  unreadyCompletedRequests,
+} from '@server/lib/requestProgress/history';
 import type { RequestStart } from '@server/lib/requestProgress/stepStats';
 import stepStats from '@server/lib/requestProgress/stepStats';
 import type {
@@ -808,19 +811,23 @@ export async function reconcileJellyfin(
 /**
  * Starts entries for media with active requests the tracker never saw, e.g. ones sent before a
  * restart, and fills them in from Radarr/Sonarr history, queue and files and from Jellyfin, as a
- * run would have. Without `targets`, covers every active request. Their times are not measured.
+ * run would have. Without `targets`, covers every active request. Completed requests whose stored
+ * run never reached Ready count as active. Their times are not measured.
  */
 export async function reconstructProgress(
   targets?: { mediaId: number; is4k: boolean }[],
   tracker: ProgressTracker = progressTracker
 ): Promise<void> {
-  const requests = await getRepository(MediaRequest).find({
-    where: {
-      status: In(ACTIVE_REQUEST),
-      ...(targets ? { media: { id: In(targets.map((t) => t.mediaId)) } } : {}),
-    },
-    order: { id: 'ASC' },
-  });
+  const mediaIds = targets?.map((t) => t.mediaId);
+  const requests = [
+    ...(await getRepository(MediaRequest).find({
+      where: {
+        status: In(ACTIVE_REQUEST),
+        ...(mediaIds ? { media: { id: In(mediaIds) } } : {}),
+      },
+    })),
+    ...(await unreadyCompletedRequests(mediaIds)),
+  ].sort((a, b) => a.id - b.id);
   const variants = new Map<string, MediaRequest[]>();
   for (const request of requests) {
     const variant = `${request.media.id}:${request.is4k}`;
@@ -870,7 +877,13 @@ export async function reconstructProgress(
         last.failureReason,
         last.updatedAt.getTime()
       );
-    } else if (group.some((r) => r.status === MediaRequestStatus.APPROVED)) {
+    } else if (
+      group.some(
+        (r) =>
+          r.status === MediaRequestStatus.APPROVED ||
+          r.status === MediaRequestStatus.COMPLETED
+      )
+    ) {
       created.push(entry);
     }
   }
