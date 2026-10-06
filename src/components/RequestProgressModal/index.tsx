@@ -1,8 +1,10 @@
 import Button from '@app/components/Common/Button';
 import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
-import RequestBlock from '@app/components/RequestBlock';
-import { downloadFraction } from '@app/components/RequestProgressModal/ProgressScene';
+import {
+  downloadFraction,
+  idle,
+} from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
 import useRequestProgress from '@app/hooks/useRequestProgress';
 import useToasts from '@app/hooks/useToasts';
@@ -11,9 +13,10 @@ import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
 import { MagnifyingGlassIcon, PlayIcon } from '@heroicons/react/24/solid';
-import type { MediaRequest } from '@server/entity/MediaRequest';
 import type {
+  ProgressRequest,
   ProgressStep,
+  ProgressTimelineEntry,
   RequestProgress,
 } from '@server/interfaces/api/progressInterfaces';
 import axios from 'axios';
@@ -25,7 +28,6 @@ import {
   useState,
 } from 'react';
 import { useIntl } from 'react-intl';
-import useSWR from 'swr';
 
 const messages = defineMessages('components.RequestProgressModal', {
   title: 'Request Progress',
@@ -53,10 +55,13 @@ const messages = defineMessages('components.RequestProgressModal', {
   searchFailed: 'Something went wrong while starting the search.',
   waitingRelease: 'Waiting for release',
   waitingRss: 'Waiting for RSS',
+  waitingGrab: 'Waiting for a new grab',
   waitingFor: 'for {duration}',
   unitCounts: '{done}/{total}',
   unitsFailed: '{failed} failed',
   details: 'Details',
+  ago: '{duration} ago',
+  timeline_requested: 'Requested',
   timeline_searchStarted: 'Search started',
   timeline_searchFinished: 'Search finished',
   timeline_searchFailed: 'Search failed',
@@ -82,19 +87,26 @@ const PUBLIC_ERRORS = [
   'Not monitored in Radarr',
 ];
 
-const formatDuration = (ms: number): string => {
+// The two largest units, the second only from hours on: 45s, 12m, 13h 5m, 2d 4h
+export const formatDuration = (ms: number): string => {
   const s = Math.max(0, Math.round(ms / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-};
-
-// Coarse age of a past event: 45s, 12m, 3h, 2d
-const formatAge = (ms: number): string => {
-  const s = Math.max(0, Math.round(ms / 1000));
+  const two = (
+    big: number,
+    bigUnit: string,
+    small: number,
+    smallUnit: string
+  ) =>
+    small > 0 ? `${big}${bigUnit} ${small}${smallUnit}` : `${big}${bigUnit}`;
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
+  if (s < 86400) {
+    return two(Math.floor(s / 3600), 'h', Math.floor(s / 60) % 60, 'm');
+  }
+  return two(Math.floor(s / 86400), 'd', Math.floor(s / 3600) % 24, 'h');
 };
+
+const seasonLabel = (seasons?: number[]) =>
+  seasons?.map((n) => `S${n}`).join(', ');
 
 // Time searches ran, without the waiting between them
 const searchTime = (step: ProgressStep, now: number): number | undefined =>
@@ -106,7 +118,10 @@ const searchTime = (step: ProgressStep, now: number): number | undefined =>
 const stepElapsed = (step: ProgressStep, now: number): number | undefined => {
   if (!step.startedAt) return undefined;
   const start = Date.parse(step.startedAt);
-  if (step.status === 'running') return now - start;
+  // An idle step stopped when its last unit left it
+  if (step.status === 'running') {
+    return (idle(step) ? Date.parse(step.waitingSince as string) : now) - start;
+  }
   if (step.finishedAt) return Date.parse(step.finishedAt) - start;
   return undefined;
 };
@@ -164,9 +179,6 @@ const RequestProgressModal = ({
   const intl = useIntl();
   const { hasPermission } = useUser();
   const canManage = hasPermission(Permission.MANAGE_REQUESTS);
-  const { data: request } = useSWR<MediaRequest>(
-    show && progress?.requestId ? `/api/v1/request/${progress.requestId}` : null
-  );
   const { addToast } = useToasts();
   const [now, setNow] = useState(Date.now());
   const [searching, setSearching] = useState(false);
@@ -181,7 +193,10 @@ const RequestProgressModal = ({
     step?.key === 'searching' ? progress?.search?.lastSearchedAt : undefined;
   const ticking =
     show &&
-    (running || !!lastSearchedAt || (retryAt !== undefined && retryAt > now));
+    (running ||
+      !!lastSearchedAt ||
+      !!progress?.requests.some((r) => r.waitingSince) ||
+      (retryAt !== undefined && retryAt > now));
 
   // Capture phase on window runs before React's handlers, so an enclosing
   // slide-over never sees this Escape (React bubbles through portals)
@@ -243,7 +258,9 @@ const RequestProgressModal = ({
             ? messages.waitingRelease
             : s.waiting === 'rss'
               ? messages.waitingRss
-              : messages[s.key]
+              : s.waiting === 'grab'
+                ? messages.waitingGrab
+                : messages[s.key]
     );
 
   const downloads =
@@ -309,7 +326,7 @@ const RequestProgressModal = ({
       s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
     // searching has no progress signal, elapsed time against its estimate would fake one
     const percent =
-      s.status !== 'running' || s.key === 'searching'
+      s.status !== 'running' || s.key === 'searching' || idle(s)
         ? undefined
         : fraction !== undefined
           ? Math.round(fraction * 100)
@@ -345,12 +362,76 @@ const RequestProgressModal = ({
           ? intl.formatMessage(messages.unitsFailed, { ...s.counts })
           : undefined,
       waiting:
-        s.status === 'running' && s.waitingSince
+        s.status === 'running' && s.waiting && s.waitingSince
           ? intl.formatMessage(messages.waitingFor, {
-              duration: formatAge(now - Date.parse(s.waitingSince)),
+              duration: formatDuration(now - Date.parse(s.waitingSince)),
             })
           : undefined,
     };
+  };
+
+  const requestLine = (r: ProgressRequest) => {
+    const step =
+      r.status !== 'running'
+        ? messages[r.step]
+        : r.step === 'requested'
+          ? messages.awaitingApproval
+          : r.waiting === 'release'
+            ? messages.waitingRelease
+            : r.waiting === 'rss'
+              ? messages.waitingRss
+              : messages[r.step];
+    return (
+      <li key={r.id} className="flex flex-wrap gap-x-2">
+        {[seasonLabel(r.seasons), r.requestedBy]
+          .filter((part): part is string => !!part)
+          .map((part) => (
+            <span key={part} className="text-gray-300">
+              {part} -
+            </span>
+          ))}
+        <span
+          className={
+            r.status === 'failed'
+              ? 'text-red-400'
+              : r.status === 'done'
+                ? 'text-green-400'
+                : 'text-white'
+          }
+        >
+          {intl.formatMessage(step)}
+        </span>
+        {r.waitingSince && (
+          <span className="tabular-nums text-yellow-500">
+            {intl.formatMessage(messages.waitingFor, {
+              duration: formatDuration(now - Date.parse(r.waitingSince)),
+            })}
+          </span>
+        )}
+      </li>
+    );
+  };
+
+  // Absolute time, the date only for another day; the age on hover
+  const timelineTime = (e: ProgressTimelineEntry) => {
+    const at = new Date(e.at);
+    const today = at.toDateString() === new Date(now).toDateString();
+    return (
+      <Tooltip
+        content={intl.formatMessage(messages.ago, {
+          duration: formatDuration(now - at.getTime()),
+        })}
+      >
+        <time
+          dateTime={e.at}
+          className="flex-shrink-0 tabular-nums text-gray-500"
+        >
+          {today
+            ? intl.formatTime(at, { timeStyle: 'short' })
+            : intl.formatDate(at, { dateStyle: 'short', timeStyle: 'short' })}
+        </time>
+      </Tooltip>
+    );
   };
 
   return (
@@ -372,10 +453,10 @@ const RequestProgressModal = ({
         onCancel={onClose}
         cancelText={intl.formatMessage(globalMessages.close)}
       >
-        {request && (
-          <div className="-mx-4 mb-4 border-b border-gray-700">
-            <RequestBlock request={request} />
-          </div>
+        {!!progress?.requests.length && (
+          <ul className="mb-4 space-y-1 border-b border-gray-700 pb-3 text-sm">
+            {progress.requests.map(requestLine)}
+          </ul>
         )}
         {progress && (
           <>
@@ -401,9 +482,7 @@ const RequestProgressModal = ({
             <ol className="mt-2 max-h-60 space-y-1 overflow-y-auto">
               {[...(progress?.timeline ?? [])].reverse().map((e, i) => (
                 <li key={`tl-${i}`} className="flex gap-2">
-                  <span className="flex-shrink-0 tabular-nums text-gray-500">
-                    {intl.formatTime(e.at, { timeStyle: 'medium' })}
-                  </span>
+                  {timelineTime(e)}
                   <span className="min-w-0 break-words">
                     <span
                       className={
@@ -414,8 +493,10 @@ const RequestProgressModal = ({
                     >
                       {intl.formatMessage(messages[`timeline_${e.kind}`])}
                     </span>
-                    {e.units && ` ${e.units.join(', ')}`}
-                    {canManage && e.detail && (
+                    {e.units
+                      ? ` ${e.units.join(', ')}`
+                      : e.seasons && ` ${seasonLabel(e.seasons)}`}
+                    {(canManage || e.kind === 'requested') && e.detail && (
                       <span className="text-gray-500"> - {e.detail}</span>
                     )}
                   </span>
@@ -494,7 +575,9 @@ const RequestProgressModal = ({
                 {lastSearchedAt && (
                   <span>
                     {intl.formatMessage(messages.lastSearched, {
-                      duration: formatAge(now - Date.parse(lastSearchedAt)),
+                      duration: formatDuration(
+                        now - Date.parse(lastSearchedAt)
+                      ),
                     })}
                   </span>
                 )}

@@ -386,6 +386,7 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           mediaId: entity.media.id,
           is4k: entity.is4k,
           requestId: entity.id,
+          requestedBy: entity.requestedBy?.displayName,
           serverKey: `radarr-${radarrSettings.id}`,
         });
 
@@ -767,6 +768,8 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           mediaId: entity.media.id,
           is4k: entity.is4k,
           requestId: entity.id,
+          seasons: entity.seasons.map((season) => season.seasonNumber),
+          requestedBy: entity.requestedBy?.displayName,
           serverKey: `sonarr-${sonarrSettings.id}`,
         });
 
@@ -1136,6 +1139,7 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
         request.failureReason
       );
     }
+    if (request.media) progressTracker.requestsChanged(request.media.id);
 
     try {
       await this.sendToRadarr(event.entity as MediaRequest, event.manager);
@@ -1209,6 +1213,8 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
     if (!event.entity) {
       return;
     }
+    const { media } = event.entity as MediaRequest;
+    if (media) progressTracker.requestsChanged(media.id);
 
     await this.handleRemoveParentUpdate(
       event.manager as EntityManager,
