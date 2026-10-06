@@ -621,6 +621,8 @@
   "components.RequestProgressModal.inJellyfin": "Adding to Jellyfin",
   "components.RequestProgressModal.lastSearched": "Last searched {duration} ago",
   "components.RequestProgressModal.playable": "Ready",
+  "components.RequestProgressModal.progress": "Progress",
+  "components.RequestProgressModal.progress4k": "4K Progress",
   "components.RequestProgressModal.requested": "Requested",
   "components.RequestProgressModal.searchAgain": "Search again",
   "components.RequestProgressModal.searchAvailableIn": "Available again in {duration}",
