@@ -58,14 +58,19 @@ let monitored = true;
 let lastSearchTime: string | undefined;
 let removed = false;
 let isAvailable = true;
+// Radarr ids whose history and movie the fakes served, in order.
+const reads = { history: [] as number[], state: [] as number[] };
 Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
   set() {},
-  get: () => async () => {
-    if (removed) {
-      throw new Error('Not found', { cause: { response: { status: 404 } } });
-    }
-    return { hasFile, monitored, lastSearchTime, isAvailable };
-  },
+  get:
+    () =>
+    async ({ id }: { id: number }) => {
+      reads.state.push(id);
+      if (removed) {
+        throw new Error('Not found', { cause: { response: { status: 404 } } });
+      }
+      return { hasFile, monitored, lastSearchTime, isAvailable };
+    },
   configurable: true,
 });
 let sonarrSeasons: {
@@ -88,8 +93,10 @@ for (const Api of [RadarrAPI, SonarrAPI]) {
     ['getHistory', async () => history],
     [
       'getItemHistory',
-      async (id: number) =>
-        history.filter((r) => (r.movieId ?? r.seriesId) === id),
+      async (id: number) => {
+        reads.history.push(id);
+        return history.filter((r) => (r.movieId ?? r.seriesId) === id);
+      },
     ],
     ['getQueue', async () => queue],
   ] as const) {
@@ -127,6 +134,8 @@ async function setup(overrides: Partial<Media> = {}) {
   lastSearchTime = undefined;
   removed = false;
   isAvailable = true;
+  reads.history = [];
+  reads.state = [];
   return { media, tracker };
 }
 
@@ -450,6 +459,39 @@ describe('refreshServer', () => {
     await refreshServer('radarr-0', tracker);
 
     assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'running');
+  });
+});
+
+describe('refreshServer scope', () => {
+  it('reads history and state only for named, queued and moving runs', async () => {
+    const { media, tracker } = await setup();
+    const [finished, queued] = await getRepository(Media).save(
+      [43, 44].map((arrId) =>
+        Object.assign(new Media(), {
+          tmdbId: 1000 + arrId,
+          mediaType: MediaType.MOVIE,
+          status: MediaStatus.PROCESSING,
+          serviceId: 0,
+          externalServiceId: arrId,
+        })
+      )
+    );
+    for (const m of [media, finished, queued]) {
+      tracker.start({ mediaId: m.id, is4k: false, serverKey: 'radarr-0' });
+    }
+    for (const m of [finished, queued]) reach(tracker, m.id, 'playable');
+    queue = [{ movieId: 44, downloadId: 'Q', title: 'Q', size: 0 }];
+
+    await refreshServer('radarr-0', tracker, {});
+    assert.deepEqual(reads.history.sort(), [42, 44]);
+    assert.deepEqual(reads.state.sort(), [42, 44]);
+
+    reads.history = [];
+    reads.state = [];
+    queue = [];
+    await refreshServer('radarr-0', tracker, { arrIds: [43] });
+    assert.deepEqual(reads.history.sort(), [42, 43]);
+    assert.deepEqual(reads.state.sort(), [42, 43]);
   });
 });
 

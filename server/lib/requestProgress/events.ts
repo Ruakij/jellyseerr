@@ -215,12 +215,14 @@ export async function handleCommand(
       // Applied once the refresh read the history: before it, a grab of this search still looks
       // like no result and the units would flash waiting for RSS.
       serverRefresh.push(key, {
-        tracker,
-        mediaId: media.id,
-        is4k,
-        commandId: event.id,
-        at: Date.now(),
-        cause,
+        finished: {
+          tracker,
+          mediaId: media.id,
+          is4k,
+          commandId: event.id,
+          at: Date.now(),
+          cause,
+        },
       });
     } else if (ended) {
       tracker.searchFinished(media.id, is4k, {
@@ -453,45 +455,88 @@ export function queueEtaMs(
   return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
 }
 
+/** Items an event named; a refresh reads only these, those in the queue and the moving runs. */
+export interface RefreshScope {
+  arrIds?: number[];
+  mediaIds?: number[];
+}
+
+// Steps whose units Radarr/Sonarr moves on without an event naming the item.
+const ARR_STEPS = ['searching', 'grabbed', 'importing'] as const;
+
 /**
  * Brings the tracked media of one Radarr/Sonarr server up to date from its history (grab and
- * import times, download ids, release titles) and queue (downloads, blocked or failed ones).
+ * import times, download ids, release titles), queue (downloads, blocked or failed ones) and item
+ * state. With `scope`, only runs it names, runs in the queue and unfinished runs in a Radarr/Sonarr
+ * step are read; without it, every tracked run.
  */
 export async function refreshServer(
   key: string,
-  tracker: ProgressTracker = progressTracker
+  tracker: ProgressTracker = progressTracker,
+  scope?: RefreshScope
 ): Promise<void> {
   const [type, id] = key.split('-') as [ServarrType, string];
   const api = servarrApi(type, Number(id));
   if (!api) return;
+  // Finished entries too: files deleted after the import send the run back to searching.
+  const all = tracker.tracked().filter((e) => e.serverKey === key);
+  if (all.length === 0) return;
+
+  const media = await loadMedia(all);
+  const arrIdOf = (entry: TrackedProgress) => {
+    const m = media.get(entry.mediaId);
+    return (m && externalId(m, entry.is4k)) || undefined;
+  };
+  // Read on use: the request sync below can change them.
+  const seasons = (entry: TrackedProgress) =>
+    type === 'sonarr' ? requestedSeasons(entry) : undefined;
+  // Records of the same series can belong to seasons another request asked for.
+  const matching = (entries: TrackedProgress[]) => (item: ArrItem) =>
+    entries.filter((entry) => {
+      const arrId = type === 'radarr' ? item.movieId : item.seriesId;
+      if (arrId === undefined || arrIdOf(entry) !== arrId) return false;
+      const wanted = seasons(entry);
+      const season = item.episode?.seasonNumber;
+      return !wanted || season === undefined || wanted.has(season);
+    });
+
+  const named = (entry: TrackedProgress) =>
+    !scope ||
+    scope.mediaIds?.includes(entry.mediaId) ||
+    scope.arrIds?.includes(arrIdOf(entry) ?? -1);
+  const moving = (entry: TrackedProgress) =>
+    !tracker.finished(entry) &&
+    (entry.queue.size > 0 ||
+      ARR_STEPS.some((k) => entry.steps[k].status === 'running'));
+  const touched = new Set(
+    all.filter((e) => arrIdOf(e) !== undefined && (named(e) || moving(e)))
+  );
+  if (touched.size === 0) return;
+
+  const queue = (await api.getQueue()) as (Awaited<
+    ReturnType<typeof api.getQueue>
+  >[number] &
+    ArrItem)[];
+  const inQueue = matching(all);
+  for (const item of queue) {
+    for (const entry of inQueue(item)) touched.add(entry);
+  }
   await syncRequests(
-    tracker
-      .tracked()
-      .filter((e) => e.serverKey === key)
-      .map((e) => e.mediaId),
+    [...touched].map((e) => e.mediaId),
     tracker
   );
-  // Finished entries too: files deleted after the import send the run back to searching.
-  const entries = tracker.tracked().filter((e) => e.serverKey === key);
+  // The request sync can end runs.
+  const entries = [...touched].filter(
+    (e) => tracker.entry(e.mediaId, e.is4k) === e
+  );
   if (entries.length === 0) return;
+  const entriesOf = matching(entries);
 
-  const media = await loadMedia(entries);
-  const byArrId = new Map<number, TrackedProgress[]>();
-  for (const entry of entries) {
-    const m = media.get(entry.mediaId);
-    const arrId = m && externalId(m, entry.is4k);
-    if (arrId) byArrId.set(arrId, [...(byArrId.get(arrId) ?? []), entry]);
-  }
-  if (byArrId.size === 0) return;
-
-  const seasons =
-    type === 'sonarr'
-      ? new Map(entries.map((e) => [e, requestedSeasons(e)]))
-      : undefined;
   // Per item: the history of a whole server since an old request can be too large to load.
-  const [histories, queue, states] = await Promise.all([
+  const arrIds = [...new Set(entries.map((e) => arrIdOf(e) as number))];
+  const [histories, states] = await Promise.all([
     Promise.all(
-      [...byArrId.keys()].map((arrId) =>
+      arrIds.map((arrId) =>
         api.getItemHistory(arrId).catch((e: Error) => {
           logger.warn(`Loading item history failed: ${e.message}`, {
             label: 'Request Progress',
@@ -502,35 +547,21 @@ export async function refreshServer(
         })
       )
     ),
-    api.getQueue(),
     Promise.all(
       entries.map((entry) => {
-        const m = media.get(entry.mediaId);
-        const arrId = m && externalId(m, entry.is4k);
-        return arrId
-          ? arrState(api, arrId, seasons?.get(entry)).catch((e: Error) => {
-              logger.warn(`Loading the item state failed: ${e.message}`, {
-                label: 'Request Progress',
-                server: key,
-                arrId,
-              });
-              return undefined;
-            })
-          : undefined;
+        const arrId = arrIdOf(entry) as number;
+        return arrState(api, arrId, seasons(entry)).catch((e: Error) => {
+          logger.warn(`Loading the item state failed: ${e.message}`, {
+            label: 'Request Progress',
+            server: key,
+            arrId,
+          });
+          return undefined;
+        });
       })
     ),
   ]);
   const history = histories.flat();
-  // Records of the same series can belong to seasons another request asked for.
-  const entriesOf = (item: ArrItem) =>
-    (
-      byArrId.get((type === 'radarr' ? item.movieId : item.seriesId) ?? -1) ??
-      []
-    ).filter((entry) => {
-      const wanted = seasons?.get(entry);
-      const season = item.episode?.seasonNumber;
-      return !wanted || season === undefined || wanted.has(season);
-    });
   const unitIdsOf = (item: ArrItem) =>
     type === 'radarr' ? [0] : item.episodeId ? [item.episodeId] : [];
 
@@ -585,7 +616,7 @@ export async function refreshServer(
 
   // Keyed by downloadId: Sonarr lists a season pack once per episode.
   const items = new Map<TrackedProgress, Map<string, QueueItemState>>();
-  for (const item of queue as ((typeof queue)[number] & ArrItem)[]) {
+  for (const item of queue) {
     const state = item.trackedDownloadState;
     const queueState: QueueItemState['state'] =
       state === 'failedPending' || state === 'failed'
@@ -641,10 +672,8 @@ export async function refreshServer(
     if (!state) return;
     applyArrState(entry, state, type, tracker, `${key} item`);
     // The scanner decides what this means for the media and request status.
-    const m = media.get(entry.mediaId);
-    const arrId = m && externalId(m, entry.is4k);
-    if (entry.arrError && arrId) {
-      syncItem({ type, serverId: Number(id) }, arrId);
+    if (entry.arrError) {
+      syncItem({ type, serverId: Number(id) }, arrIdOf(entry) as number);
     }
   });
 }
@@ -893,7 +922,9 @@ export async function reconstructProgress(
   if (created.length === 0) return;
 
   for (const key of new Set(created.flatMap((e) => e.serverKey ?? []))) {
-    await refreshServer(key, tracker);
+    await refreshServer(key, tracker, {
+      mediaIds: created.map((e) => e.mediaId),
+    });
   }
   await reconcileJellyfin(undefined, tracker);
 }
@@ -902,11 +933,30 @@ export async function reconstructProgress(
 // a grab during a long search shows within it.
 export const SERVER_REFRESH_MAX_WAIT_MS = 3000;
 
-const serverRefresh = new KeyedDebouncer<FinishedSearch | void>(
+/** What an event asks a refresh of its server to read besides the moving runs. */
+interface RefreshRequest {
+  arrIds?: number[];
+  mediaIds?: number[];
+  /** Every tracked run, e.g. after a reconnect that may have missed events. */
+  all?: boolean;
+  finished?: FinishedSearch;
+}
+
+const serverRefresh = new KeyedDebouncer<RefreshRequest | void>(
   async (key, values) => {
-    const finished = values.filter((v): v is FinishedSearch => !!v);
+    const requests = values.filter((v): v is RefreshRequest => !!v);
+    const finished = requests.flatMap((r) => r.finished ?? []);
+    const scope = requests.some((r) => r.all)
+      ? undefined
+      : {
+          arrIds: requests.flatMap((r) => r.arrIds ?? []),
+          mediaIds: [
+            ...requests.flatMap((r) => r.mediaIds ?? []),
+            ...finished.map((f) => f.mediaId),
+          ],
+        };
     try {
-      await refreshServer(key, finished[0]?.tracker);
+      await refreshServer(key, finished[0]?.tracker, scope);
     } finally {
       // A search without results leaves the units waiting: RSS may still bring a release.
       for (const { tracker, mediaId, is4k, ...search } of finished) {
@@ -924,7 +974,7 @@ const requestSyncs = new KeyedDebouncer(async (key) => {
   await syncRequests([mediaId]);
   for (const entry of progressTracker.tracked()) {
     if (entry.mediaId === mediaId && entry.serverKey) {
-      serverRefresh.push(entry.serverKey);
+      serverRefresh.push(entry.serverKey, { mediaIds: [mediaId] });
     }
   }
 });
@@ -1053,7 +1103,7 @@ async function checkRemoved(
 function onSignalRConnected(source: SignalRSource): void {
   const key = serverKey(source.type, source.serverId);
   polls.push('downloads');
-  serverRefresh.push(key);
+  serverRefresh.push(key, { all: true });
   refreshStepHistory(source.type, source.serverId);
 }
 
@@ -1184,11 +1234,19 @@ export function onSignalRMessage(
       rememberEpisode(source.serverId, event.id, event.seriesId);
     }
     // Sonarr reports a grab on its episodes at once, its queue only later.
+    const seriesId =
+      event.seriesId ?? episodeSeries.get(`${source.serverId}:${event.id}`);
     if (event.grabbed) {
-      serverRefresh.push(serverKey(source.type, source.serverId));
+      serverRefresh.push(
+        serverKey(source.type, source.serverId),
+        seriesId === undefined ? undefined : { arrIds: [seriesId] }
+      );
     }
   } else {
-    serverRefresh.push(serverKey(source.type, source.serverId));
+    serverRefresh.push(
+      serverKey(source.type, source.serverId),
+      arrId === undefined ? undefined : { arrIds: [arrId] }
+    );
   }
 }
 
