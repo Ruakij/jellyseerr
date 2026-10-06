@@ -270,7 +270,7 @@ function requestedSeasons(entry: TrackedProgress): Set<number> | undefined {
   return new Set(requests.flatMap((r) => r.seasons ?? []));
 }
 
-// Deleted, declined and completed requests leave the run.
+// Deleted and declined requests leave the run; completed ones once it is over, see syncRequests.
 const ACTIVE_REQUEST = [
   MediaRequestStatus.PENDING,
   MediaRequestStatus.APPROVED,
@@ -288,7 +288,11 @@ const trackedRequest = (request: MediaRequest): TrackedRequest => ({
   awaitingApproval: request.status === MediaRequestStatus.PENDING,
 });
 
-/** Sets the requests of the tracked runs of these media to their active requests. */
+/**
+ * Sets the requests of the tracked runs of these media to their active requests. A request of the
+ * run turning COMPLETED stays until the run is over: Seerr completes it once Radarr/Sonarr has the
+ * files, before the imports finished and Jellyfin has them.
+ */
 export async function syncRequests(
   mediaIds: number[],
   tracker: ProgressTracker = progressTracker
@@ -298,15 +302,22 @@ export async function syncRequests(
   const requests = await getRepository(MediaRequest).find({
     where: {
       media: { id: In(entries.map((e) => e.mediaId)) },
-      status: In(ACTIVE_REQUEST),
+      status: In([...ACTIVE_REQUEST, MediaRequestStatus.COMPLETED]),
     },
   });
-  for (const { mediaId, is4k } of entries) {
+  for (const entry of entries) {
+    const { mediaId, is4k } = entry;
     tracker.setRequests(
       mediaId,
       is4k,
       requests
-        .filter((r) => r.media.id === mediaId && r.is4k === is4k)
+        .filter(
+          (r) =>
+            r.media.id === mediaId &&
+            r.is4k === is4k &&
+            (ACTIVE_REQUEST.includes(r.status) ||
+              (entry.requests.has(r.id) && !tracker.finished(entry)))
+        )
         .map(trackedRequest),
       { cause: 'requests' }
     );
