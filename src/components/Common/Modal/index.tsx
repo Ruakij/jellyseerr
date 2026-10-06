@@ -38,6 +38,8 @@ interface ModalProps {
   loading?: boolean;
   backdrop?: string;
   children?: React.ReactNode;
+  /** In the button row, apart from the buttons on the left */
+  footerStart?: React.ReactNode;
   dialogClass?: string;
 }
 
@@ -67,6 +69,7 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
       onTertiary,
       backdrop,
       dialogClass,
+      footerStart,
       okButtonProps,
       cancelButtonProps,
       secondaryButtonProps,
@@ -239,6 +242,8 @@ const Modal = React.forwardRef<HTMLDivElement, ModalProps>(
                     : intl.formatMessage(globalMessages.cancel)}
                 </Button>
               )}
+              {/* Last in the reversed row, so leftmost */}
+              {footerStart && <div className="mr-auto flex">{footerStart}</div>}
             </div>
           )}
         </Transition>

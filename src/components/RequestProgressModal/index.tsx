@@ -535,6 +535,20 @@ const RequestProgressModal = ({
         }
         onCancel={onClose}
         cancelText={intl.formatMessage(globalMessages.close)}
+        footerStart={
+          playUrl && (
+            <Button
+              as="a"
+              href={playUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              buttonType="success"
+            >
+              <PlayIcon />
+              <span>{intl.formatMessage(messages.watch)}</span>
+            </Button>
+          )
+        }
       >
         {/* Sections in one spacing scale, a line between each */}
         <div className="divide-y divide-gray-700 [&>*]:py-4 [&>:first-child]:pt-0 [&>:last-child]:pb-0">
@@ -572,7 +586,6 @@ const RequestProgressModal = ({
             detail ||
             error ||
             downloads.length > 0 ||
-            playUrl ||
             canSearch ||
             lastSearchedAt) && (
             <div className="space-y-3">
@@ -653,18 +666,6 @@ const RequestProgressModal = ({
                     </span>
                   )}
                 </div>
-              )}
-              {playUrl && (
-                <Button
-                  as="a"
-                  href={playUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  buttonType="success"
-                >
-                  <PlayIcon />
-                  <span>{intl.formatMessage(messages.watch)}</span>
-                </Button>
               )}
             </div>
           )}
