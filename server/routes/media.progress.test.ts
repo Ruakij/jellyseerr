@@ -234,7 +234,7 @@ describe('GET /media/:mediaId/progress', () => {
           mediaId: media.id,
           is4k: false,
           requests: [{ id: requestId, step: 'playable', status: 'done' }],
-          steps: [],
+          steps: [{ key: 'playable', status: 'done' }],
           estimatePercentile: 90,
           finishedAt: at,
         },

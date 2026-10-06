@@ -35,6 +35,7 @@ import {
   requestStarts,
   syncRequests,
 } from '@server/lib/requestProgress/events';
+import { storeRun } from '@server/lib/requestProgress/history';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
 import progressTracker, {
   ProgressTracker,
@@ -919,6 +920,35 @@ describe('reconstructProgress', () => {
     await reconstructProgress([{ mediaId: media.id, is4k: false }], tracker);
 
     assert.equal(tracker.entry(media.id, false), undefined);
+  });
+
+  it('rebuilds a completed request whose stored run never reached Ready', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.COMPLETED);
+    const request = await getRepository(MediaRequest).findOneByOrFail({
+      media: { id: media.id },
+    });
+    const stored = (playable: 'pending' | 'done') => ({
+      mediaId: media.id,
+      is4k: false,
+      requests: [],
+      steps: [{ key: 'playable' as const, status: playable }],
+      estimatePercentile: 50 as const,
+      finishedAt: requestedAt,
+    });
+    hasFile = true;
+
+    await storeRun(stored('done'), [request.id]);
+    await reconstructProgress([{ mediaId: media.id, is4k: false }], tracker);
+    assert.equal(tracker.entry(media.id, false), undefined);
+
+    await storeRun(stored('pending'), [request.id]);
+    await reconstructProgress([{ mediaId: media.id, is4k: false }], tracker);
+    const progress = tracker.get(media.id, false)!;
+    assert.deepEqual(
+      progress.requests.map((r) => r.id),
+      [request.id]
+    );
+    assert.equal(statusOf(tracker, media.id, 'importing').status, 'done');
   });
 
   it('leaves media with a tracked run alone', async () => {
