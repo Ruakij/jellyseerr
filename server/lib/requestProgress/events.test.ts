@@ -49,6 +49,7 @@ import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { setupTestDb } from '@server/test/db';
+import { In } from 'typeorm';
 
 let history: Partial<HistoryRecord>[] = [];
 let queue: Record<string, unknown>[] = [];
@@ -1075,6 +1076,57 @@ describe('syncRequests', () => {
     await syncRequests([media.id], tracker);
     assert.equal(tracker.get(media.id, false), undefined);
   });
+  it('starts a run awaiting approval for a new pending request and ends it once declined', async () => {
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        id: 70,
+        tmdbId: 1,
+        tvdbId: 2,
+        mediaType: MediaType.TV,
+        status: MediaStatus.PENDING,
+      })
+    );
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    const requests = getRepository(MediaRequest);
+    const pending = (seasonNumber: number) =>
+      requests.save(
+        new MediaRequest({
+          type: MediaType.TV,
+          status: MediaRequestStatus.PENDING,
+          media,
+          requestedBy: user,
+          modifiedBy: user,
+          seasons: [new SeasonRequest({ seasonNumber })],
+        })
+      );
+    const first = await pending(1);
+    const more = await pending(2);
+
+    const progress = progressTracker.get(media.id, false)!;
+    assert.deepEqual(
+      progress.requests.map((r) => [r.id, r.seasons]),
+      [
+        [first.id, [1]],
+        [more.id, [2]],
+      ]
+    );
+    assert.equal(
+      statusOf(progressTracker, media.id, 'requested').status,
+      'running'
+    );
+    assert.equal(
+      statusOf(progressTracker, media.id, 'searching').status,
+      'pending'
+    );
+
+    await requests.update(
+      { id: In([first.id, more.id]) },
+      { status: MediaRequestStatus.DECLINED }
+    );
+    await syncRequests([media.id]);
+    assert.equal(progressTracker.entry(media.id, false), undefined);
+  });
+
   it('keeps a completed request until its run is ready', async () => {
     const { media, tracker } = await setup();
     const user = await getRepository(User).findOneByOrFail({ id: 1 });
