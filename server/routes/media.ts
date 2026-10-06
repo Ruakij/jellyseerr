@@ -14,6 +14,7 @@ import type {
 import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
 import { Permission } from '@server/lib/permissions';
 import { reconstructProgress } from '@server/lib/requestProgress/events';
+import { storedRun } from '@server/lib/requestProgress/history';
 import {
   searchAccess,
   searchRequest,
@@ -322,6 +323,14 @@ mediaRoutes.get<{ mediaId: string }>(
   async (req, res, next) => {
     const mediaId = Number(req.params.mediaId);
     const is4k = req.query.is4k === 'true';
+    // A request of a past run; the live run counts only when it covers it.
+    const requestId =
+      req.query.requestId !== undefined
+        ? Number(req.query.requestId)
+        : undefined;
+    const covers = (progress: RequestProgress) =>
+      requestId === undefined ||
+      progress.requests.some((r) => r.id === requestId);
     const media = Number.isInteger(mediaId)
       ? await getRepository(Media).findOne({ where: { id: mediaId } })
       : null;
@@ -390,9 +399,19 @@ mediaRoutes.get<{ mediaId: string }>(
       res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);
     };
 
-    send(progressTracker.get(mediaId, is4k) ?? untracked);
+    const live = progressTracker.get(mediaId, is4k);
+    send(
+      live && covers(live)
+        ? live
+        : ((await storedRun(mediaId, is4k, requestId).catch(() => undefined)) ??
+            untracked)
+    );
     const onChange = (progress: RequestProgress) => {
-      if (progress.mediaId === mediaId && progress.is4k === is4k) {
+      if (
+        progress.mediaId === mediaId &&
+        progress.is4k === is4k &&
+        covers(progress)
+      ) {
         send(progress);
       }
     };
@@ -402,7 +421,7 @@ mediaRoutes.get<{ mediaId: string }>(
       removed4k: boolean,
       last: RequestProgress
     ) => {
-      if (removedId === mediaId && removed4k === is4k) {
+      if (removedId === mediaId && removed4k === is4k && covers(last)) {
         send(last);
       }
     };

@@ -594,6 +594,8 @@ const RequestProgressModal = ({
 interface ProgressTarget {
   mediaId: number;
   is4k: boolean;
+  // a past run of this request rather than the live run of the media
+  requestId?: number;
   subTitle?: string;
 }
 
@@ -612,7 +614,8 @@ export const RequestProgressProvider = ({
   const [show, setShow] = useState(false);
   const progress = useRequestProgress(
     show ? target?.mediaId : undefined,
-    !!target?.is4k
+    !!target?.is4k,
+    target?.requestId
   );
   const open = useCallback((t: ProgressTarget) => {
     setTarget(t);
@@ -636,6 +639,7 @@ export const RequestProgressProvider = ({
 interface RequestProgressTriggerProps {
   mediaId?: number;
   is4k?: boolean;
+  requestId?: number;
   subTitle?: string;
   children: (open: () => void) => React.ReactNode;
 }
@@ -644,11 +648,16 @@ interface RequestProgressTriggerProps {
 export const RequestProgressTrigger = ({
   mediaId,
   is4k = false,
+  requestId,
   subTitle,
   children,
 }: RequestProgressTriggerProps) => {
   const open = useContext(OpenProgressContext);
-  return <>{children(() => mediaId && open({ mediaId, is4k, subTitle }))}</>;
+  return (
+    <>
+      {children(() => mediaId && open({ mediaId, is4k, requestId, subTitle }))}
+    </>
+  );
 };
 
 export default RequestProgressModal;

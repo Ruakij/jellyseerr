@@ -5,7 +5,9 @@ const RETRY_MS = 5000;
 
 const useRequestProgress = (
   mediaId: number | undefined,
-  is4k: boolean
+  is4k: boolean,
+  // a past run of this request, unless the live run covers it
+  requestId?: number
 ): RequestProgress | undefined => {
   const [progress, setProgress] = useState<RequestProgress>();
 
@@ -20,7 +22,9 @@ const useRequestProgress = (
 
     const connect = () => {
       source = new EventSource(
-        `/api/v1/media/${mediaId}/progress?is4k=${is4k}`
+        `/api/v1/media/${mediaId}/progress?is4k=${is4k}${
+          requestId ? `&requestId=${requestId}` : ''
+        }`
       );
       source.addEventListener('progress', (e) => {
         const next: RequestProgress = JSON.parse(
@@ -46,7 +50,7 @@ const useRequestProgress = (
       clearTimeout(retry);
       source?.close();
     };
-  }, [mediaId, is4k]);
+  }, [mediaId, is4k, requestId]);
 
   return progress;
 };

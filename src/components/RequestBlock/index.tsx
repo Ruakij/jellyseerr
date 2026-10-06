@@ -4,6 +4,7 @@ import CachedImage from '@app/components/Common/CachedImage';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestFailedBadge from '@app/components/RequestFailedBadge';
 import RequestModal from '@app/components/RequestModal';
+import { RequestProgressIcon } from '@app/components/RequestProgressModal/ProgressButton';
 import useRequestOverride from '@app/hooks/useRequestOverride';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
@@ -168,6 +169,7 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
             )}
           </div>
           <div className="ml-2 flex flex-shrink-0 flex-wrap">
+            <RequestProgressIcon request={request} className="mr-1" />
             {onUpdate && request.status === MediaRequestStatus.PENDING && (
               <>
                 <Tooltip content={intl.formatMessage(messages.approve)}>
