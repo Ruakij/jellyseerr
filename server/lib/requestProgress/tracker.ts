@@ -668,7 +668,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         detail: downloadId && entry.releases.get(downloadId)?.title,
         source,
       });
-      if (downloadId) this.recordDownload(entry, downloadId, 'importing');
     });
   }
 
@@ -974,7 +973,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     const estimates = entry.serverKey
       ? this.stats.get(entry.serverKey)
       : undefined;
-    const units = [...entry.units.values()];
     const steps = STEP_KEYS.map((k) => {
       const state = entry.steps[k];
       // Ready is no phase of its own: it completes with the last unit in Jellyfin.
@@ -1017,7 +1015,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         progress: state.progress,
       };
     });
-    const single = units.length === 1;
     const totals = entry.serverKey
       ? this.stats.total(entry.serverKey)
       : undefined;
@@ -1042,12 +1039,10 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       is4k: entry.is4k,
       requests: this.requestStates(entry),
       steps,
-      totalEstimateMs: !single
-        ? undefined
-        : (total?.valueMs ??
-          (stepSum.length ? stepSum.reduce((a, b) => a + b, 0) : undefined)),
-      totalEstimateRangeMs:
-        single && showConfidenceInterval ? total?.rangeMs : undefined,
+      totalEstimateMs:
+        total?.valueMs ??
+        (stepSum.length ? stepSum.reduce((a, b) => a + b, 0) : undefined),
+      totalEstimateRangeMs: showConfidenceInterval ? total?.rangeMs : undefined,
       estimatePercentile: p,
       playUrl:
         entry.steps.playable.status === 'done' ? entry.playUrl : undefined,
@@ -1185,8 +1180,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   /**
-   * Once no unit is searched for anymore, a grab during a search ends it there and, for a single
-   * unit, records the search as a sample. A grab outside any search came from RSS while waiting.
+   * Once no unit is searched for anymore, a grab during a search ends it there and records the
+   * search as a sample. A grab outside any search came from RSS while waiting.
    */
   private grabEndsSearch(entry: TrackedProgress, at: number): void {
     if ([...entry.units.values()].some((u) => unitStage(u) === SEARCHING)) {
@@ -1209,7 +1204,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       return;
     }
     if (
-      entry.units.size !== 1 ||
       entry.reconstructed ||
       !entry.serverKey ||
       entry.seen.has(SEARCH_SAMPLE)
@@ -1342,40 +1336,6 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       downloadId,
       source: 'queue',
     });
-    this.recordDownload(entry, downloadId, 'grabbed');
-  }
-
-  /**
-   * Records one sample per download once all its units passed `step`: from the grab, divided by
-   * its number of units, so a season pack counts as per-episode time.
-   */
-  private recordDownload(
-    entry: TrackedProgress,
-    downloadId: string,
-    step: 'grabbed' | 'importing'
-  ): void {
-    if (entry.reconstructed || !entry.serverKey) return;
-    const units = [...entry.units.values()].filter(
-      (u) => u.downloadId === downloadId
-    );
-    const field = step === 'grabbed' ? 'downloadedAt' : 'importedAt';
-    if (
-      units.length === 0 ||
-      units.some((u) => u[field] === undefined || u.grabbedAt === undefined)
-    ) {
-      return;
-    }
-    const sampleKey = `sample:${step}:${downloadId}`;
-    if (entry.seen.has(sampleKey)) return;
-    entry.seen.add(sampleKey);
-    const end = Math.max(...units.map((u) => u[field] as number));
-    const start = Math.min(...units.map((u) => u.grabbedAt as number));
-    this.stats.record(
-      entry.serverKey,
-      step,
-      Math.max(0, end - start) / units.length,
-      { at: end, downloadId }
-    );
   }
 
   /** Unit progress after a request failure recovers the run. */
@@ -1582,23 +1542,33 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       }
       if (
         state.status !== 'done' ||
-        total !== 1 ||
         !entry.serverKey ||
         entry.reconstructed ||
         startedAt === undefined
       ) {
         continue;
       }
-      if (k === 'inJellyfin') {
+      // One sample per run, from the step start, as the pop-up shows the step time. A step never
+      // seen running, e.g. an import read from the history with its download, has no duration.
+      const sampleKey = `sample:${k}`;
+      if (
+        (k === 'grabbed' || k === 'importing' || k === 'inJellyfin') &&
+        prev.status !== 'pending' &&
+        !entry.seen.has(sampleKey)
+      ) {
+        entry.seen.add(sampleKey);
         this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
           at,
-          downloadId: units[0].downloadId,
+          downloadId: units.find((u) => u.downloadId)?.downloadId,
         });
       }
       const requestedAt = entry.steps.requested.startedAt ?? at;
-      // A search ran from the request to the grab, so the total holds no waiting.
-      const waited =
-        (units[0].grabbedAt ?? requestedAt) - requestedAt - entry.searchMs;
+      const lastGrab = Math.max(
+        requestedAt,
+        ...units.map((u) => u.grabbedAt ?? requestedAt)
+      );
+      // A search ran from the request to the last grab, so the total holds no waiting.
+      const waited = lastGrab - requestedAt - entry.searchMs;
       if (
         k === 'playable' &&
         entry.seen.has(SEARCH_SAMPLE) &&

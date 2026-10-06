@@ -116,7 +116,7 @@ describe('pairGrabToImport', () => {
     assert.deepEqual(samples, []);
   });
 
-  it('counts a season pack once, per episode until its last import', () => {
+  it('counts a season pack once, until its last import', () => {
     const samples = pairGrabToImport([
       rec('downloadFolderImported', '2026-10-05T10:00:12Z', 'pack'),
       rec('downloadFolderImported', '2026-10-05T10:00:10Z', 'pack'),
@@ -126,7 +126,7 @@ describe('pairGrabToImport', () => {
     assert.deepEqual(samples, [
       {
         at: Date.parse('2026-10-05T10:00:12Z'),
-        durationMs: 4_000,
+        durationMs: 12_000,
         downloadId: 'pack',
       },
     ]);
@@ -224,14 +224,14 @@ describe('StepStats', () => {
   before(() => (settings.historyMaxAgeDays = 0));
   after(() => (settings.historyMaxAgeDays = historyMaxAgeDays));
 
-  it('merges history and recorded samples for importing, per server', async () => {
+  it('merges history and recorded samples for grabbed, per server', async () => {
     const stats = new StepStats();
     await stats.refresh('radarr-0', sevenSecondGrab);
-    stats.record('radarr-0', 'importing', 20_000);
+    stats.record('radarr-0', 'grabbed', 20_000);
     stats.record('radarr-0', 'inJellyfin', 60_000);
 
     const radarr = stats.get('radarr-0');
-    assert.deepEqual(summary(radarr.importing), {
+    assert.deepEqual(summary(radarr.grabbed), {
       count: 2,
       p50: 7_000,
       p90: 20_000,
@@ -246,7 +246,7 @@ describe('StepStats', () => {
       p50: undefined,
       p90: undefined,
     });
-    assert.equal(summary(stats.get('sonarr-0').importing).count, 0);
+    assert.equal(summary(stats.get('sonarr-0').grabbed).count, 0);
   });
 
   it('keeps only the newest samples per step', () => {
@@ -266,8 +266,8 @@ describe('StepStats', () => {
   it('skips a history sample whose download the tracker recorded', async () => {
     const stats = new StepStats();
     await stats.refresh('s', sevenSecondGrab);
-    stats.record('s', 'importing', 9_000, { downloadId: 'A' });
-    assert.deepEqual(summary(stats.get('s').importing), {
+    stats.record('s', 'grabbed', 9_000, { downloadId: 'A' });
+    assert.deepEqual(summary(stats.get('s').grabbed), {
       count: 1,
       p50: 9_000,
       p90: 9_000,
@@ -301,14 +301,14 @@ describe('StepStats', () => {
         },
       })
     );
-    assert.equal(summary(stats.get('s').importing).count, 1);
+    assert.equal(summary(stats.get('s').grabbed).count, 1);
   });
 
   it('counts history and local samples apart', async () => {
     const stats = new StepStats();
     await stats.refresh('s', sevenSecondGrab);
-    stats.record('s', 'importing', 20_000);
-    const { historyCount, localCount } = stats.get('s').importing;
+    stats.record('s', 'grabbed', 20_000);
+    const { historyCount, localCount } = stats.get('s').grabbed;
     assert.deepEqual([historyCount, localCount], [1, 1]);
   });
 
