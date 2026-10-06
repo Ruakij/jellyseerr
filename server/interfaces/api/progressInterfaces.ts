@@ -23,8 +23,10 @@ export interface ProgressStep {
   // searching only: search time without waiting
   searchMs?: number; // time finished searches ran
   searchStartedAt?: string; // ISO; start of the search running now
-  waiting?: 'release' | 'rss'; // no search runs and units still lack a release
-  waitingSince?: string; // ISO; set with `waiting`
+  // searching: no search runs and units still lack a release; grabbed: no unit downloads, the rest waits for a grab
+  waiting?: 'release' | 'rss' | 'grab';
+  // ISO; searching: set with `waiting`; other steps: running with no unit in it, its time stops there
+  waitingSince?: string;
 }
 
 // Units (the movie, or the requested episodes) at a step

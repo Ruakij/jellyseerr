@@ -127,11 +127,12 @@ describe('ProgressTracker', () => {
     tracker.grab(1, false, { downloadId: 'single', unitIds: [103] });
     tick(1_000);
     tracker.imported(1, false, { downloadId: 'pack', unitIds: [101, 102] });
-    tick(1_000);
+    const failedAt = tick(1_000);
     tracker.downloadFailed(1, false, {
       downloadId: 'single',
       reason: 'Download failed',
     });
+    tick(60_000);
 
     const steps = () =>
       Object.fromEntries(tracker.get(1, false)!.steps.map((s) => [s.key, s]));
@@ -156,6 +157,15 @@ describe('ProgressTracker', () => {
       total: 3,
     });
     assert.equal(steps().importing.progress, 2 / 3);
+    // Nothing downloads: the step waits for a new grab and its time stops at the failure.
+    assert.equal(steps().grabbed.waiting, 'grab');
+    assert.equal(
+      steps().grabbed.waitingSince,
+      new Date(failedAt).toISOString()
+    );
+    assert.equal(steps().importing.waiting, undefined);
+    assert.ok(steps().importing.waitingSince);
+    assert.equal(steps().inJellyfin.waitingSince, undefined);
 
     // The re-search clears the failure; the new grab assigns another download.
     tracker.setSearch(1, false, { searchCommandId: 9 });
@@ -167,6 +177,8 @@ describe('ProgressTracker', () => {
       failed: 0,
       total: 3,
     });
+    assert.equal(steps().grabbed.waiting, undefined);
+    assert.equal(steps().grabbed.waitingSince, undefined);
     assert.equal(statuses().searching, 'done');
     assert.deepEqual(
       tracker.get(1, false)!.timeline?.map((e) => [e.kind, e.units]),
