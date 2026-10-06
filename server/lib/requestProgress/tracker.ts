@@ -118,6 +118,8 @@ export interface TrackedProgress {
   searchMs: number;
   /** Radarr/Sonarr has nothing released to search for yet; set once its item state was read. */
   unreleased?: boolean;
+  /** What Radarr/Sonarr waits for next: a digital or physical release, or an air date. */
+  releaseDate?: number;
   /** Why Radarr/Sonarr will not deliver it, e.g. the item was removed there. */
   arrError?: string;
   /** Why sending the request to Radarr/Sonarr failed, from the request. */
@@ -849,7 +851,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     is4k: boolean,
     search: Pick<
       TrackedProgress,
-      'searchCommandId' | 'searchIndexers' | 'lastSearchedAt' | 'unreleased'
+      | 'searchCommandId'
+      | 'searchIndexers'
+      | 'lastSearchedAt'
+      | 'unreleased'
+      | 'releaseDate'
     >,
     { at = this.now(), cause }: Change = {}
   ): void {
@@ -1040,6 +1046,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       playUrl:
         entry.steps.playable.status === 'done' ? entry.playUrl : undefined,
       dormant: this.dormant(entry) || undefined,
+      releaseDate: iso(entry.releaseDate),
       downloads:
         entry.steps.playable.status === 'done' || downloads.length === 0
           ? undefined
@@ -1089,6 +1096,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           id: request.id,
           seasons: request.seasons,
           requestedBy: request.requestedBy,
+          requestedAt: iso(request.at),
         };
         if (request.awaitingApproval) {
           return { ...base, step: 'requested' as const, status: 'running' };

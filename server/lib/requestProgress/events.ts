@@ -351,6 +351,8 @@ interface ArrState {
   /** Something can be searched for: the movie is available, or an episode aired. */
   released: boolean;
   lastSearchedAt?: number;
+  /** What Radarr/Sonarr waits for next, see `nextRelease`. */
+  releaseDate?: number;
   /** The movie, or the requested episodes that aired and are monitored or have a file. */
   units: UnitState[];
 }
@@ -358,6 +360,13 @@ interface ArrState {
 const latest = (times: (string | undefined)[]) => {
   const ms = times.flatMap((t) => (t ? [Date.parse(t)] : []));
   return ms.length ? Math.max(...ms) : undefined;
+};
+
+/** The earliest of these times still ahead. */
+export const nextRelease = (times: (string | undefined)[], now: number) => {
+  const ms = times.flatMap((t) => (t ? [Date.parse(t)] : []));
+  const ahead = ms.filter((t) => t > now);
+  return ahead.length ? Math.min(...ahead) : undefined;
 };
 
 /** The Radarr movie or the requested seasons of the Sonarr series as they are now. */
@@ -373,6 +382,11 @@ async function arrState(
         monitored: movie.monitored,
         released: movie.isAvailable !== false,
         lastSearchedAt: latest([movie.lastSearchTime]),
+        // A cinema release cannot be downloaded
+        releaseDate: nextRelease(
+          [movie.digitalRelease, movie.physicalRelease],
+          Date.now()
+        ),
         units: [{ id: 0, hasFile: movie.hasFile }],
       };
     }
@@ -400,6 +414,12 @@ async function arrState(
       monitored: series.monitored && requested.some((e) => e.monitored),
       released: units.length > 0,
       lastSearchedAt: latest(requested.map((e) => e.lastSearchTime)),
+      releaseDate: nextRelease(
+        requested
+          .filter((e) => e.monitored && !e.hasFile)
+          .map((e) => e.airDateUtc),
+        now
+      ),
       units,
     };
   } catch (e) {
@@ -464,7 +484,7 @@ function applyArrState(
   tracker.setSearch(
     mediaId,
     is4k,
-    { ...newer, unreleased: !state.released },
+    { ...newer, unreleased: !state.released, releaseDate: state.releaseDate },
     { cause }
   );
   entry.arrError = state.removed
