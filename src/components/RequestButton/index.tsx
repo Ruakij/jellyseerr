@@ -76,16 +76,11 @@ const RequestButton = ({
     progressIs4k === undefined ? undefined : media?.id,
     !!progressIs4k
   );
-  const requestCompleted = (is4k: boolean) => (newStatus: MediaStatus) => {
+  // Any new request, also one for more seasons of a partially available show
+  const requestCompleted = (is4k: boolean) => () => {
     onUpdate();
     (is4k ? setShowRequest4kModal : setShowRequestModal)(false);
-    if (
-      !editRequest &&
-      (newStatus === MediaStatus.PENDING ||
-        newStatus === MediaStatus.PROCESSING)
-    ) {
-      setProgressIs4k(is4k);
-    }
+    if (!editRequest) setProgressIs4k(is4k);
   };
 
   // All pending requests
