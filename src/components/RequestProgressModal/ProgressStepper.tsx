@@ -9,7 +9,7 @@ import type {
 
 const circleClass: Record<ProgressStep['status'], string> = {
   done: 'bg-green-600 text-white',
-  running: 'border-2 border-indigo-500 bg-indigo-500/20 text-indigo-200',
+  running: 'border-2 border-indigo-500 bg-indigo-500/10 text-indigo-200',
   failed: 'bg-red-600 text-white',
   pending: 'border border-gray-600 text-gray-600',
 };
@@ -108,7 +108,7 @@ const ProgressStepper = ({
               >
                 {fraction !== undefined && (
                   <div
-                    className="absolute inset-x-0 bottom-0 bg-indigo-500/60 transition-[height] duration-700 ease-out"
+                    className="absolute inset-x-0 bottom-0 bg-indigo-500 transition-[height] duration-700 ease-out"
                     style={{ height: `${fraction * 100}%` }}
                   />
                 )}
