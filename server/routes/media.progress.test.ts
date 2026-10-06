@@ -16,9 +16,11 @@ import {
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
+import { RequestProgressRun } from '@server/entity/RequestProgressRun';
 import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
 import { Permission } from '@server/lib/permissions';
+import { storeRun } from '@server/lib/requestProgress/history';
 import progressTracker from '@server/lib/requestProgress/tracker';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
@@ -200,6 +202,70 @@ describe('GET /media/:mediaId/progress', () => {
     assert.equal(step('searching').finishedAt, '2026-10-05T10:05:00.000Z');
     assert.equal(step('grabbed').detail, 'Movie.2026.1080p');
     assert.equal(step('grabbed').status, 'running');
+  });
+
+  it('falls back to the stored final run of a request', async () => {
+    const user = await getRepository(User).findOneByOrFail({ id: 1 });
+    // Above the ids of the global tracker entries of the other tests.
+    const media = await getRepository(Media).save(
+      Object.assign(new Media(), {
+        id: 50,
+        tmdbId: 8,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.AVAILABLE,
+      })
+    );
+    const request = (createdAt: string) =>
+      getRepository(MediaRequest).save(
+        new MediaRequest({
+          type: MediaType.MOVIE,
+          status: MediaRequestStatus.COMPLETED,
+          media,
+          requestedBy: user,
+          modifiedBy: user,
+          createdAt: new Date(createdAt),
+        })
+      );
+    const first = await request('2026-10-01T10:00:00Z');
+    const second = await request('2026-10-03T10:00:00Z');
+    const run = (requestId: number, at: string) =>
+      storeRun(
+        {
+          mediaId: media.id,
+          is4k: false,
+          requests: [{ id: requestId, step: 'playable', status: 'done' }],
+          steps: [],
+          estimatePercentile: 90,
+          finishedAt: at,
+        },
+        [requestId]
+      );
+    await run(first.id, '2026-10-01T12:00:00.000Z');
+    await run(first.id, '2026-10-02T12:00:00.000Z');
+    await run(second.id, '2026-10-04T12:00:00.000Z');
+    assert.equal(await getRepository(RequestProgressRun).count(), 2);
+
+    const fetch = async (query: string) => {
+      const stream = await openStream(
+        `/media/${media.id}/progress?is4k=false${query}`,
+        user.id
+      );
+      const progress = parse(await stream.next());
+      await stream.close();
+      return progress;
+    };
+    const latest = await fetch('');
+    assert.equal(latest.finishedAt, '2026-10-04T12:00:00.000Z');
+    assert.equal(latest.search.allowed, false);
+    const older = await fetch(`&requestId=${first.id}`);
+    assert.equal(older.finishedAt, '2026-10-02T12:00:00.000Z');
+    assert.equal(older.requests[0].id, first.id);
+
+    const loaded = await getRepository(Media).findOneOrFail({
+      where: { id: media.id },
+      relations: { requests: true },
+    });
+    assert.ok(loaded.requests.every((r) => r.hasProgressRun === true));
   });
 
   it('returns 404 for unknown media', async () => {

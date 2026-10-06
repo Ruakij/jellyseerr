@@ -5,6 +5,7 @@ import CachedImage from '@app/components/Common/CachedImage';
 import ConfirmButton from '@app/components/Common/ConfirmButton';
 import RequestFailedBadge from '@app/components/RequestFailedBadge';
 import RequestModal from '@app/components/RequestModal';
+import { RequestProgressIcon } from '@app/components/RequestProgressModal/ProgressButton';
 import StatusBadge from '@app/components/StatusBadge';
 import useDeepLinks from '@app/hooks/useDeepLinks';
 import useToasts from '@app/hooks/useToasts';
@@ -561,6 +562,11 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
                   }
                 />
               )}
+              <RequestProgressIcon
+                request={requestData}
+                subTitle={isMovie(title) ? title.title : title.name}
+                className="ml-2"
+              />
             </div>
             <div className="card-field">
               {hasPermission(

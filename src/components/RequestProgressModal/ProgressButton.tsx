@@ -1,14 +1,17 @@
 import Button from '@app/components/Common/Button';
+import Tooltip from '@app/components/Common/Tooltip';
 import { RequestProgressTrigger } from '@app/components/RequestProgressModal';
 import defineMessages from '@app/utils/defineMessages';
 import { ChartBarIcon } from '@heroicons/react/24/solid';
 import { MediaRequestStatus } from '@server/constants/media';
 import type Media from '@server/entity/Media';
+import type { MediaRequest } from '@server/entity/MediaRequest';
 import { useIntl } from 'react-intl';
 
 const messages = defineMessages('components.RequestProgressModal', {
   progress: 'Progress',
   progress4k: '4K Progress',
+  pastProgress: 'Request Progress',
 });
 
 // The requests the tracker follows: deleted, declined and completed ones leave it
@@ -23,12 +26,14 @@ interface ProgressButtonProps {
   subTitle?: string;
 }
 
-// One button per variant with an active request, whatever the media status
+// One button per variant with an active request or a stored past run, whatever the media status
 const ProgressButton = ({ media, subTitle }: ProgressButtonProps) => {
   const intl = useIntl();
   const variants = [false, true].filter((is4k) =>
     media?.requests?.some(
-      (r) => r.is4k === is4k && ACTIVE_REQUEST.includes(r.status)
+      (r) =>
+        r.is4k === is4k &&
+        (ACTIVE_REQUEST.includes(r.status) || r.hasProgressRun)
     )
   );
 
@@ -59,6 +64,45 @@ const ProgressButton = ({ media, subTitle }: ProgressButtonProps) => {
         </RequestProgressTrigger>
       ))}
     </>
+  );
+};
+
+interface RequestProgressIconProps {
+  request: Pick<MediaRequest, 'id' | 'is4k' | 'media' | 'hasProgressRun'>;
+  subTitle?: string;
+  className?: string;
+}
+
+// Opens the stored past run of one request
+export const RequestProgressIcon = ({
+  request,
+  subTitle,
+  className,
+}: RequestProgressIconProps) => {
+  const intl = useIntl();
+  if (!request.hasProgressRun) return null;
+  return (
+    <RequestProgressTrigger
+      mediaId={request.media?.id}
+      is4k={request.is4k}
+      requestId={request.id}
+      subTitle={subTitle}
+    >
+      {(open) => (
+        <Tooltip content={intl.formatMessage(messages.pastProgress)}>
+          <Button
+            buttonType="ghost"
+            buttonSize="sm"
+            aria-haspopup="dialog"
+            aria-label={intl.formatMessage(messages.pastProgress)}
+            onClick={open}
+            className={className}
+          >
+            <ChartBarIcon className="icon-sm" />
+          </Button>
+        </Tooltip>
+      )}
+    </RequestProgressTrigger>
   );
 };
 

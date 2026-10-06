@@ -25,6 +25,7 @@ import type { RequestProgressStatsResponse } from '@server/interfaces/api/progre
 import availabilitySync from '@server/lib/availabilitySync';
 import downloadTracker from '@server/lib/downloadtracker';
 import { KeyedDebouncer } from '@server/lib/requestProgress/debounce';
+import { storeRun } from '@server/lib/requestProgress/history';
 import type { RequestStart } from '@server/lib/requestProgress/stepStats';
 import stepStats from '@server/lib/requestProgress/stepStats';
 import type {
@@ -1101,6 +1102,14 @@ export function startProgressEvents(): void {
   );
   progressTracker.on('requests', (mediaId) =>
     requestSyncs.push(String(mediaId))
+  );
+  progressTracker.on('finished', (progress, requestIds) =>
+    storeRun(progress, requestIds).catch((e: Error) =>
+      logger.warn(`Storing the finished run failed: ${e.message}`, {
+        label: 'Request Progress',
+        mediaId: progress.mediaId,
+      })
+    )
   );
   servarrSignalR.on('connected', onSignalRConnected);
   servarrSignalR.on('reconnected', onSignalRConnected);

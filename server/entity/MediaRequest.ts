@@ -32,6 +32,7 @@ import {
   PrimaryGeneratedColumn,
   RelationCount,
   UpdateDateColumn,
+  VirtualColumn,
 } from 'typeorm';
 import Media from './Media';
 import SeasonRequest from './SeasonRequest';
@@ -608,6 +609,14 @@ export class MediaRequest {
 
   @DbAwareColumn({ type: 'datetime', nullable: true })
   public nextRetryAt?: Date | null;
+
+  // Tells the request lists whether a past progress pop-up exists, without loading it.
+  @VirtualColumn({
+    query: (alias) =>
+      `SELECT EXISTS(SELECT 1 FROM "request_progress_run" WHERE "requestId" = ${alias}."id")`,
+    transformer: { to: (v) => v, from: (v) => Boolean(Number(v)) },
+  })
+  public hasProgressRun?: boolean;
 
   constructor(init?: Partial<MediaRequest>) {
     Object.assign(this, init);
