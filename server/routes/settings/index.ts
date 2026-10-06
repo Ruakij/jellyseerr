@@ -135,6 +135,7 @@ const requestProgressValid: Record<
   estimatePercentile: (v) =>
     ESTIMATE_PERCENTILES.includes(v as EstimatePercentile),
   showConfidenceInterval: (v) => typeof v === 'boolean',
+  jellyfinCheckSeconds: isCount,
 };
 
 settingsRoutes.post('/request-progress', async (req, res, next) => {

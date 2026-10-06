@@ -34,6 +34,9 @@ const messages = defineMessages('components.Settings.SettingsRequestProgress', {
   localMaxAgeDaysTip: 'Durations measured by Seerr itself; 0 for no limit',
   localMaxSamples: 'Local Maximum Samples per Step',
   localMaxSamplesTip: 'Newest durations kept per step; 0 for no limit',
+  jellyfinCheckSeconds: 'Jellyfin Check Interval (Seconds)',
+  jellyfinCheckSecondsTip:
+    'Seconds between checks of Jellyfin for requests waiting to appear there; a missed webhook or event is caught within it; 0 to disable',
   validationNumber: 'You must provide a whole number of 0 or more',
   estimatePercentile: 'Estimate Percentile',
   estimatePercentileTip:
@@ -71,6 +74,7 @@ const fields = [
   'historyMaxSamples',
   'localMaxAgeDays',
   'localMaxSamples',
+  'jellyfinCheckSeconds',
 ] as const;
 
 const SettingsRequestProgress = () => {

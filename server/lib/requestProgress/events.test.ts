@@ -27,6 +27,7 @@ import {
   handleCommand,
   onJellyfinRemoved,
   onSignalRMessage,
+  pollJellyfin,
   queueEtaMs,
   reconcileJellyfin,
   reconstructProgress,
@@ -36,6 +37,7 @@ import {
   requestStarts,
   storeRuns,
   syncRequests,
+  watchJellyfin,
 } from '@server/lib/requestProgress/events';
 import { storeRun } from '@server/lib/requestProgress/history';
 import { StepStats } from '@server/lib/requestProgress/stepStats';
@@ -44,6 +46,7 @@ import progressTracker, {
   WAITING_FOR_RELEASE,
   WAITING_FOR_RSS,
 } from '@server/lib/requestProgress/tracker';
+import { jellyfinItemScanner } from '@server/lib/scanners/jellyfin';
 import { radarrScanner } from '@server/lib/scanners/radarr';
 import { sonarrScanner } from '@server/lib/scanners/sonarr';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
@@ -985,6 +988,146 @@ describe('reconcileJellyfin', () => {
     await reconcileJellyfin(undefined, tracker);
 
     assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+  });
+});
+
+describe('Jellyfin poll', () => {
+  const POLL_MS = 10_000;
+  const video = { MediaSources: [{ MediaStreams: [{ Type: 'Video' }] }] };
+  const jellyfinCalls = () => [
+    mock.method(JellyfinAPI.prototype, 'getItemData', async () => video),
+    mock.method(JellyfinAPI.prototype, 'getEpisodes', async () => []),
+    mock.method(JellyfinAPI.prototype, 'getNewestItems', async () => []),
+  ];
+
+  it('makes a run in Jellyfin ready without socket events', async () => {
+    const { media, tracker } = await setup({
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    const calls = jellyfinCalls();
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      watchJellyfin(tracker);
+      tracker.start({ mediaId: media.id, is4k: false });
+      tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
+      tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
+      assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+
+      mock.timers.tick(POLL_MS);
+      await settle();
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+
+      // Nothing waits for Jellyfin any more, so the poll stops.
+      const asked = calls[0].mock.callCount();
+      mock.timers.tick(POLL_MS * 3);
+      await settle();
+      assert.equal(calls[0].mock.callCount(), asked);
+    } finally {
+      mock.timers.reset();
+      calls.forEach((c) => c.mock.restore());
+    }
+  });
+
+  it('links a new series without a Jellyfin item by its provider id', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      status: MediaStatus.AVAILABLE,
+      tmdbId: 1399,
+      tvdbId: 121361,
+    });
+    tracker.start({
+      mediaId: media.id,
+      is4k: false,
+      requestId: 1,
+      seasons: [1],
+    });
+    tracker.setUnits(media.id, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+    ]);
+    tracker.grab(media.id, false, { downloadId: 'D', unitIds: [101] });
+    tracker.imported(media.id, false, { downloadId: 'D', unitIds: [101] });
+    const newest = mock.method(
+      JellyfinAPI.prototype,
+      'getNewestItems',
+      async () => [
+        { Id: 'movie', Type: 'Movie', ProviderIds: { Tmdb: '1399' } },
+        { Id: 'other', Type: 'Series', ProviderIds: { Tvdb: '1' } },
+        { Id: 'series', Type: 'Series', ProviderIds: { Tvdb: '121361' } },
+      ]
+    );
+    const scan = mock.method(jellyfinItemScanner, 'runItems', async () => {
+      await getRepository(Media).update(media.id, {
+        jellyfinMediaId: 'series',
+      });
+    });
+    const episodes = mock.method(
+      JellyfinAPI.prototype,
+      'getEpisodes',
+      async () => [{ ParentIndexNumber: 1, IndexNumber: 1, ...video }]
+    );
+    try {
+      await pollJellyfin(tracker);
+      assert.deepEqual(scan.mock.calls[0].arguments, [['series']]);
+      assert.equal(episodes.mock.calls[0].arguments[0], 'series');
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+    } finally {
+      newest.mock.restore();
+      scan.mock.restore();
+      episodes.mock.restore();
+    }
+  });
+
+  it('stops while its interval is 0 and resumes once it is set', async () => {
+    const { media, tracker } = await setup({
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    const calls = jellyfinCalls();
+    const settings = getSettings().requestProgress;
+    settings.jellyfinCheckSeconds = 0;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      watchJellyfin(tracker);
+      tracker.start({ mediaId: media.id, is4k: false });
+      tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
+      tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
+      mock.timers.tick(POLL_MS * 3);
+      await settle();
+      assert.equal(calls[0].mock.callCount(), 0);
+
+      settings.jellyfinCheckSeconds = 30;
+      mock.timers.tick(POLL_MS);
+      await settle();
+      mock.timers.tick(30_000);
+      await settle();
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+    } finally {
+      settings.jellyfinCheckSeconds = 10;
+      mock.timers.reset();
+      calls.forEach((c) => c.mock.restore());
+    }
+  });
+
+  it('asks Jellyfin nothing while no run waits for it', async () => {
+    const { media, tracker } = await setup({ jellyfinMediaId: 'abc' });
+    const calls = jellyfinCalls();
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      watchJellyfin(tracker);
+      tracker.start({ mediaId: media.id, is4k: false });
+      tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
+      await pollJellyfin(tracker);
+      mock.timers.tick(POLL_MS * 3);
+      await settle();
+      assert.deepEqual(
+        calls.map((c) => c.mock.callCount()),
+        [0, 0, 0]
+      );
+    } finally {
+      mock.timers.reset();
+      calls.forEach((c) => c.mock.restore());
+    }
   });
 });
 

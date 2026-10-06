@@ -499,6 +499,23 @@ class JellyfinAPI extends ExternalAPI {
     }
   }
 
+  /** The newest series and movies with their provider ids, e.g. to find a just added one. */
+  public async getNewestItems(
+    limit: number
+  ): Promise<JellyfinLibraryItemExtended[]> {
+    const response = await this.get<JellyfinItemsReponse>('/Items', {
+      params: {
+        recursive: true,
+        includeItemTypes: 'Series,Movie',
+        sortBy: 'DateCreated',
+        sortOrder: 'Descending',
+        limit,
+        fields: 'ProviderIds',
+      },
+    });
+    return response.Items ?? [];
+  }
+
   public async getItemData(
     id: string
   ): Promise<JellyfinLibraryItemExtended | undefined> {
