@@ -595,7 +595,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ps *,
-  .ps-shimmer {
+  .ps-sweep {
     animation: none !important;
   }
 }
@@ -645,8 +645,8 @@
 .ps-ripple {
   animation: ps-ripple 1.6s ease-out 0.5s both;
 }
-.ps-shimmer {
-  animation: ps-shimmer 2.5s linear infinite;
+.ps-sweep {
+  animation: ps-sweep 4s linear infinite;
 }
 
 /* The search icon goes over the indexer blocks and back, 0-1-2-1: a quarter of the
@@ -823,11 +823,12 @@
     opacity: 0;
   }
 }
-@keyframes ps-shimmer {
+/* A fifth of the line wide, from just off its left end to just off its right one */
+@keyframes ps-sweep {
   0% {
     transform: translateX(-100%);
   }
   100% {
-    transform: translateX(250%);
+    transform: translateX(500%);
   }
 }
