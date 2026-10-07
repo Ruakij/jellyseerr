@@ -10,7 +10,10 @@ import type {
   ServarrType,
   SignalRSource,
 } from '@server/api/servarr/signalr';
-import { servarrSignalR } from '@server/api/servarr/signalr';
+import {
+  parseSignalRMessage,
+  servarrSignalR,
+} from '@server/api/servarr/signalr';
 import SonarrAPI from '@server/api/servarr/sonarr';
 import {
   MediaRequestStatus,
@@ -1275,6 +1278,34 @@ function onSignalRConnected(source: SignalRSource): void {
   polls.push('downloads');
   serverRefresh.push(key, { all: true });
   refreshStepHistory(source.type, source.serverId);
+  restoreSearches(source).catch((e: Error) =>
+    logger.warn(`Loading running searches failed: ${e.message}`, {
+      label: 'Request Progress',
+      server: key,
+    })
+  );
+}
+
+/**
+ * Takes over the searches still running after a reconnect and ends the others: a search that
+ * ended unseen, e.g. aborted by a restart of Radarr/Sonarr, sends no event anymore.
+ */
+export async function restoreSearches(
+  source: SignalRSource,
+  tracker: ProgressTracker = progressTracker
+): Promise<void> {
+  const api = servarrApi(source.type, source.serverId);
+  if (!api) return;
+  for (const resource of await api.getCommands()) {
+    const event = parseSignalRMessage({ name: 'command', body: { resource } });
+    if (
+      event?.type === 'command' &&
+      (event.status === 'queued' || event.status === 'started')
+    ) {
+      await handleCommand(source, event, tracker);
+    }
+  }
+  tracker.endUnseenSearches(serverKey(source.type, source.serverId));
 }
 
 export const STEP_HISTORY_INTERVAL_MS = 6 * 60 * 60 * 1000;

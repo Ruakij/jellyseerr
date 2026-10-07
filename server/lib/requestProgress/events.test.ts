@@ -36,6 +36,7 @@ import {
   rememberEpisode,
   requestProgressStats,
   requestStarts,
+  restoreSearches,
   storeRuns,
   syncRequests,
   watchJellyfin,
@@ -57,6 +58,7 @@ import { In } from 'typeorm';
 
 let history: Partial<HistoryRecord>[] = [];
 let queue: Record<string, unknown>[] = [];
+let commands: Record<string, unknown>[] = [];
 let hasFile = false;
 let monitored = true;
 let lastSearchTime: string | undefined;
@@ -104,6 +106,7 @@ for (const Api of [RadarrAPI, SonarrAPI]) {
       },
     ],
     ['getQueue', async () => queue],
+    ['getCommands', async () => commands],
   ] as const) {
     // Instance arrow properties: the getter shadows them, the setter swallows the constructor's.
     Object.defineProperty(Api.prototype, name, {
@@ -134,6 +137,7 @@ async function setup(overrides: Partial<Media> = {}) {
   const tracker = new ProgressTracker(new StepStats());
   history = [];
   queue = [];
+  commands = [];
   hasFile = false;
   monitored = true;
   lastSearchTime = undefined;
@@ -918,6 +922,38 @@ describe('units at run start', () => {
       mock.timers.reset();
       sonarrEpisodes = [];
     }
+  });
+});
+
+describe('restoreSearches', () => {
+  it('ends a search that ended unseen across a reconnect', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    await handleCommand(radarr, search('started'), tracker);
+    tracker.forgetSearches('radarr-0');
+
+    await restoreSearches(radarr, tracker);
+
+    const step = statusOf(tracker, media.id, 'searching');
+    assert.equal(step.searchStartedAt, undefined);
+    assert.equal(step.waiting, 'rss');
+  });
+
+  it('keeps a search that still runs, with its command', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    const id = commandId++;
+    await handleCommand(radarr, search('started', { id }), tracker);
+    tracker.forgetSearches('radarr-0');
+    commands = [
+      { id, name: 'MoviesSearch', status: 'started', body: { movieIds: [42] } },
+      { id: id + 1, name: 'RssSync', status: 'started', body: {} },
+    ];
+
+    await restoreSearches(radarr, tracker);
+
+    assert.ok(statusOf(tracker, media.id, 'searching').searchStartedAt);
+    assert.deepEqual([...tracker.entry(media.id, false)!.searchCommands], [id]);
   });
 });
 
