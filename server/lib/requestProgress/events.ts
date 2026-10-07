@@ -233,7 +233,7 @@ export async function handleCommand(
       });
     } else {
       // Once per search, which retries a series Sonarr had no episodes of at send time.
-      const loadNow = !entry.unitsKnown && entry.searchCommandId !== event.id;
+      const loadNow = !entry.unitsKnown && !entry.searchCommands.has(event.id);
       const indexers = event.message?.match(/(\d+) active indexers?/)?.[1];
       tracker.setSearch(
         media.id,
@@ -241,11 +241,7 @@ export async function handleCommand(
         {
           searchCommandId: event.id,
           searchIndexers:
-            indexers === undefined
-              ? entry.searchCommandId === event.id
-                ? entry.searchIndexers
-                : undefined
-              : Number(indexers),
+            indexers === undefined ? entry.searchIndexers : Number(indexers),
         },
         { cause }
       );
@@ -1275,6 +1271,7 @@ async function checkRemoved(
 
 function onSignalRConnected(source: SignalRSource): void {
   const key = serverKey(source.type, source.serverId);
+  progressTracker.forgetSearches(key);
   polls.push('downloads');
   serverRefresh.push(key, { all: true });
   refreshStepHistory(source.type, source.serverId);

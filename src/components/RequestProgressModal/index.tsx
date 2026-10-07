@@ -2,7 +2,6 @@ import Button from '@app/components/Common/Button';
 import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import {
-  downloadFraction,
   idle,
   waitingForRelease,
 } from '@app/components/RequestProgressModal/ProgressScene';
@@ -445,9 +444,9 @@ const RequestProgressModal = ({
     const elapsed =
       s.key === 'searching' ? searchTime(s, now) : stepElapsed(s, now);
     const est = estimateOf(progress, s);
-    const fraction =
-      s.key === 'grabbed' ? downloadFraction(progress.downloads) : undefined;
-    // Only the bytes of a download; elapsed time against the estimate repeats the two times shown
+    // Units downloaded, a running download by its bytes; elapsed time against the estimate repeats
+    // the two times shown
+    const fraction = s.key === 'grabbed' ? s.progress : undefined;
     const percent =
       s.status !== 'running' || idle(s) || fraction === undefined
         ? undefined
@@ -565,7 +564,6 @@ const RequestProgressModal = ({
             <div>
               <ProgressStepper
                 steps={progress.steps}
-                downloads={progress.downloads}
                 label={label}
                 stats={stats}
               />
@@ -690,7 +688,7 @@ const RequestProgressModal = ({
                     <span className="min-w-0 break-words">
                       <span
                         className={
-                          /Failed|Blocked/.test(e.kind)
+                          /Failed|Blocked/.test(e.kind) && !e.resolved
                             ? 'text-red-400'
                             : 'text-gray-200'
                         }
