@@ -917,6 +917,31 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     }
   }
 
+  /** Ends the searches of a server that runs no command for them anymore. */
+  public endUnseenSearches(serverKey: string): void {
+    for (const entry of this.entries.values()) {
+      if (
+        entry.serverKey !== serverKey ||
+        entry.searchCommands.size > 0 ||
+        entry.searchStartedAt === undefined ||
+        this.retryPending(entry)
+      ) {
+        continue;
+      }
+      this.mutate(
+        entry.mediaId,
+        entry.is4k,
+        this.now(),
+        'no search running after a reconnect',
+        (e) => {
+          if (e.searchCommands.size === 0 && e.searchStartedAt !== undefined) {
+            this.endSearch(e, this.now());
+          }
+        }
+      );
+    }
+  }
+
   /**
    * A search command ended. Without `error` the units still without a release wait for RSS;
    * with it they fail at searching.

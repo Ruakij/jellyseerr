@@ -307,6 +307,19 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
     }
   };
 
+  /** Recent commands as Radarr/Sonarr list them, running ones included. */
+  public getCommands = async (): Promise<unknown[]> => {
+    try {
+      const response = await this.axios.get<unknown[]>('/command');
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[${this.apiName}] Failed to retrieve commands: ${e.message}`,
+        { cause: e }
+      );
+    }
+  };
+
   public getTags = async (): Promise<Tag[]> => {
     try {
       const response = await this.axios.get<Tag[]>(`/tag`);
