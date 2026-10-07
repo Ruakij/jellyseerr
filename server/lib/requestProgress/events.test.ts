@@ -27,6 +27,7 @@ import {
   handleCommand,
   loadUnits,
   onJellyfinRemoved,
+  onSignalRConnected,
   onSignalRMessage,
   pollJellyfin,
   queueEtaMs,
@@ -954,6 +955,44 @@ describe('restoreSearches', () => {
 
     assert.ok(statusOf(tracker, media.id, 'searching').searchStartedAt);
     assert.deepEqual([...tracker.entry(media.id, false)!.searchCommands], [id]);
+  });
+});
+
+describe('onSignalRConnected', () => {
+  it('drops a finish of the previous connection waiting for its refresh', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    const first = commandId++;
+    const second = commandId++;
+    await handleCommand(radarr, search('started', { id: first }), tracker);
+    await handleCommand(radarr, search('started', { id: second }), tracker);
+    commands = [
+      {
+        id: second,
+        name: 'MoviesSearch',
+        status: 'started',
+        body: { movieIds: [42] },
+      },
+    ];
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      await handleCommand(radarr, search('completed', { id: first }), tracker);
+      onSignalRConnected(radarr, tracker);
+      await settle();
+      mock.timers.tick(SERVER_REFRESH_MAX_WAIT_MS);
+      await settle();
+    } finally {
+      mock.timers.reset();
+    }
+    assert.deepEqual(
+      [...tracker.entry(media.id, false)!.searchCommands],
+      [second]
+    );
+    assert.ok(
+      !tracker
+        .get(media.id, false)!
+        .timeline?.some((e) => e.kind === 'searchFinished')
+    );
   });
 });
 

@@ -226,6 +226,7 @@ export async function handleCommand(
           commandId: event.id,
           at: Date.now(),
           cause,
+          connection: connections.get(key) ?? 0,
         },
       });
     } else if (ended) {
@@ -261,7 +262,15 @@ interface FinishedSearch {
   commandId: number;
   at: number;
   cause: string;
+  /** Count of connects to the server when the search finished, see `connections`. */
+  connection: number;
 }
+
+/**
+ * Connects per server. A reconnect restores the running searches from Radarr/Sonarr, so a finish
+ * of an earlier connection still waiting for its refresh would end them again.
+ */
+const connections = new Map<string, number>();
 
 interface ArrItem {
   movieId?: number;
@@ -1054,7 +1063,14 @@ const serverRefresh = new KeyedDebouncer<RefreshRequest | void>(
       await refreshServer(key, finished[0]?.tracker, scope);
     } finally {
       // A search without results leaves the units waiting: RSS may still bring a release.
-      for (const { tracker, mediaId, is4k, ...search } of finished) {
+      for (const {
+        tracker,
+        mediaId,
+        is4k,
+        connection,
+        ...search
+      } of finished) {
+        if (connection !== (connections.get(key) ?? 0)) continue;
         tracker.searchFinished(mediaId, is4k, search);
       }
     }
@@ -1272,13 +1288,17 @@ async function checkRemoved(
   }
 }
 
-function onSignalRConnected(source: SignalRSource): void {
+export function onSignalRConnected(
+  source: SignalRSource,
+  tracker: ProgressTracker = progressTracker
+): void {
   const key = serverKey(source.type, source.serverId);
-  progressTracker.forgetSearches(key);
+  connections.set(key, (connections.get(key) ?? 0) + 1);
+  tracker.forgetSearches(key);
   polls.push('downloads');
   serverRefresh.push(key, { all: true });
   refreshStepHistory(source.type, source.serverId);
-  restoreSearches(source).catch((e: Error) =>
+  restoreSearches(source, tracker).catch((e: Error) =>
     logger.warn(`Loading running searches failed: ${e.message}`, {
       label: 'Request Progress',
       server: key,
