@@ -394,7 +394,7 @@ mediaRoutes.get<{ mediaId: string }>(
             lastSearchedAt !== undefined
               ? new Date(lastSearchedAt).toISOString()
               : undefined,
-          running: entry?.searchCommandId !== undefined,
+          running: !!entry?.searchCommands.size,
         },
       };
       res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);

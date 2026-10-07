@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import type { RequestProgress } from '@server/interfaces/api/progressInterfaces';
 import {
@@ -9,6 +9,7 @@ import {
 } from '@server/lib/requestProgress/stepStats';
 import {
   ProgressTracker,
+  RETRY_SEARCH_MS,
   WAITING_FOR_RELEASE,
   WAITING_FOR_RSS,
 } from '@server/lib/requestProgress/tracker';
@@ -319,14 +320,22 @@ describe('ProgressTracker', () => {
     tick(1_000);
     tracker.imported(1, false, { downloadId: 'pack', unitIds: [101, 102] });
     const failedAt = tick(1_000);
+    mock.timers.enable({ apis: ['setTimeout'] });
     tracker.downloadFailed(1, false, {
       downloadId: 'single',
       reason: 'Download failed',
     });
-    tick(60_000);
 
     const steps = () =>
       Object.fromEntries(tracker.get(1, false)!.steps.map((s) => [s.key, s]));
+    // Sonarr searches again at once, so the run searches rather than waits until that search.
+    assert.equal(steps().searching.detail, 'Searching');
+    assert.equal(steps().searching.waiting, undefined);
+    assert.equal(steps().grabbed.waiting, undefined);
+    tick(RETRY_SEARCH_MS);
+    mock.timers.tick(RETRY_SEARCH_MS);
+    mock.timers.reset();
+    assert.equal(steps().searching.waiting, 'rss');
     assert.deepEqual(statuses(), {
       requested: 'done',
       searching: 'running',
@@ -358,9 +367,9 @@ describe('ProgressTracker', () => {
     assert.ok(steps().importing.waitingSince);
     assert.equal(steps().inJellyfin.waitingSince, undefined);
 
-    // The re-search clears the failure; the new grab assigns another download.
+    // The failure stays through the re-search until the new grab assigns another download.
     tracker.setSearch(1, false, { searchCommandId: 9 });
-    assert.equal(steps().grabbed.counts?.failed, 0);
+    assert.equal(steps().grabbed.counts?.failed, 1);
     tracker.grab(1, false, { downloadId: 'retry', unitIds: [103] });
     assert.deepEqual(steps().grabbed.counts, {
       done: 2,
@@ -384,19 +393,70 @@ describe('ProgressTracker', () => {
     );
   });
 
-  it('fails a download only once every unit failed', () => {
-    const { tracker } = setup();
-    tracker.start({ mediaId: 1, is4k: false });
+  it('never fails a run on a failed download, which is searched for again', () => {
+    const { tracker, tick } = setup();
+    tracker.start({ mediaId: 1, is4k: false, requestId: 1 });
     tracker.grab(1, false, { downloadId: 'D', unitIds: [0] });
+    mock.timers.enable({ apis: ['setTimeout'] });
     tracker.downloadFailed(1, false, {
       downloadId: 'D',
       reason: 'Download failed',
     });
-    const grabbed = tracker
+    tick(RETRY_SEARCH_MS);
+    mock.timers.tick(RETRY_SEARCH_MS);
+    mock.timers.reset();
+    const progress = () => tracker.get(1, false)!;
+    const step = (k: string) => progress().steps.find((s) => s.key === k)!;
+    assert.equal(step('grabbed').status, 'pending');
+    assert.equal(step('grabbed').error, undefined);
+    assert.equal(step('searching').waiting, 'rss');
+    assert.equal(progress().requests[0].status, 'running');
+    const failure = () =>
+      progress().timeline?.find((e) => e.kind === 'downloadFailed');
+    assert.equal(failure()?.resolved, undefined);
+    // Grabbing the movie again resolves the failure.
+    tracker.grab(1, false, { downloadId: 'E', unitIds: [0] });
+    assert.equal(failure()?.resolved, true);
+  });
+
+  it('keeps searching for a download that failed during a re-search after it finished', () => {
+    const { tracker, tick } = setup();
+    tracker.start({ mediaId: 1, is4k: false, requestId: 1 });
+    tracker.grab(1, false, { downloadId: 'D', unitIds: [0] });
+    mock.timers.enable({ apis: ['setTimeout'] });
+    tracker.downloadFailed(1, false, { downloadId: 'D', reason: 'Failed' });
+    tick(2_000);
+    tracker.setSearch(1, false, { searchCommandId: 1 });
+    tracker.grab(1, false, { downloadId: 'E', unitIds: [0] });
+    tick(1_000);
+    tracker.downloadFailed(1, false, { downloadId: 'E', reason: 'Failed' });
+    tick(1_000);
+    tracker.searchFinished(1, false, { commandId: 1 });
+    const searching = () =>
+      tracker.get(1, false)!.steps.find((s) => s.key === 'searching')!;
+    assert.equal(searching().waiting, undefined);
+    tick(RETRY_SEARCH_MS);
+    mock.timers.tick(RETRY_SEARCH_MS + 4_000);
+    mock.timers.reset();
+    assert.equal(searching().waiting, 'rss');
+  });
+
+  it('opens no search for a failure recorded after its re-search', () => {
+    const { tracker, tick } = setup();
+    const grabbedAt = tick(0);
+    tracker.start({ mediaId: 1, is4k: false, requestId: 1 });
+    tracker.grab(1, false, { downloadId: 'D', unitIds: [0] });
+    tick(10_000);
+    tracker.searchFinished(1, false, { commandId: 1 });
+    tracker.downloadFailed(1, false, {
+      downloadId: 'D',
+      reason: 'Failed',
+      at: grabbedAt + 1_000,
+    });
+    const searching = tracker
       .get(1, false)!
-      .steps.find((s) => s.key === 'grabbed')!;
-    assert.equal(grabbed.status, 'failed');
-    assert.equal(grabbed.error, 'Download failed');
+      .steps.find((s) => s.key === 'searching')!;
+    assert.equal(searching.waiting, 'rss');
   });
 
   it('counts search time only while a search runs', () => {
@@ -430,7 +490,7 @@ describe('ProgressTracker', () => {
     assert.equal(stats.total('radarr-0').localCount, 0);
   });
 
-  it('keeps the search of a new command running when a grab of the previous one comes late', () => {
+  it('keeps searching while overlapping commands run, in one window for all of them', () => {
     const { tracker, tick } = setup();
     const startedAt = tick(0);
     tracker.start({ mediaId: 1, is4k: false, serverKey: 'sonarr-0' });
@@ -440,33 +500,30 @@ describe('ProgressTracker', () => {
     ]);
     tick(1_000);
     tracker.setSearch(1, false, { searchCommandId: 1 });
-    const grabAt = tick(10_000);
-    const secondAt = tick(10_000);
-    tracker.setSearch(1, false, { searchCommandId: 2 });
-    // The pack the first command grabbed shows up in the history after the second started.
-    tracker.grab(1, false, {
-      downloadId: 'pack',
-      unitIds: [101, 102],
-      at: grabAt,
-    });
     tick(1_000);
-    tracker.downloadFailed(1, false, {
-      downloadId: 'pack',
-      reason: 'Download failed',
-    });
+    tracker.setSearch(1, false, { searchCommandId: 2 });
+    // A progress event of the first command is no new start.
+    tracker.setSearch(1, false, { searchCommandId: 1 });
+    tick(1_000);
+    tracker.searchFinished(1, false, { commandId: 2 });
     const progress = () => tracker.get(1, false)!;
     const searching = () =>
       progress().steps.find((s) => s.key === 'searching')!;
-    assert.equal(searching().searchStartedAt, new Date(secondAt).toISOString());
     assert.equal(searching().waiting, undefined);
     assert.equal(searching().detail, 'Searching');
-    assert.equal(progress().requests.length, 0);
-    assert.equal(searching().searchMs, grabAt - startedAt);
+    assert.equal(
+      searching().searchStartedAt,
+      new Date(startedAt).toISOString()
+    );
+    assert.equal(
+      progress().timeline?.filter((e) => e.kind === 'searchStarted').length,
+      2
+    );
 
-    tick(9_000);
-    tracker.searchFinished(1, false, { commandId: 2 });
-    assert.equal(searching().searchStartedAt, undefined);
-    assert.equal(searching().searchMs, grabAt - startedAt + 10_000);
+    tick(1_000);
+    tracker.searchFinished(1, false, { commandId: 1 });
+    assert.equal(searching().waiting, 'rss');
+    assert.equal(searching().searchMs, 4_000);
   });
 
   it('never shows waiting while a search command runs', () => {

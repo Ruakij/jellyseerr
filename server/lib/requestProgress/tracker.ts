@@ -38,6 +38,9 @@ const SEARCH_SAMPLE = 'sample:searching';
 // Time between the request and its search that still counts as no waiting.
 const SEARCH_GAP_MS = 1000;
 
+// Radarr/Sonarr search again right after a failed download; until then the run counts as searching.
+export const RETRY_SEARCH_MS = 60 * 1000;
+
 // Index in PROGRESS_STEPS of the step a unit is in.
 const SEARCHING = 0;
 const GRABBED = 1;
@@ -105,13 +108,18 @@ export interface TrackedProgress {
   requests: Map<number, TrackedRequest>;
   /** StepStats key, e.g. `radarr-0`; absent until the serving Radarr/Sonarr is known. */
   serverKey?: string;
-  /** Radarr/Sonarr search command running for the media, if any. */
-  searchCommandId?: number;
-  /** Indexers the running search queries, from its messages. */
+  /**
+   * Radarr/Sonarr search commands running for the media. They overlap, e.g. a season search and
+   * the search Sonarr starts for each failed download.
+   */
+  searchCommands: Set<number>;
+  /** Indexers the latest search queries, from its messages. */
   searchIndexers?: number;
   lastSearchedAt?: number;
   /** Start of the search running now; a request goes out with searchNow, so it starts one. */
   searchStartedAt?: number;
+  /** The window stays open until then for the search a failed download gets. */
+  retryUntil?: number;
   /** The last finished search, to tell whether a grab reported later came from it. */
   lastSearch?: { start: number; end: number };
   /** Time finished searches ran, up to the grab that ended one. */
@@ -195,6 +203,10 @@ const failedAt = (u: Unit): number | undefined => {
     ? step
     : undefined;
 };
+
+/** A search command runs, or a search window is open without one yet. */
+const searchOpen = (entry: TrackedProgress) =>
+  entry.searchCommands.size > 0 || entry.searchStartedAt !== undefined;
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -335,6 +347,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       reconstructed,
       searchStartedAt: awaiting || reconstructed ? undefined : at,
       searchMs: 0,
+      searchCommands: new Set(),
       units: new Map([[0, newUnit(0)]]),
       unitsKnown: false,
       releases: new Map(),
@@ -842,53 +855,66 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   /**
-   * Updates the search state. A new command clears the failures of the units still searched for.
-   * Without search events, a `lastSearchedAt` after the running search started ends it.
+   * Updates the search state. A new command clears the search failures; a failed download stays
+   * failed until its units are grabbed again. Without search events, a `lastSearchedAt` after the
+   * running search started ends it.
    */
   public setSearch(
     mediaId: number,
     is4k: boolean,
-    search: Pick<
+    {
+      searchCommandId,
+      ...search
+    }: Pick<
       TrackedProgress,
-      | 'searchCommandId'
-      | 'searchIndexers'
-      | 'lastSearchedAt'
-      | 'unreleased'
-      | 'releaseDate'
-    >,
+      'searchIndexers' | 'lastSearchedAt' | 'unreleased' | 'releaseDate'
+    > & { searchCommandId?: number },
     { at = this.now(), cause }: Change = {}
   ): void {
     this.mutate(mediaId, is4k, at, cause ?? 'search', (entry) => {
-      const previous = entry.searchCommandId;
-      const started =
-        search.searchCommandId !== undefined &&
-        search.searchCommandId !== previous;
       Object.assign(entry, search);
       if (
-        !started &&
-        entry.searchCommandId === undefined &&
-        entry.searchStartedAt !== undefined &&
-        (search.lastSearchedAt ?? 0) >= entry.searchStartedAt
+        searchCommandId === undefined ||
+        entry.searchCommands.has(searchCommandId)
       ) {
-        this.endSearch(entry, search.lastSearchedAt as number);
+        if (
+          entry.searchCommands.size === 0 &&
+          !this.retryPending(entry) &&
+          entry.searchStartedAt !== undefined &&
+          (search.lastSearchedAt ?? 0) >= entry.searchStartedAt
+        ) {
+          this.endSearch(entry, search.lastSearchedAt as number);
+        }
+        return;
       }
-      if (!started) return;
-      // A grab of the previous command reported later then falls into its window and cannot end
-      // this one. The window a request opened before its first command runs on.
-      if (previous !== undefined && entry.searchStartedAt !== undefined) {
-        this.endSearch(entry, at);
-      }
+      entry.searchCommands.add(searchCommandId);
+      // Overlapping commands share one window, which ends with the last of them.
       entry.searchStartedAt ??= at;
       for (const unit of entry.units.values()) {
-        if ((failedAt(unit) ?? Infinity) <= GRABBED) unit.failure = undefined;
+        if (failedAt(unit) === SEARCHING) unit.failure = undefined;
       }
       this.note(entry, at, cause, {
         step: 'searching',
         kind: 'searchStarted',
-        detail: `Command ${search.searchCommandId}`,
+        detail: `Command ${searchCommandId}`,
         source: 'search',
       });
     });
+  }
+
+  /**
+   * Forgets the commands of a server whose events may have been missed, e.g. across a reconnect.
+   * Commands still running report again; the window stays until a refresh shows the search ended.
+   */
+  public forgetSearches(serverKey: string): void {
+    for (const entry of this.entries.values()) {
+      if (entry.serverKey !== serverKey || entry.searchCommands.size === 0) {
+        continue;
+      }
+      this.mutate(entry.mediaId, entry.is4k, this.now(), 'reconnect', (e) =>
+        e.searchCommands.clear()
+      );
+    }
   }
 
   /**
@@ -906,22 +932,19 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     }: { commandId: number; error?: string } & Change
   ): void {
     this.mutate(mediaId, is4k, at, cause ?? 'search finished', (entry) => {
-      if (entry.searchCommandId === commandId) {
-        entry.searchCommandId = undefined;
+      entry.searchCommands.delete(commandId);
+      if (entry.searchCommands.size === 0) {
         entry.searchIndexers = undefined;
-      }
-      if (
-        entry.searchCommandId === undefined &&
-        entry.searchStartedAt !== undefined
-      ) {
-        this.endSearch(entry, at);
+        if (entry.searchStartedAt !== undefined && !this.retryPending(entry)) {
+          this.endSearch(entry, at);
+        }
       }
       entry.lastSearchedAt = at;
       const commandKey = `search:${commandId}`;
       if (entry.seen.has(commandKey)) return;
       entry.seen.add(commandKey);
       const missing = [...entry.units.values()].filter(
-        (u) => unitStage(u) === SEARCHING && failedAt(u) === undefined
+        (u) => unitStage(u) === SEARCHING && failedAt(u) !== SEARCHING
       );
       if (error) {
         for (const unit of missing) {
@@ -960,8 +983,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       entry.unreleased !== undefined &&
       entry.steps.requested.status === 'done' &&
       !this.finished(entry) &&
-      entry.searchCommandId === undefined &&
-      entry.searchStartedAt === undefined &&
+      !searchOpen(entry) &&
       entry.queue.size === 0 &&
       [...entry.units.values()].every((u) => unitStage(u) === SEARCHING)
     );
@@ -999,8 +1021,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         ...(k === 'searching'
           ? this.searchTimes(entry)
           : {
+              // While a search runs, the searching step says what the run does.
               waiting:
-                k === 'grabbed' && state.idleSince !== undefined
+                k === 'grabbed' &&
+                state.idleSince !== undefined &&
+                !searchOpen(entry)
                   ? ('grab' as const)
                   : undefined,
               waitingSince: iso(state.idleSince),
@@ -1024,8 +1049,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         : undefined;
     const stepSum = steps.flatMap((s) => s.estimateMs ?? []);
     const downloads: ProgressDownload[] = [...entry.queue.values()]
+      // A failed download stays in the queue until removed; its units are searched for again.
       .filter((item) =>
-        this.resolve(entry, item.unitIds).some((u) => !u.hasFile)
+        this.resolve(entry, item.unitIds).some(
+          (u) => !u.hasFile && u.downloadId === item.downloadId
+        )
       )
       .map(({ title, indexer, size, sizeLeft, etaMs }) => ({
         title,
@@ -1052,15 +1080,15 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         entry.steps.playable.status === 'done' || downloads.length === 0
           ? undefined
           : downloads,
-      timeline: entry.timeline.length > 0 ? [...entry.timeline] : undefined,
+      timeline:
+        entry.timeline.length > 0 ? this.timelineView(entry) : undefined,
     };
   }
 
   /** What the searching step waits for while no search runs, if anything. */
   private waiting(entry: TrackedProgress): 'release' | 'rss' | undefined {
     if (
-      entry.searchStartedAt !== undefined ||
-      entry.searchCommandId !== undefined ||
+      searchOpen(entry) ||
       entry.steps.searching.status !== 'running' ||
       ![...entry.units.values()].some((u) => unitStage(u) === SEARCHING)
     ) {
@@ -1113,8 +1141,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         const failed = units.map(failedAt);
         if (
           units.length > 0 &&
-          entry.searchCommandId === undefined &&
-          failed.every((f) => f !== undefined)
+          !searchOpen(entry) &&
+          failed.every((f) => f !== undefined && f !== GRABBED)
         ) {
           return {
             ...base,
@@ -1128,10 +1156,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         if (stage === PLAYABLE) {
           return { ...base, step: 'playable' as const, status: 'done' };
         }
-        const searching =
-          stage === SEARCHING &&
-          entry.searchStartedAt === undefined &&
-          entry.searchCommandId === undefined;
+        const searching = stage === SEARCHING && !searchOpen(entry);
         const since = Math.max(
           request.at,
           entry.lastSearch?.end ?? 0,
@@ -1152,10 +1177,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   private searchingDetail(entry: TrackedProgress): string {
-    if (
-      entry.searchStartedAt !== undefined ||
-      entry.searchCommandId !== undefined
-    ) {
+    if (searchOpen(entry)) {
       return entry.searchIndexers
         ? `Searching (${entry.searchIndexers} indexers)`
         : 'Searching';
@@ -1316,6 +1338,66 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       detail: `${detail ?? reason}, back to searching`,
       source,
     });
+    // Radarr/Sonarr search again at once; until then, and while that search runs, the units count
+    // as searched for. Each failure extends the wait. A record older than the last search came in
+    // after its re-search.
+    const fresh =
+      this.now() - at < RETRY_SEARCH_MS &&
+      Math.max(entry.lastSearch?.end ?? 0, entry.lastSearchedAt ?? 0) < at;
+    if (
+      entry.searchStartedAt === undefined &&
+      (fresh || entry.searchCommands.size > 0)
+    ) {
+      entry.searchStartedAt = Math.max(at, entry.lastSearch?.end ?? 0);
+    }
+    if (!fresh) return;
+    entry.retryUntil = Math.max(entry.retryUntil ?? 0, at + RETRY_SEARCH_MS);
+    const { mediaId, is4k } = entry;
+    setTimeout(
+      () =>
+        this.mutate(
+          mediaId,
+          is4k,
+          this.now(),
+          'no search after a failed download',
+          (e) => {
+            if (e.retryUntil === undefined || this.retryPending(e)) return;
+            e.retryUntil = undefined;
+            if (
+              e.searchCommands.size === 0 &&
+              e.searchStartedAt !== undefined
+            ) {
+              this.endSearch(e, e.lastSearchedAt ?? 0);
+            }
+          }
+        ),
+      entry.retryUntil - this.now()
+    ).unref();
+  }
+
+  /** A failed download still waits for the search Radarr/Sonarr start for it. */
+  private retryPending(entry: TrackedProgress): boolean {
+    return (entry.retryUntil ?? 0) > this.now();
+  }
+
+  /** The timeline, its failures marked resolved once each of their units was grabbed again. */
+  private timelineView(entry: TrackedProgress): ProgressTimelineEntry[] {
+    const regrabbed = new Set<number>();
+    const view = [...entry.timeline];
+    for (let i = view.length - 1; i >= 0; i--) {
+      const e = view[i];
+      const ids = this.timelineUnits.get(e)?.units.map((u) => u.id) ?? [];
+      if (
+        (e.kind === 'downloadFailed' || e.kind === 'importBlocked') &&
+        ids.length > 0 &&
+        ids.every((id) => regrabbed.has(id))
+      ) {
+        view[i] = { ...e, resolved: true };
+      } else if (e.kind === 'grabbed' || e.kind === 'imported') {
+        for (const id of ids) regrabbed.add(id);
+      }
+    }
+    return view;
   }
 
   private applyDownloaded(
@@ -1439,9 +1521,13 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   private recompute(entry: TrackedProgress, at: number, cause: string): void {
     const units = [...entry.units.values()];
     const total = units.length;
+    // Radarr/Sonarr search again after a failed download, so only search and import failures fail.
     const allFailed =
-      entry.searchCommandId === undefined &&
-      units.every((u) => failedAt(u) !== undefined);
+      !searchOpen(entry) &&
+      units.every((u) => {
+        const failed = failedAt(u);
+        return failed !== undefined && failed !== GRABBED;
+      });
     const counts = PROGRESS_STEPS.map(() => ({
       done: 0,
       active: 0,
@@ -1455,7 +1541,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       if (failed !== undefined) {
         counts[failed].failed++;
         reasons[failed] ??= unit.failure?.reason;
-        if (failed === GRABBED && !allFailed) counts[SEARCHING].active++;
+        if (failed === GRABBED) counts[SEARCHING].active++;
         else for (let i = 0; i < failed; i++) counts[i].done++;
         if (failed > GRABBED) downloaded++;
         continue;
@@ -1493,7 +1579,13 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
                 : 'pending',
         error: allFailed && c.failed > 0 ? reasons[i] : undefined,
         counts: c,
-        progress: (k === 'grabbed' ? downloaded : c.done) / total,
+        // Grabbed with no size known yet has no share to show.
+        progress:
+          k === 'grabbed'
+            ? downloaded > 0
+              ? downloaded / total
+              : undefined
+            : c.done / total,
       };
     });
     if (entry.requestError) {

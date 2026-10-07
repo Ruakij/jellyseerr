@@ -70,6 +70,7 @@ export interface ProgressTimelineEntry {
   detail?: string; // e.g. release title and indexer, failure reason; requested: the requester
   source: ProgressTimelineSource;
   seasons?: number[]; // series: seasons of its units, else of the requests active then
+  resolved?: boolean; // a failure whose units were grabbed again
 }
 
 // One active request of the media; the run covers the units of all of them
