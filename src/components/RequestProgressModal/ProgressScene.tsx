@@ -10,17 +10,9 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/solid';
 import type {
-  ProgressDownload,
   ProgressStep,
   ProgressStepKey,
 } from '@server/interfaces/api/progressInterfaces';
-
-// Overall share downloaded, undefined while no size is known
-export const downloadFraction = (downloads?: ProgressDownload[]) => {
-  const size = (downloads ?? []).reduce((sum, d) => sum + d.size, 0);
-  const left = (downloads ?? []).reduce((sum, d) => sum + d.sizeLeft, 0);
-  return size > 0 ? (size - left) / size : undefined;
-};
 
 // Running with no unit in it; searching has its own waiting
 export const idle = (step: ProgressStep) =>
@@ -294,12 +286,11 @@ const scenes: Record<
 
 interface StepGraphicProps {
   step: ProgressStep;
-  downloads?: ProgressDownload[];
   className?: string;
 }
 
 // Animated scene while a step runs (and once when ready), its icon otherwise
-const StepGraphic = ({ step, downloads, className }: StepGraphicProps) => {
+const StepGraphic = ({ step, className }: StepGraphicProps) => {
   if (waitingForRelease(step)) {
     const Icon = step.waiting === 'release' ? CalendarDaysIcon : ClockIcon;
     return <Icon className={className} />;
@@ -311,7 +302,7 @@ const StepGraphic = ({ step, downloads, className }: StepGraphicProps) => {
     const Scene = scenes[step.key];
     return (
       <svg viewBox="0 0 48 48" className={`ps ${className ?? ''}`}>
-        <Scene fraction={downloadFraction(downloads)} />
+        <Scene fraction={step.progress} />
       </svg>
     );
   }

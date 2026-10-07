@@ -727,11 +727,10 @@ describe('handleCommand', () => {
       },
     ];
     await refreshServer('radarr-0', tracker);
-    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'failed');
-    assert.equal(
-      statusOf(tracker, media.id, 'grabbed').error,
-      'Download failed'
-    );
+    // Radarr searches again, so the failure sends the movie back to searching without failing.
+    assert.equal(statusOf(tracker, media.id, 'searching').status, 'running');
+    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'pending');
+    assert.equal(statusOf(tracker, media.id, 'grabbed').counts?.failed, 1);
 
     await handleCommand(
       radarr,

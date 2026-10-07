@@ -1,12 +1,8 @@
 import StepGraphic, {
-  downloadFraction,
   idle,
   waitingForRelease,
 } from '@app/components/RequestProgressModal/ProgressScene';
-import type {
-  ProgressDownload,
-  ProgressStep,
-} from '@server/interfaces/api/progressInterfaces';
+import type { ProgressStep } from '@server/interfaces/api/progressInterfaces';
 
 const circleClass: Record<ProgressStep['status'], string> = {
   done: 'bg-green-600 text-white',
@@ -27,27 +23,15 @@ const labelClass: Record<ProgressStep['status'], string> = {
 };
 
 // Share of a running step done; searching has no progress signal
-const stepFraction = (
-  step: ProgressStep,
-  downloads?: ProgressDownload[]
-): number | undefined => {
+const stepFraction = (step: ProgressStep): number | undefined => {
   if (step.status === 'done') return 1;
   if (step.status !== 'running' || step.key === 'searching') return undefined;
-  return (
-    (step.key === 'grabbed' ? downloadFraction(downloads) : undefined) ??
-    step.progress
-  );
+  return step.progress;
 };
 
 // The line from the center of a step to the center of the next one, under both icons
-const Connector = ({
-  step,
-  downloads,
-}: {
-  step: ProgressStep;
-  downloads?: ProgressDownload[];
-}) => {
-  const fraction = stepFraction(step, downloads);
+const Connector = ({ step }: { step: ProgressStep }) => {
+  const fraction = stepFraction(step);
   const shimmer =
     step.status === 'running' &&
     !idle(step) &&
@@ -69,7 +53,6 @@ const Connector = ({
 
 interface ProgressStepperProps {
   steps: ProgressStep[];
-  downloads?: ProgressDownload[];
   label: (step: ProgressStep) => string;
   stats: (step: ProgressStep) => {
     percent?: number;
@@ -85,12 +68,7 @@ interface ProgressStepperProps {
 // One equal column per step: the icon on the line, then label, count or percent,
 // time and estimate, one short line each so neighbours never collide; six
 // columns fit a phone at 10px, longer values truncate rather than overflow
-const ProgressStepper = ({
-  steps,
-  downloads,
-  label,
-  stats,
-}: ProgressStepperProps) => (
+const ProgressStepper = ({ steps, label, stats }: ProgressStepperProps) => (
   <ol className="flex">
     {steps.map((step, i) => {
       const {
@@ -104,15 +82,13 @@ const ProgressStepper = ({
       } = stats(step);
       const running = step.status === 'running';
       const waiting = waitingForRelease(step);
-      const fraction = running ? stepFraction(step, downloads) : undefined;
+      const fraction = running ? stepFraction(step) : undefined;
       return (
         <li
           key={step.key}
           className="relative flex min-w-0 flex-1 flex-col items-center text-center text-[10px] tabular-nums leading-tight sm:text-xs"
         >
-          {i < steps.length - 1 && (
-            <Connector step={step} downloads={downloads} />
-          )}
+          {i < steps.length - 1 && <Connector step={step} />}
           <div className="relative flex h-12 items-center sm:h-14">
             {/* Opaque behind the translucent circles, so the line stops at the icon */}
             <div className="rounded-full bg-gray-800">
@@ -131,7 +107,6 @@ const ProgressStepper = ({
                 )}
                 <StepGraphic
                   step={step}
-                  downloads={downloads}
                   className={`relative ${
                     waiting
                       ? 'h-6 w-6 sm:h-7 sm:w-7'
