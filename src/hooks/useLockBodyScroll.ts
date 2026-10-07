@@ -1,5 +1,10 @@
 import { useEffect } from 'react';
 
+// Shared across hook instances: overlapping locks (a modal opening while
+// another one is still leaving) must restore the body only on the last release.
+let activeLocks = 0;
+let unlockedStyle = { overflow: '', touchAction: '' };
+
 /**
  * Hook to lock the body scroll whenever a component is mounted or
  * whenever isLocked is set to true.
@@ -15,20 +20,19 @@ export const useLockBodyScroll = (
   disabled?: boolean
 ): void => {
   useEffect(() => {
-    const originalOverflowStyle = window.getComputedStyle(
-      document.body
-    ).overflow;
-    const originalTouchActionStyle = window.getComputedStyle(
-      document.body
-    ).touchAction;
-    if (isLocked && !disabled) {
+    if (!isLocked || disabled) return;
+    if (activeLocks++ === 0) {
+      unlockedStyle = {
+        overflow: document.body.style.overflow,
+        touchAction: document.body.style.touchAction,
+      };
       document.body.style.overflow = 'hidden';
       document.body.style.touchAction = 'none';
     }
     return () => {
-      if (!disabled) {
-        document.body.style.overflow = originalOverflowStyle;
-        document.body.style.touchAction = originalTouchActionStyle;
+      if (--activeLocks === 0) {
+        document.body.style.overflow = unlockedStyle.overflow;
+        document.body.style.touchAction = unlockedStyle.touchAction;
       }
     };
   }, [isLocked, disabled]);
