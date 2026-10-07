@@ -1307,6 +1307,7 @@ describe('Jellyfin poll', () => {
     try {
       watchJellyfin(tracker);
       tracker.start({ mediaId: media.id, is4k: false });
+      tracker.watch(media.id, false);
       tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
       tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
       assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
@@ -1344,6 +1345,7 @@ describe('Jellyfin poll', () => {
     ]);
     tracker.grab(media.id, false, { downloadId: 'D', unitIds: [101] });
     tracker.imported(media.id, false, { downloadId: 'D', unitIds: [101] });
+    tracker.watch(media.id, false);
     const newest = mock.method(
       JellyfinAPI.prototype,
       'getNewestItems',
@@ -1393,6 +1395,7 @@ describe('Jellyfin poll', () => {
     try {
       watchJellyfin(tracker);
       tracker.start({ mediaId: media.id, is4k: false });
+      tracker.watch(media.id, false);
       tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
       tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
       mock.timers.tick(POLL_MS * 3);
@@ -1419,6 +1422,7 @@ describe('Jellyfin poll', () => {
     try {
       watchJellyfin(tracker);
       tracker.start({ mediaId: media.id, is4k: false });
+      tracker.watch(media.id, false);
       tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
       await pollJellyfin(tracker);
       mock.timers.tick(POLL_MS * 3);
@@ -1429,6 +1433,62 @@ describe('Jellyfin poll', () => {
       );
     } finally {
       mock.timers.reset();
+      calls.forEach((c) => c.mock.restore());
+    }
+  });
+  it('asks Jellyfin nothing for a run nobody watches', async () => {
+    const { media, tracker } = await setup({ jellyfinMediaId: 'abc' });
+    const calls = jellyfinCalls();
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      watchJellyfin(tracker);
+      tracker.start({ mediaId: media.id, is4k: false });
+      tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
+      tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
+      const unwatch = tracker.watch(media.id, false);
+      unwatch();
+      mock.timers.tick(POLL_MS * 3);
+      await settle();
+      assert.equal(calls[0].mock.callCount(), 0);
+
+      // Opening the pop-up starts the checks.
+      tracker.watch(media.id, false);
+      mock.timers.tick(POLL_MS);
+      await settle();
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+    } finally {
+      mock.timers.reset();
+      calls.forEach((c) => c.mock.restore());
+    }
+  });
+
+  it('asks Jellyfin nothing while the units left wait at other steps', async () => {
+    const { media, tracker } = await setup({
+      mediaType: MediaType.TV,
+      jellyfinMediaId: 'abc',
+    });
+    tracker.start({
+      mediaId: media.id,
+      is4k: false,
+      requestId: 1,
+      seasons: [1],
+    });
+    tracker.setUnits(media.id, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: false },
+    ]);
+    tracker.syncFiles(media.id, false);
+    tracker.setJellyfin(media.id, false, { present: (u) => u.id === 101 });
+    tracker.watch(media.id, false);
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+    const calls = jellyfinCalls();
+    try {
+      await pollJellyfin(tracker);
+      assert.deepEqual(
+        calls.map((c) => c.mock.callCount()),
+        [0, 0, 0]
+      );
+    } finally {
       calls.forEach((c) => c.mock.restore());
     }
   });

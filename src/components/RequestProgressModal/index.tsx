@@ -86,6 +86,7 @@ const messages = defineMessages('components.RequestProgressModal', {
   timeline_fileDeleted: 'File deleted',
   timeline_inJellyfin: 'Added to Jellyfin',
   timeline_leftJellyfin: 'Removed from Jellyfin',
+  timeline_jellyfinTimeout: 'Not listed by Jellyfin',
   timeline_playable: 'Ready to play',
   timeline_requestFailed: 'Request failed',
 });

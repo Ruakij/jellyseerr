@@ -428,6 +428,7 @@ mediaRoutes.get<{ mediaId: string }>(
     };
     progressTracker.on('change', onChange);
     progressTracker.on('removed', onRemoved);
+    const unwatch = progressTracker.watch(mediaId, is4k);
     // Proxies close idle connections; a comment line keeps it busy without an event.
     const heartbeat = setInterval(
       () => res.write(': heartbeat\n\n'),
@@ -437,6 +438,7 @@ mediaRoutes.get<{ mediaId: string }>(
       clearInterval(heartbeat);
       progressTracker.off('change', onChange);
       progressTracker.off('removed', onRemoved);
+      unwatch();
     });
   }
 );

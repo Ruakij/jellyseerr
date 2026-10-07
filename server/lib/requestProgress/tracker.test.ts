@@ -8,6 +8,8 @@ import {
   StepStats,
 } from '@server/lib/requestProgress/stepStats';
 import {
+  JELLYFIN_TIMEOUT,
+  JELLYFIN_TIMEOUT_MS,
   ProgressTracker,
   RETRY_SEARCH_MS,
   WAITING_FOR_RELEASE,
@@ -50,6 +52,27 @@ describe('ProgressTracker', () => {
       changes[0].requests.map((r) => r.id),
       [7]
     );
+  });
+
+  it('fails a unit Jellyfin does not list within the timeout, until it does', () => {
+    const { tracker, tick, statuses } = setup();
+    tracker.start({ mediaId: 1, is4k: false, requestId: 7 });
+    tracker.grab(1, false, { downloadId: 'D', unitIds: [0] });
+    tracker.imported(1, false, { downloadId: 'D', unitIds: [0] });
+    tick(JELLYFIN_TIMEOUT_MS - 1);
+    tracker.expireJellyfinWaits();
+    assert.equal(statuses().inJellyfin, 'running');
+
+    tick(1);
+    tracker.expireJellyfinWaits();
+    const step = tracker
+      .get(1, false)!
+      .steps.find((s) => s.key === 'inJellyfin')!;
+    assert.equal(step.status, 'failed');
+    assert.equal(step.error, JELLYFIN_TIMEOUT);
+
+    tracker.setJellyfin(1, false, { present: () => true });
+    assert.equal(statuses().playable, 'done');
   });
 
   describe('several requests of one series', () => {

@@ -1142,13 +1142,17 @@ const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
   }
 );
 
+// Open in a pop-up with a unit imported and not in Jellyfin yet; units waiting at other steps,
+// e.g. for an RSS release, are not worth a check.
 const inJellyfinSteps =
   (tracker: ProgressTracker) => (entry: TrackedProgress) =>
-    !tracker.finished(entry) && entry.steps.inJellyfin.status === 'running';
+    !tracker.finished(entry) &&
+    tracker.watched(entry) &&
+    (entry.steps.inJellyfin.counts?.active ?? 0) > 0;
 
 /**
- * Asks Jellyfin about the runs waiting for it, as the socket gets no library events with an API
- * key and the webhook can miss them.
+ * Asks Jellyfin about the watched runs waiting for it, as the socket gets no library events with
+ * an API key and the webhook can miss them.
  */
 export async function pollJellyfin(
   tracker: ProgressTracker = progressTracker
@@ -1156,9 +1160,12 @@ export async function pollJellyfin(
   await reconcileJellyfin(undefined, tracker, inJellyfinSteps(tracker));
 }
 
+// Expiring touches no API, so a coarse sweep is enough.
+const EXPIRY_SWEEP_MS = 60_000;
+
 /**
- * Polls Jellyfin while a run waits for it. A safety net: the scans the Jellyfin webhook triggers
- * reconcile the runs first.
+ * Polls Jellyfin while a watched run waits for it, and fails units Jellyfin never lists. A safety
+ * net: the scans the Jellyfin webhook triggers reconcile the runs first.
  */
 export function watchJellyfin(
   tracker: ProgressTracker = progressTracker
@@ -1186,6 +1193,8 @@ export function watchJellyfin(
     );
   };
   tracker.on('change', schedule);
+  tracker.on('watched', schedule);
+  setInterval(() => tracker.expireJellyfinWaits(), EXPIRY_SWEEP_MS).unref();
 }
 
 // Scheduled and webhook triggered scans link and update media the runs wait for.
