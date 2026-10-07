@@ -25,14 +25,13 @@ interface ProgressButtonProps {
   media?: Media;
 }
 
-// One button per variant with an active request or a stored past run, whatever the media status
+// One button per variant with an active request; past runs open from their request in the
+// manage slide-over
 const ProgressButton = ({ media }: ProgressButtonProps) => {
   const intl = useIntl();
   const variants = [false, true].filter((is4k) =>
     media?.requests?.some(
-      (r) =>
-        r.is4k === is4k &&
-        (ACTIVE_REQUEST.includes(r.status) || r.hasProgressRun)
+      (r) => r.is4k === is4k && ACTIVE_REQUEST.includes(r.status)
     )
   );
 
