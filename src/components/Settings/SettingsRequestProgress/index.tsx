@@ -36,7 +36,7 @@ const messages = defineMessages('components.Settings.SettingsRequestProgress', {
   localMaxSamplesTip: 'Newest durations kept per step; 0 for no limit',
   jellyfinCheckSeconds: 'Jellyfin Check Interval (Seconds)',
   jellyfinCheckSecondsTip:
-    'Seconds between checks of Jellyfin for requests waiting to appear there; a missed webhook or event is caught within it; 0 to disable',
+    'Seconds between checks of Jellyfin for requests open in a progress pop-up waiting to appear there; a missed webhook or event is caught within it; 0 to disable',
   validationNumber: 'You must provide a whole number of 0 or more',
   estimatePercentile: 'Estimate Percentile',
   estimatePercentileTip:

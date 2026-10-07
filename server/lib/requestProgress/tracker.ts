@@ -45,7 +45,12 @@ export const RETRY_SEARCH_MS = 60 * 1000;
 const SEARCHING = 0;
 const GRABBED = 1;
 const IMPORTING = 2;
+const IN_JELLYFIN = 3;
 const PLAYABLE = 4;
+
+// Jellyfin normally lists a file within a minute of its import; a unit waiting longer fails.
+export const JELLYFIN_TIMEOUT_MS = 60 * 60 * 1000;
+export const JELLYFIN_TIMEOUT = 'Jellyfin did not list it within an hour';
 
 /** The movie, or one requested episode. */
 export interface Unit {
@@ -64,7 +69,10 @@ export interface Unit {
   arrHasFile?: boolean;
   inJellyfin: boolean;
   /** Why its last attempt failed; it counts while the unit has not moved on. */
-  failure?: { step: 'searching' | 'grabbed' | 'importing'; reason: string };
+  failure?: {
+    step: 'searching' | 'grabbed' | 'importing' | 'inJellyfin';
+    reason: string;
+  };
 }
 
 export interface QueueItemState {
@@ -187,7 +195,7 @@ export const unitStage = (u: Unit): number =>
   u.inJellyfin && u.arrHasFile !== false
     ? PLAYABLE
     : u.hasFile
-      ? 3
+      ? IN_JELLYFIN
       : u.downloadId
         ? u.downloadedAt !== undefined
           ? IMPORTING
@@ -199,7 +207,8 @@ const failedAt = (u: Unit): number | undefined => {
   if (!u.failure) return undefined;
   const step = PROGRESS_STEPS.indexOf(u.failure.step);
   const stage = unitStage(u);
-  return stage === (step === IMPORTING ? IMPORTING : SEARCHING)
+  return stage ===
+    (step === IMPORTING || step === IN_JELLYFIN ? step : SEARCHING)
     ? step
     : undefined;
 };
@@ -260,11 +269,15 @@ interface TrackerEvents {
   requests: [mediaId: number];
   /** Radarr/Sonarr added the media of a run, so its item can be read. */
   sent: [mediaId: number, is4k: boolean];
+  /** A progress stream of the media opened. */
+  watched: [mediaId: number, is4k: boolean];
 }
 
 export class ProgressTracker extends EventEmitter<TrackerEvents> {
   private entries = new Map<string, TrackedProgress>();
   private evictions = new Map<string, NodeJS.Timeout>();
+  /** Open progress streams per run key. */
+  private watchers = new Map<string, number>();
   /** The units of a timeline entry, to merge the next records of the same event into it. */
   private timelineUnits = new WeakMap<
     ProgressTimelineEntry,
@@ -489,6 +502,54 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     return [...this.entries.values()].filter(
       (e) => e.steps.playable.status !== 'done'
     );
+  }
+
+  /** Counts an open progress stream of the media until the returned function is called. */
+  public watch(mediaId: number, is4k: boolean): () => void {
+    const k = key(mediaId, is4k);
+    this.watchers.set(k, (this.watchers.get(k) ?? 0) + 1);
+    this.emit('watched', mediaId, is4k);
+    let open = true;
+    return () => {
+      if (!open) return;
+      open = false;
+      const left = (this.watchers.get(k) ?? 1) - 1;
+      if (left > 0) this.watchers.set(k, left);
+      else this.watchers.delete(k);
+    };
+  }
+
+  /** Someone has the progress of the run open. */
+  public watched(entry: TrackedProgress): boolean {
+    return this.watchers.has(key(entry.mediaId, entry.is4k));
+  }
+
+  /** Fails the units Radarr/Sonarr imported that Jellyfin has not listed within the timeout. */
+  public expireJellyfinWaits(
+    timeoutMs = JELLYFIN_TIMEOUT_MS,
+    at = this.now()
+  ): void {
+    for (const entry of this.active()) {
+      const expired = (u: Unit) =>
+        !u.failure &&
+        unitStage(u) === IN_JELLYFIN &&
+        (u.importedAt ?? entry.steps.inJellyfin.startedAt ?? at) <=
+          at - timeoutMs;
+      if (![...entry.units.values()].some(expired)) continue;
+      this.mutate(entry.mediaId, entry.is4k, at, 'Jellyfin timeout', () => {
+        const units = [...entry.units.values()].filter(expired);
+        for (const unit of units) {
+          unit.failure = { step: 'inJellyfin', reason: JELLYFIN_TIMEOUT };
+        }
+        this.note(entry, at, 'Jellyfin timeout', {
+          step: 'inJellyfin',
+          kind: 'jellyfinTimeout',
+          units,
+          detail: JELLYFIN_TIMEOUT,
+          source: 'jellyfin',
+        });
+      });
+    }
   }
 
   /** Entries still waiting for a step. */

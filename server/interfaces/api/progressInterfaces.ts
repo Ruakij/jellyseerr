@@ -51,6 +51,7 @@ export type ProgressTimelineKind =
   | 'fileDeleted'
   | 'inJellyfin'
   | 'leftJellyfin'
+  | 'jellyfinTimeout'
   | 'playable'
   | 'requestFailed';
 
