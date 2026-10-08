@@ -54,7 +54,10 @@ export const JELLYFIN_TIMEOUT = 'Jellyfin did not list it within an hour';
 
 /** The movie, or one requested episode. */
 export interface Unit {
-  /** Sonarr episode id; 0 for a movie and for the placeholder of a series not loaded yet. */
+  /**
+   * Sonarr episode id; 0 for a movie and for the placeholder of a series not loaded yet, negative
+   * for the placeholder of a requested season Sonarr lists no episodes for.
+   */
   id: number;
   seasonNumber?: number;
   episodeNumber?: number;
@@ -68,6 +71,10 @@ export interface Unit {
   /** Whether Radarr/Sonarr listed a file at its last answer. */
   arrHasFile?: boolean;
   inJellyfin: boolean;
+  /** Not aired at the last Sonarr answer, so nothing can be searched for. */
+  unaired?: boolean;
+  /** Air date of an unaired episode; absent when Sonarr has none. */
+  airsAt?: number;
   /** Why its last attempt failed; it counts while the unit has not moved on. */
   failure?: {
     step: 'searching' | 'grabbed' | 'importing' | 'inJellyfin';
@@ -201,6 +208,15 @@ export const unitStage = (u: Unit): number =>
           ? IMPORTING
           : GRABBED
         : SEARCHING;
+
+/** Waits for its air date at the searching step. */
+const waitsForRelease = (u: Unit) => !!u.unaired && unitStage(u) === SEARCHING;
+
+/** Units are left to search for, and all of them wait for their air date. */
+const releasePending = (units: Iterable<Unit>) => {
+  const searching = [...units].filter((u) => unitStage(u) === SEARCHING);
+  return searching.length > 0 && searching.every((u) => u.unaired);
+};
 
 /** The step the unit's failure holds it at, if it has not moved on since. */
 const failedAt = (u: Unit): number | undefined => {
@@ -570,16 +586,26 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   public setUnits(
     mediaId: number,
     is4k: boolean,
-    units: Pick<Unit, 'id' | 'seasonNumber' | 'episodeNumber' | 'hasFile'>[],
+    units: Pick<
+      Unit,
+      'id' | 'seasonNumber' | 'episodeNumber' | 'hasFile' | 'unaired' | 'airsAt'
+    >[],
     { at = this.now(), cause }: Change = {}
   ): void {
     this.mutate(mediaId, is4k, at, cause ?? 'units', (entry) => {
       if (units.length === 0) return;
       const next = new Map<number, Unit>();
-      for (const { id, seasonNumber, episodeNumber, hasFile } of units) {
+      for (const {
+        id,
+        seasonNumber,
+        episodeNumber,
+        hasFile,
+        unaired,
+        airsAt,
+      } of units) {
         // Episode ids are never 0, so only a movie takes over the placeholder.
         const unit = entry.units.get(id) ?? newUnit(id);
-        Object.assign(unit, { seasonNumber, episodeNumber });
+        Object.assign(unit, { seasonNumber, episodeNumber, unaired, airsAt });
         unit.arrHasFile = hasFile;
         next.set(id, unit);
       }
@@ -1029,7 +1055,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       const commandKey = `search:${commandId}`;
       if (entry.seen.has(commandKey)) return;
       entry.seen.add(commandKey);
-      const missing = [...entry.units.values()].filter(
+      // Nothing is searched for an unaired unit, so a search neither misses nor fails it.
+      const aired = [...entry.units.values()].filter(
+        (u) => !waitsForRelease(u)
+      );
+      const missing = aired.filter(
         (u) => unitStage(u) === SEARCHING && failedAt(u) !== SEARCHING
       );
       if (error) {
@@ -1037,7 +1067,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           unit.failure = { step: 'searching', reason: error };
         }
       }
-      const total = entry.units.size;
+      const total = aired.length;
       this.note(entry, at, cause, {
         step: 'searching',
         kind: error ? 'searchFailed' : 'searchFinished',
@@ -1062,7 +1092,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
 
   /**
    * Waits for a release with nothing running: its search ended without a grab, or nothing is
-   * released. Only events naming its item, the queue holding it and the full sync refresh it.
+   * released, and every other unit is ready. Only events naming its item, the queue holding it and
+   * the full sync refresh it.
    */
   public dormant(entry: TrackedProgress): boolean {
     return (
@@ -1071,7 +1102,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       !this.finished(entry) &&
       !searchOpen(entry) &&
       entry.queue.size === 0 &&
-      [...entry.units.values()].every((u) => unitStage(u) === SEARCHING)
+      [...entry.units.values()].every((u) =>
+        [SEARCHING, PLAYABLE].includes(unitStage(u))
+      )
     );
   }
 
@@ -1107,11 +1140,13 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         ...(k === 'searching'
           ? this.searchTimes(entry)
           : {
-              // While a search runs, the searching step says what the run does.
+              // While a search runs, or the units left wait for their air date, the searching step
+              // says what the run does.
               waiting:
                 k === 'grabbed' &&
                 state.idleSince !== undefined &&
-                !searchOpen(entry)
+                !searchOpen(entry) &&
+                !releasePending(entry.units.values())
                   ? ('grab' as const)
                   : undefined,
               waitingSince: iso(state.idleSince),
@@ -1162,6 +1197,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         entry.steps.playable.status === 'done' ? entry.playUrl : undefined,
       dormant: this.dormant(entry) || undefined,
       releaseDate: iso(entry.releaseDate),
+      unaired: this.unairedSeasons(entry),
       downloads:
         entry.steps.playable.status === 'done' || downloads.length === 0
           ? undefined
@@ -1169,6 +1205,26 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       timeline:
         entry.timeline.length > 0 ? this.timelineView(entry) : undefined,
     };
+  }
+
+  /** The seasons with units waiting for their air date, with the earliest one known. */
+  private unairedSeasons(entry: TrackedProgress): RequestProgress['unaired'] {
+    const seasons = new Map<number, number | undefined>();
+    for (const u of entry.units.values()) {
+      if (!waitsForRelease(u) || u.seasonNumber === undefined) continue;
+      const known = seasons.get(u.seasonNumber);
+      seasons.set(
+        u.seasonNumber,
+        u.airsAt === undefined || (known !== undefined && known < u.airsAt)
+          ? known
+          : u.airsAt
+      );
+    }
+    return seasons.size === 0
+      ? undefined
+      : [...seasons]
+          .sort(([a], [b]) => a - b)
+          .map(([season, at]) => ({ season, airsAt: iso(at) }));
   }
 
   /** What the searching step waits for while no search runs, if anything. */
@@ -1180,7 +1236,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     ) {
       return undefined;
     }
-    return entry.unreleased ? 'release' : 'rss';
+    return entry.unreleased || releasePending(entry.units.values())
+      ? 'release'
+      : 'rss';
   }
 
   /** Search time apart from waiting, for the searching step. */
@@ -1200,9 +1258,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   /**
-   * Where each request stands: the step of its least advanced unit. A season without aired
-   * episodes has no unit and waits for its release. Waiting counts from the request or the last
-   * search after it.
+   * Where each request stands: the step of its least advanced unit. A season with unaired units
+   * only, or none, waits for its release. Waiting counts from the request or the last search after
+   * it.
    */
   private requestStates(entry: TrackedProgress): ProgressRequest[] {
     return [...entry.requests.values()]
@@ -1254,7 +1312,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           status: 'running',
           waiting: !searching
             ? undefined
-            : units.length === 0 || entry.unreleased
+            : units.length === 0 || entry.unreleased || releasePending(units)
               ? 'release'
               : 'rss',
           waitingSince: searching ? iso(since) : undefined,
@@ -1268,11 +1326,12 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         ? `Searching (${entry.searchIndexers} indexers)`
         : 'Searching';
     }
-    if (entry.unreleased) return WAITING_FOR_RELEASE;
-    const total = entry.units.size;
-    const missing = [...entry.units.values()].filter(
-      (u) => unitStage(u) === SEARCHING
-    ).length;
+    if (entry.unreleased || releasePending(entry.units.values())) {
+      return WAITING_FOR_RELEASE;
+    }
+    const aired = [...entry.units.values()].filter((u) => !waitsForRelease(u));
+    const total = aired.length;
+    const missing = aired.filter((u) => unitStage(u) === SEARCHING).length;
     return total > 1 && missing > 0
       ? `${missing} of ${total} not found yet, waiting for RSS`
       : WAITING_FOR_RSS;
@@ -1288,11 +1347,15 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   /**
-   * Once no unit is searched for anymore, a grab during a search ends it there and records the
-   * search as a sample. A grab outside any search came from RSS while waiting.
+   * Once no aired unit is searched for anymore, a grab during a search ends it there and records
+   * the search as a sample. A grab outside any search came from RSS while waiting.
    */
   private grabEndsSearch(entry: TrackedProgress, at: number): void {
-    if ([...entry.units.values()].some((u) => unitStage(u) === SEARCHING)) {
+    if (
+      [...entry.units.values()].some(
+        (u) => unitStage(u) === SEARCHING && !u.unaired
+      )
+    ) {
       return;
     }
     let start: number;
@@ -1321,7 +1384,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     entry.seen.add(SEARCH_SAMPLE);
     this.stats.record(entry.serverKey, 'searching', at - start, {
       at,
-      downloadId: [...entry.units.values()][0].downloadId,
+      downloadId: [...entry.units.values()].find((u) => u.downloadId)
+        ?.downloadId,
     });
   }
 

@@ -308,7 +308,7 @@ describe('refreshServer', () => {
       { ...episodeOf(101, 1, 1), hasFile: true },
       episodeOf(201, 2, 1),
       episodeOf(202, 2, 2),
-      // Not aired yet: no unit.
+      // Not aired yet: a unit waiting for its release.
       {
         ...episodeOf(203, 2, 3),
         airDateUtc: new Date(now + 86_400_000).toISOString(),
@@ -324,6 +324,9 @@ describe('refreshServer', () => {
 
     const progress = tracker.get(media.id, false)!;
     assert.equal(progress.releaseDate, sonarrEpisodes[3].airDateUtc);
+    assert.deepEqual(progress.unaired, [
+      { season: 2, airsAt: sonarrEpisodes[3].airDateUtc },
+    ]);
     const grabbed = statusOf(tracker, media.id, 'grabbed');
     assert.equal(grabbed.status, 'running');
     assert.equal(grabbed.startedAt, at(3));
@@ -332,10 +335,12 @@ describe('refreshServer', () => {
       done: 0,
       active: 2,
       failed: 0,
-      total: 2,
+      total: 3,
     });
-    assert.equal(grabbed.progress, 0.6);
-    assert.equal(statusOf(tracker, media.id, 'searching').status, 'done');
+    assert.equal(grabbed.progress!.toFixed(3), '0.400');
+    const searching = statusOf(tracker, media.id, 'searching');
+    assert.equal(searching.status, 'running');
+    assert.equal(searching.waiting, 'release');
     assert.equal(statusOf(tracker, media.id, 'importing').status, 'pending');
     assert.deepEqual(progress.downloads, [
       {
@@ -367,15 +372,20 @@ describe('refreshServer', () => {
     await refreshServer('sonarr-0', tracker);
 
     const importing = statusOf(tracker, media.id, 'importing');
-    assert.equal(statusOf(tracker, media.id, 'grabbed').status, 'done');
+    assert.deepEqual(statusOf(tracker, media.id, 'grabbed').counts, {
+      done: 2,
+      active: 0,
+      failed: 0,
+      total: 3,
+    });
     assert.equal(importing.status, 'running');
     assert.deepEqual(importing.counts, {
       done: 1,
       active: 1,
       failed: 0,
-      total: 2,
+      total: 3,
     });
-    assert.equal(importing.progress, 0.5);
+    assert.equal(importing.progress, 1 / 3);
   });
 
   it('fails a blocked import as manual interaction', async () => {
@@ -896,6 +906,33 @@ describe('units at run start', () => {
         [...tracker.entry(media.id, false)!.units.keys()],
         [101, 102]
       );
+    } finally {
+      sonarrEpisodes = [];
+    }
+  });
+
+  it('makes unaired episodes and a requested season without episodes units waiting for release', async () => {
+    const { tracker } = await setup();
+    const media = await series(tracker);
+    tracker.setRequests(media.id, false, [
+      { id: 1, seasons: [1, 2, 3], at: Date.now() },
+    ]);
+    const airsAt = new Date(Date.now() + 86_400_000).toISOString();
+    sonarrEpisodes = [
+      { ...episode(101, 1), hasFile: true },
+      { ...episode(201, 2), airDateUtc: airsAt },
+      { ...episode(202, 2), airDateUtc: undefined },
+    ];
+    try {
+      await loadUnits(media.id, false, tracker);
+      const entry = tracker.entry(media.id, false)!;
+      assert.deepEqual([...entry.units.keys()], [101, 201, 202, -4]);
+      assert.equal(tracker.finished(entry), false);
+      const progress = tracker.get(media.id, false)!;
+      assert.deepEqual(progress.unaired, [
+        { season: 2, airsAt },
+        { season: 3, airsAt: undefined },
+      ]);
     } finally {
       sonarrEpisodes = [];
     }

@@ -349,19 +349,22 @@ export async function syncRequests(
 
 type UnitState = Pick<
   Unit,
-  'id' | 'seasonNumber' | 'episodeNumber' | 'hasFile'
+  'id' | 'seasonNumber' | 'episodeNumber' | 'hasFile' | 'unaired' | 'airsAt'
 >;
 
 interface ArrState {
   removed?: boolean;
   /** Radarr/Sonarr searches for it, for the series: some requested episode. */
   monitored: boolean;
-  /** Something can be searched for: the movie is available, or an episode aired. */
+  /** Something can be searched for: the movie is available, or a requested episode aired. */
   released: boolean;
   lastSearchedAt?: number;
   /** What Radarr/Sonarr waits for next, see `nextRelease`. */
   releaseDate?: number;
-  /** The movie, or the requested episodes that aired and are monitored or have a file. */
+  /**
+   * The movie, or the requested episodes that are monitored or have a file, and a placeholder per
+   * requested season Sonarr lists no episodes for while it lists others.
+   */
   units: UnitState[];
 }
 
@@ -406,21 +409,34 @@ async function arrState(
     const requested = episodes.filter(
       (e) => !seasons || seasons.has(e.seasonNumber)
     );
-    const units = requested
-      .filter(
-        (e) =>
-          e.hasFile ||
-          (e.monitored && !!e.airDateUtc && Date.parse(e.airDateUtc) <= now)
-      )
-      .map(({ id, seasonNumber, episodeNumber, hasFile }) => ({
-        id,
+    const units: UnitState[] = requested
+      .filter((e) => e.hasFile || e.monitored)
+      .map(({ id, seasonNumber, episodeNumber, hasFile, airDateUtc }) => {
+        const airsAt = airDateUtc ? Date.parse(airDateUtc) : undefined;
+        const unaired = !hasFile && (airsAt === undefined || airsAt > now);
+        return {
+          id,
+          seasonNumber,
+          episodeNumber,
+          hasFile,
+          unaired: unaired || undefined,
+          airsAt: unaired ? airsAt : undefined,
+        };
+      });
+    // Without any episode Sonarr has not created them yet, and the series placeholder stays. Episode
+    // ids are positive and 0 is the placeholder of the series, so a season takes -(n + 1).
+    for (const seasonNumber of episodes.length > 0 ? (seasons ?? []) : []) {
+      if (requested.some((e) => e.seasonNumber === seasonNumber)) continue;
+      units.push({
+        id: -(seasonNumber + 1),
         seasonNumber,
-        episodeNumber,
-        hasFile,
-      }));
+        hasFile: false,
+        unaired: true,
+      });
+    }
     return {
       monitored: series.monitored && requested.some((e) => e.monitored),
-      released: units.length > 0,
+      released: units.some((u) => !u.unaired),
       lastSearchedAt: latest(requested.map((e) => e.lastSearchTime)),
       releaseDate: nextRelease(
         requested
@@ -900,8 +916,8 @@ export async function reconcileJellyfin(
     client ??= jellyfinClient();
     const units = [...entry.units.values()];
     const key = (u: Unit) => unitKey(u.seasonNumber, u.episodeNumber);
-    // The episodes of a series are not known yet, or none of the requested ones aired: the series
-    // item, e.g. with an earlier season, says nothing about them.
+    // The episodes of a series are not known yet: the series item, e.g. with an earlier season,
+    // says nothing about them.
     const whole = tv && !entry.unitsKnown;
     let items =
       itemId && !whole
@@ -1122,9 +1138,11 @@ const polls = new KeyedDebouncer(async (key) => {
 });
 
 // Added items cannot be matched to runs by id: Jellyfin reports episodes, the media holds series.
-// The importing step counts too, as Jellyfin can add a file before the refresh saw its import.
+// The importing step counts too, as Jellyfin can add a file before the refresh saw its import. A
+// dormant run has no unit between the search and Ready.
 const awaitsJellyfin = (entry: TrackedProgress) =>
   !progressTracker.finished(entry) &&
+  !progressTracker.dormant(entry) &&
   (['importing', 'inJellyfin'] as const).some(
     (k) => entry.steps[k].status === 'running'
   );

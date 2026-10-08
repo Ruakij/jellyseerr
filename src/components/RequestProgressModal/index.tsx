@@ -67,6 +67,8 @@ const messages = defineMessages('components.RequestProgressModal', {
   releaseDated: 'It is downloaded automatically once released.',
   releaseUndated:
     'No release date known yet; it is downloaded automatically once released.',
+  seasonUnaired: 'Season {season}: waiting for release',
+  seasonUnairedDated: 'Season {season}: waiting for release, expected {date}',
   releasedNotFound:
     'Released, but no download found yet; it is grabbed automatically once one shows up.',
   waitingFor: 'for {duration}',
@@ -322,6 +324,25 @@ const RequestProgressModal = ({
         numeric: 'auto',
       }),
     });
+
+  // Seasons still to air next to ones that progressed; a run waiting as a whole has the header date
+  const progressed =
+    (progress?.unaired?.length ?? 0) < seasons.length ||
+    !!progress?.steps.some(
+      (s) =>
+        s.key !== 'requested' && s.key !== 'searching' && s.status !== 'pending'
+    );
+  const unairedLines = progressed
+    ? (progress?.unaired ?? []).map(({ season, airsAt }) => {
+        const at = airsAt ? Date.parse(airsAt) : undefined;
+        return at !== undefined && at > clock
+          ? intl.formatMessage(messages.seasonUnairedDated, {
+              season,
+              date: intl.formatDate(at, { dateStyle: 'medium' }),
+            })
+          : intl.formatMessage(messages.seasonUnaired, { season });
+      })
+    : [];
 
   const firstStart = progress?.steps.find((s) => s.startedAt)?.startedAt;
   const lastEnd = progress?.steps
@@ -591,6 +612,7 @@ const RequestProgressModal = ({
             </div>
           )}
           {(waitingNote ||
+            unairedLines.length > 0 ||
             detail ||
             error ||
             downloads.length > 0 ||
@@ -599,6 +621,13 @@ const RequestProgressModal = ({
             <div className="space-y-3">
               {waitingNote && (
                 <p className="text-sm text-amber-400">{waitingNote}</p>
+              )}
+              {unairedLines.length > 0 && (
+                <ul className="text-sm text-amber-400">
+                  {unairedLines.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
               )}
               {detail && (
                 <p className="break-words text-sm text-gray-400">{detail}</p>
