@@ -35,7 +35,7 @@ export interface ProgressCounts {
   done: number; // past the step
   active: number; // in the step
   failed: number; // last attempt failed at this step
-  total: number; // units of the request
+  total: number; // units of the request; unaired ones only while nothing requested aired
 }
 
 export type ProgressTimelineKind =
@@ -106,7 +106,7 @@ export interface RequestProgress {
   playUrl?: string; // Jellyfin deep link once playable
   dormant?: boolean; // waits for a release with nothing running; its waiting time does not tick
   releaseDate?: string; // ISO; next Radarr digital/physical release, or Sonarr air date of a missing requested episode; future only
-  unaired?: { season: number; airsAt?: string }[]; // series: seasons with requested episodes not aired yet, by season; airsAt is the earliest air date Sonarr knows
+  unaired?: { season: number; episodes?: number; airsAt?: string }[]; // series: seasons with requested episodes not aired yet, outside the step counts once one requested episode aired; episodes absent while Sonarr lists none; airsAt is the earliest air date Sonarr knows
   downloads?: ProgressDownload[]; // queue items of units without a file
   timeline?: ProgressTimelineEntry[]; // last 100 events, oldest first; on the stream only when changed
   search?: ProgressSearch; // computed per viewer
