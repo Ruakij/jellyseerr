@@ -67,8 +67,12 @@ const messages = defineMessages('components.RequestProgressModal', {
   releaseDated: 'It is downloaded automatically once released.',
   releaseUndated:
     'No release date known yet; it is downloaded automatically once released.',
-  seasonUnaired: 'Season {season}: waiting for release',
-  seasonUnairedDated: 'Season {season}: waiting for release, expected {date}',
+  notReleased: 'Not released yet',
+  unairedSeason: 'Season {season}: {when}',
+  unairedEpisodes:
+    'Season {season}: {episodes, plural, one {# episode} other {# episodes}}, {when}',
+  firstExpected: 'first expected {date}',
+  dateUnknown: 'date unknown',
   releasedNotFound:
     'Released, but no download found yet; it is grabbed automatically once one shows up.',
   waitingFor: 'for {duration}',
@@ -310,12 +314,13 @@ const RequestProgressModal = ({
     ('title' in details
       ? details.releaseDate
       : details.nextEpisodeToAir?.airDate);
-  const releaseAt =
-    searchStep?.status === 'running' && searchStep.waiting === 'release'
-      ? [progress?.releaseDate, tmdbDate]
-          .map((d) => (d ? Date.parse(d) : NaN))
-          .find((t) => t > clock)
-      : undefined;
+  const waitsForRelease =
+    searchStep?.status === 'running' && searchStep.waiting === 'release';
+  const releaseAt = waitsForRelease
+    ? [progress?.releaseDate, tmdbDate]
+        .map((d) => (d ? Date.parse(d) : NaN))
+        .find((t) => t > clock)
+    : undefined;
   const expected =
     releaseAt !== undefined &&
     intl.formatMessage(messages.expected, {
@@ -325,24 +330,26 @@ const RequestProgressModal = ({
       }),
     });
 
-  // Seasons still to air next to ones that progressed; a run waiting as a whole has the header date
-  const progressed =
-    (progress?.unaired?.length ?? 0) < seasons.length ||
-    !!progress?.steps.some(
-      (s) =>
-        s.key !== 'requested' && s.key !== 'searching' && s.status !== 'pending'
-    );
-  const unairedLines = progressed
-    ? (progress?.unaired ?? []).map(({ season, airsAt }) => {
-        const at = airsAt ? Date.parse(airsAt) : undefined;
-        return at !== undefined && at > clock
-          ? intl.formatMessage(messages.seasonUnairedDated, {
-              season,
-              date: intl.formatDate(at, { dateStyle: 'medium' }),
-            })
-          : intl.formatMessage(messages.seasonUnaired, { season });
-      })
-    : [];
+  // Seasons to air, outside the steps; a lone one without episodes listed, while the whole run
+  // waits for it, says no more than the header date
+  const unaired = progress?.unaired ?? [];
+  const unairedLines =
+    waitsForRelease && unaired.length === 1 && !unaired[0].episodes
+      ? []
+      : unaired.map(({ season, episodes, airsAt }) => {
+          const when = airsAt
+            ? intl.formatMessage(messages.firstExpected, {
+                date: intl.formatDate(airsAt, { dateStyle: 'medium' }),
+              })
+            : intl.formatMessage(messages.dateUnknown);
+          return episodes
+            ? intl.formatMessage(messages.unairedEpisodes, {
+                season,
+                episodes,
+                when,
+              })
+            : intl.formatMessage(messages.unairedSeason, { season, when });
+        });
 
   const firstStart = progress?.steps.find((s) => s.startedAt)?.startedAt;
   const lastEnd = progress?.steps
@@ -611,8 +618,19 @@ const RequestProgressModal = ({
               )}
             </div>
           )}
+          {unairedLines.length > 0 && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                {intl.formatMessage(messages.notReleased)}
+              </div>
+              <ul className="mt-2 space-y-1 text-sm text-gray-300">
+                {unairedLines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {(waitingNote ||
-            unairedLines.length > 0 ||
             detail ||
             error ||
             downloads.length > 0 ||
@@ -621,13 +639,6 @@ const RequestProgressModal = ({
             <div className="space-y-3">
               {waitingNote && (
                 <p className="text-sm text-amber-400">{waitingNote}</p>
-              )}
-              {unairedLines.length > 0 && (
-                <ul className="text-sm text-amber-400">
-                  {unairedLines.map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
               )}
               {detail && (
                 <p className="break-words text-sm text-gray-400">{detail}</p>

@@ -212,6 +212,13 @@ export const unitStage = (u: Unit): number =>
 /** Waits for its air date at the searching step. */
 const waitsForRelease = (u: Unit) => !!u.unaired && unitStage(u) === SEARCHING;
 
+/** The units the steps count: the released ones, or all of them while none is released. */
+const counted = (units: Iterable<Unit>): Unit[] => {
+  const all = [...units];
+  const released = all.filter((u) => !waitsForRelease(u));
+  return released.length > 0 ? released : all;
+};
+
 /** Units are left to search for, and all of them wait for their air date. */
 const releasePending = (units: Iterable<Unit>) => {
   const searching = [...units].filter((u) => unitStage(u) === SEARCHING);
@@ -1055,11 +1062,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       const commandKey = `search:${commandId}`;
       if (entry.seen.has(commandKey)) return;
       entry.seen.add(commandKey);
-      // Nothing is searched for an unaired unit, so a search neither misses nor fails it.
-      const aired = [...entry.units.values()].filter(
-        (u) => !waitsForRelease(u)
-      );
-      const missing = aired.filter(
+      const units = counted(entry.units.values());
+      const missing = units.filter(
         (u) => unitStage(u) === SEARCHING && failedAt(u) !== SEARCHING
       );
       if (error) {
@@ -1067,7 +1071,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           unit.failure = { step: 'searching', reason: error };
         }
       }
-      const total = aired.length;
+      const total = units.length;
       this.note(entry, at, cause, {
         step: 'searching',
         kind: error ? 'searchFailed' : 'searchFinished',
@@ -1083,9 +1087,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     });
   }
 
+  /** Failed, or Ready with nothing left to air: Ready for the released units keeps it open. */
   public finished(entry: TrackedProgress): boolean {
     return (
-      entry.steps.playable.status === 'done' ||
+      (entry.steps.playable.status === 'done' &&
+        ![...entry.units.values()].some(waitsForRelease)) ||
       STEP_KEYS.some((k) => entry.steps[k].status === 'failed')
     );
   }
@@ -1140,13 +1146,11 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         ...(k === 'searching'
           ? this.searchTimes(entry)
           : {
-              // While a search runs, or the units left wait for their air date, the searching step
-              // says what the run does.
+              // While a search runs, the searching step says what the run does.
               waiting:
                 k === 'grabbed' &&
                 state.idleSince !== undefined &&
-                !searchOpen(entry) &&
-                !releasePending(entry.units.values())
+                !searchOpen(entry)
                   ? ('grab' as const)
                   : undefined,
               waitingSince: iso(state.idleSince),
@@ -1207,24 +1211,32 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     };
   }
 
-  /** The seasons with units waiting for their air date, with the earliest one known. */
+  /**
+   * The seasons with units waiting for their air date, with their episodes and the earliest air
+   * date known. A season placeholder has no episodes to count.
+   */
   private unairedSeasons(entry: TrackedProgress): RequestProgress['unaired'] {
-    const seasons = new Map<number, number | undefined>();
+    const seasons = new Map<number, { episodes?: number; airsAt?: number }>();
     for (const u of entry.units.values()) {
       if (!waitsForRelease(u) || u.seasonNumber === undefined) continue;
-      const known = seasons.get(u.seasonNumber);
-      seasons.set(
-        u.seasonNumber,
-        u.airsAt === undefined || (known !== undefined && known < u.airsAt)
-          ? known
-          : u.airsAt
-      );
+      const season = seasons.get(u.seasonNumber) ?? {};
+      seasons.set(u.seasonNumber, season);
+      if (u.episodeNumber !== undefined) {
+        season.episodes = (season.episodes ?? 0) + 1;
+      }
+      if (u.airsAt !== undefined && u.airsAt < (season.airsAt ?? Infinity)) {
+        season.airsAt = u.airsAt;
+      }
     }
     return seasons.size === 0
       ? undefined
       : [...seasons]
           .sort(([a], [b]) => a - b)
-          .map(([season, at]) => ({ season, airsAt: iso(at) }));
+          .map(([season, { episodes, airsAt }]) => ({
+            season,
+            episodes,
+            airsAt: iso(airsAt),
+          }));
   }
 
   /** What the searching step waits for while no search runs, if anything. */
@@ -1329,9 +1341,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     if (entry.unreleased || releasePending(entry.units.values())) {
       return WAITING_FOR_RELEASE;
     }
-    const aired = [...entry.units.values()].filter((u) => !waitsForRelease(u));
-    const total = aired.length;
-    const missing = aired.filter((u) => unitStage(u) === SEARCHING).length;
+    const units = counted(entry.units.values());
+    const total = units.length;
+    const missing = units.filter((u) => unitStage(u) === SEARCHING).length;
     return total > 1 && missing > 0
       ? `${missing} of ${total} not found yet, waiting for RSS`
       : WAITING_FOR_RSS;
@@ -1667,9 +1679,12 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     if (JSON.stringify(this.snapshot(entry)) !== before) this.changed(entry);
   }
 
-  /** Derives every step from the units; times and samples follow the status changes. */
+  /**
+   * Derives every step from the counted units; times and samples follow the status changes. A unit
+   * that airs joins the steps and can take Ready back.
+   */
   private recompute(entry: TrackedProgress, at: number, cause: string): void {
-    const units = [...entry.units.values()];
+    const units = counted(entry.units.values());
     const total = units.length;
     // Radarr/Sonarr search again after a failed download, so only search and import failures fail.
     const allFailed =
@@ -1809,13 +1824,16 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         requestedAt,
         ...units.map((u) => u.grabbedAt ?? requestedAt)
       );
-      // A search ran from the request to the last grab, so the total holds no waiting.
+      // A search ran from the request to the last grab, so the total holds no waiting. One per
+      // run: Ready reached again, e.g. after a season aired, holds the wait for its air date.
       const waited = lastGrab - requestedAt - entry.searchMs;
       if (
         k === 'playable' &&
         entry.seen.has(SEARCH_SAMPLE) &&
+        !entry.seen.has(sampleKey) &&
         waited <= SEARCH_GAP_MS
       ) {
+        entry.seen.add(sampleKey);
         this.stats.recordTotal(
           entry.serverKey,
           Math.max(0, at - requestedAt),
