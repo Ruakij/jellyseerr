@@ -106,6 +106,7 @@ export interface RequestProgress {
   playUrl?: string; // Jellyfin deep link once playable
   dormant?: boolean; // waits for a release with nothing running; its waiting time does not tick
   releaseDate?: string; // ISO; next Radarr digital/physical release, or Sonarr air date of a missing requested episode; future only
+  unaired?: { season: number; airsAt?: string }[]; // series: seasons with requested episodes not aired yet, by season; airsAt is the earliest air date Sonarr knows
   downloads?: ProgressDownload[]; // queue items of units without a file
   timeline?: ProgressTimelineEntry[]; // last 100 events, oldest first; on the stream only when changed
   search?: ProgressSearch; // computed per viewer
