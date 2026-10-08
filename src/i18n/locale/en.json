@@ -643,6 +643,8 @@
   "components.RequestProgressModal.searchRunning": "A search is running",
   "components.RequestProgressModal.searchStarted": "Search started.",
   "components.RequestProgressModal.searching": "Searching",
+  "components.RequestProgressModal.seasonUnaired": "Season {season}: waiting for release",
+  "components.RequestProgressModal.seasonUnairedDated": "Season {season}: waiting for release, expected {date}",
   "components.RequestProgressModal.seasons": "{count, plural, one {Season} other {Seasons}} {seasons}",
   "components.RequestProgressModal.timeline_downloadFailed": "Download failed",
   "components.RequestProgressModal.timeline_downloaded": "Downloaded",
