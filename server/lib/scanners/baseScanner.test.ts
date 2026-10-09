@@ -157,7 +157,7 @@ describe('BaseScanner', () => {
       assert.strictEqual(updated.status, MediaRequestStatus.APPROVED);
     });
 
-    it('declines the request for a scanner that has opted in', async () => {
+    it('fails the request for a scanner that has opted in', async () => {
       const requestRepository = getRepository(MediaRequest);
       const request = await seedInFlightShow(7002);
 
@@ -167,7 +167,7 @@ describe('BaseScanner', () => {
         where: { id: request.id },
       });
 
-      assert.strictEqual(updated.status, MediaRequestStatus.DECLINED);
+      assert.strictEqual(updated.status, MediaRequestStatus.FAILED);
     });
 
     it('resets a movie in the loop for a scanner that has not opted in', async () => {
@@ -211,7 +211,7 @@ describe('BaseScanner', () => {
       });
 
       assert.strictEqual(afterResolve.status, MediaStatus.UNKNOWN);
-      assert.strictEqual(updated.status, MediaRequestStatus.DECLINED);
+      assert.strictEqual(updated.status, MediaRequestStatus.FAILED);
     });
   });
 });

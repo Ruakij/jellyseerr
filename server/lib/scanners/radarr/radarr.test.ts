@@ -169,7 +169,7 @@ describe('Radarr Scanner', () => {
       assert.strictEqual(updated.status, MediaStatus.UNKNOWN);
     });
 
-    it('declines the attached request so the title can be requested again', async () => {
+    it('fails the attached request so it can be retried', async () => {
       const mediaRepository = getRepository(Media);
       const requestRepository = getRepository(MediaRequest);
       const userRepository = getRepository(User);
@@ -210,7 +210,7 @@ describe('Radarr Scanner', () => {
         where: { id: request.id },
       });
 
-      assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
+      assert.strictEqual(updatedRequest.status, MediaRequestStatus.FAILED);
     });
 
     it('does not create new media entry when movie is unmonitored and has no file', async () => {
