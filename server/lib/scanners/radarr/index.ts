@@ -153,8 +153,8 @@ class RadarrScanner
 
   /**
    * Processes one movie Seerr links to a Radarr movie, as the scan would, e.g. after a Radarr
-   * event. A movie gone from that server and from every other one of its profile type is handled
-   * as the orphan cleanup handles it.
+   * event. A movie that no server of its profile type downloads any more, gone or unmonitored
+   * without a file, is handled as the scan handles it.
    */
   public async syncMovie(serverId: number, radarrMovieId: number) {
     const settings = getSettings();
@@ -177,9 +177,13 @@ class RadarrScanner
     );
     if (!media) return;
 
+    // Whether a server has the movie, unmonitored and without a file
+    let abandonedEntry = false;
     try {
       const movie = await radarrApi(server).getMovie({ id: radarrMovieId });
-      return this.processRadarrMovie(movie, server);
+      await this.processRadarrMovie(movie, server);
+      if (movie.monitored || movie.hasFile) return;
+      abandonedEntry = true;
     } catch (e) {
       if (!isNotFound(e)) throw e;
     }
@@ -196,9 +200,18 @@ class RadarrScanner
           if (e.message === 'Movie not found') return undefined;
           throw e;
         });
-      if (movie?.id) return this.processRadarrMovie(movie, other);
+      if (!movie?.id) continue;
+      await this.processRadarrMovie(movie, other);
+      if (movie.monitored || movie.hasFile) return;
+      abandonedEntry = true;
     }
-    await this.resetOrphanedMovie(media, is4k);
+    if (abandonedEntry) {
+      await this.resolveStatusResets(
+        (m, mIs4k) => m.id === media.id && mIs4k === is4k
+      );
+    } else {
+      await this.resetOrphanedMovie(media, is4k);
+    }
   }
 
   private async processRadarrMovie(
@@ -222,13 +235,6 @@ class RadarrScanner
     }
 
     try {
-      const media = await getRepository(Media).findOne({
-        where: { tmdbId: radarrMovie.tmdbId, mediaType: MediaType.MOVIE },
-      });
-      if (media) {
-        await this.failUnfulfillableRequests(media, server4k, radarrMovie);
-      }
-
       await this.processMovie(radarrMovie.tmdbId, {
         is4k: server4k,
         serviceId: server.id,
