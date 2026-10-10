@@ -667,14 +667,17 @@ export async function refreshServer(
       }
     });
 
-    const ascending = [...history].sort(
-      (a, b) => Date.parse(a.date) - Date.parse(b.date)
+    // The item history holds the records of earlier requests too.
+    const earliest = Math.min(
+      ...entries.map((e) => e.steps.requested.startedAt ?? 0)
     );
-    for (const record of ascending as HistoryRecord[]) {
-      const at = Date.parse(record.date);
+    const ascending = (history as HistoryRecord[])
+      .map((record) => ({ record, at: Date.parse(record.date) }))
+      .filter(({ at }) => at >= earliest)
+      .sort((a, b) => a.at - b.at);
+    for (const { record, at } of ascending) {
       const cause = `${key} history ${record.id} ${record.eventType}`;
       for (const { mediaId, is4k, steps } of entriesOf(record)) {
-        // The item history holds the records of earlier requests too.
         if (at < (steps.requested.startedAt ?? 0)) continue;
         const unitIds = unitIdsOf(record);
         if (record.eventType === 'grabbed') {
