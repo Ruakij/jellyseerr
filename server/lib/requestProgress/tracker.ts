@@ -575,22 +575,44 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   }
 
   /**
-   * Fails the units Radarr/Sonarr imported that Jellyfin has not listed within the timeout. The wait
-   * starts no earlier than the tracking: the import of a rebuilt run can be days old.
+   * Imported and not listed by Jellyfin within the timeout. The wait starts no earlier than the
+   * tracking: the import of a rebuilt run can be days old.
    */
-  public expireJellyfinWaits(
+  private overdue(
+    entry: TrackedProgress,
+    u: Unit,
+    timeoutMs: number,
+    at: number
+  ): boolean {
+    return (
+      !u.failure &&
+      unitStage(u) === IN_JELLYFIN &&
+      Math.max(
+        u.importedAt ?? entry.steps.inJellyfin.startedAt ?? at,
+        entry.trackedAt
+      ) <=
+        at - timeoutMs
+    );
+  }
+
+  /** Unfinished runs with units Jellyfin has not listed within the timeout. */
+  public jellyfinOverdue(
     timeoutMs = JELLYFIN_TIMEOUT_MS,
     at = this.now()
+  ): TrackedProgress[] {
+    return this.active().filter((e) =>
+      [...e.units.values()].some((u) => this.overdue(e, u, timeoutMs, at))
+    );
+  }
+
+  /** Fails the units of these runs that Jellyfin has not listed within the timeout. */
+  public expireJellyfinWaits(
+    timeoutMs = JELLYFIN_TIMEOUT_MS,
+    at = this.now(),
+    entries = this.jellyfinOverdue(timeoutMs, at)
   ): void {
-    for (const entry of this.active()) {
-      const expired = (u: Unit) =>
-        !u.failure &&
-        unitStage(u) === IN_JELLYFIN &&
-        Math.max(
-          u.importedAt ?? entry.steps.inJellyfin.startedAt ?? at,
-          entry.trackedAt
-        ) <=
-          at - timeoutMs;
+    for (const entry of entries) {
+      const expired = (u: Unit) => this.overdue(entry, u, timeoutMs, at);
       if (![...entry.units.values()].some(expired)) continue;
       this.mutate(entry.mediaId, entry.is4k, at, 'Jellyfin timeout', () => {
         const units = [...entry.units.values()].filter(expired);

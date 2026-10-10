@@ -855,12 +855,12 @@ function providerMatch(
   })?.Id;
 }
 
-/** The newest Jellyfin item of the media by its provider ids. */
+/** The newest Jellyfin item of the media by its provider ids; null when Jellyfin did not answer. */
 async function providerItem(
   client: JellyfinAPI | undefined,
   m: Media
-): Promise<string | undefined> {
-  if (!client) return undefined;
+): Promise<string | undefined | null> {
+  if (!client) return null;
   try {
     return providerMatch(await client.getNewestItems(NEWEST_ITEMS), m);
   } catch (e) {
@@ -868,7 +868,7 @@ async function providerItem(
       label: 'Request Progress',
       mediaId: m.id,
     });
-    return undefined;
+    return null;
   }
 }
 
@@ -896,15 +896,16 @@ async function seasonUrl(
  * Sets which units of the tracked media Jellyfin has, new enough and probed. A Jellyfin item that
  * lists none of the units may be stale, e.g. of a deleted series, so the newest item with the
  * provider ids of the media takes its place. `only` limits it to some runs, as it asks Jellyfin
- * once per run.
+ * once per run. Returns the runs whose units Jellyfin answered for.
  */
 export async function reconcileJellyfin(
   addedAt?: number,
   tracker: ProgressTracker = progressTracker,
   only: (entry: TrackedProgress) => boolean = () => true
-): Promise<void> {
+): Promise<Set<TrackedProgress>> {
+  const answered = new Set<TrackedProgress>();
   const entries = tracker.tracked().filter(only);
-  if (entries.length === 0) return;
+  if (entries.length === 0) return answered;
   const media = await loadMedia(entries);
   let client: Promise<JellyfinAPI | undefined> | undefined;
   for (const entry of entries) {
@@ -926,8 +927,10 @@ export async function reconcileJellyfin(
     const found = whole
       ? !!itemId
       : !!items && units.some((u) => items?.has(key(u)));
+    let lookupFailed = false;
     if (!found) {
       const linked = await providerItem(await client, m);
+      lookupFailed = linked === null;
       if (linked && linked !== itemId) {
         await jellyfinItemScanner.runItems([linked]);
         itemId = linked;
@@ -957,7 +960,11 @@ export async function reconcileJellyfin(
       at: addedAt,
       cause: 'Jellyfin',
     });
+    if ((await client) && !whole && (items || !lookupFailed)) {
+      answered.add(entry);
+    }
   }
+  return answered;
 }
 
 /**
@@ -1042,9 +1049,15 @@ export async function reconstructProgress(
   if (created.length === 0) return;
 
   for (const key of new Set(created.flatMap((e) => e.serverKey ?? []))) {
+    // The runs exist already: the next refresh of the server fills them in.
     await refreshServer(key, tracker, {
       mediaIds: created.map((e) => e.mediaId),
-    });
+    }).catch((e: Error) =>
+      logger.warn(`Rebuilding the runs of a server failed: ${e.message}`, {
+        label: 'Request Progress',
+        server: key,
+      })
+    );
   }
   await reconcileJellyfin(undefined, tracker, (e) => created.includes(e));
 }
@@ -1185,8 +1198,28 @@ export async function pollJellyfin(
   await reconcileJellyfin(undefined, tracker, inJellyfinSteps(tracker));
 }
 
-// Expiring touches no API, so a coarse sweep is enough.
+// The timeout is an hour, so a coarse sweep is enough.
 const EXPIRY_SWEEP_MS = 60_000;
+
+/**
+ * Fails the units Jellyfin has not listed within the timeout, after asking it once more; while it
+ * does not answer, nothing fails.
+ */
+export async function expireJellyfinWaits(
+  tracker: ProgressTracker = progressTracker,
+  timeoutMs?: number
+): Promise<void> {
+  const due = tracker.jellyfinOverdue(timeoutMs);
+  if (due.length === 0) return;
+  const answered = await reconcileJellyfin(undefined, tracker, (e) =>
+    due.includes(e)
+  );
+  tracker.expireJellyfinWaits(
+    timeoutMs,
+    undefined,
+    [...answered].filter((e) => tracker.entry(e.mediaId, e.is4k) === e)
+  );
+}
 
 /**
  * Polls Jellyfin while a watched run waits for it, and fails units Jellyfin never lists. A safety
@@ -1219,7 +1252,18 @@ export function watchJellyfin(
   };
   tracker.on('change', schedule);
   tracker.on('watched', schedule);
-  setInterval(() => tracker.expireJellyfinWaits(), EXPIRY_SWEEP_MS).unref();
+  let sweeping = false;
+  setInterval(() => {
+    if (sweeping) return;
+    sweeping = true;
+    expireJellyfinWaits(tracker)
+      .catch((e: Error) =>
+        logger.warn(`Expiring Jellyfin waits failed: ${e.message}`, {
+          label: 'Request Progress',
+        })
+      )
+      .finally(() => (sweeping = false));
+  }, EXPIRY_SWEEP_MS).unref();
 }
 
 // Scheduled and webhook triggered scans link and update media the runs wait for.
