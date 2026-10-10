@@ -25,6 +25,7 @@ import {
   REMOVAL_DEBOUNCE_MS,
   SERVER_REFRESH_MAX_WAIT_MS,
   awaitsJellyfin,
+  expireJellyfinWaits,
   handleCommand,
   loadUnits,
   onJellyfinRemoved,
@@ -60,6 +61,7 @@ import { In } from 'typeorm';
 
 let history: Partial<HistoryRecord>[] = [];
 let queue: Record<string, unknown>[] = [];
+let queueFails = false;
 let commands: Record<string, unknown>[] = [];
 let hasFile = false;
 let monitored = true;
@@ -107,7 +109,13 @@ for (const Api of [RadarrAPI, SonarrAPI]) {
         return history.filter((r) => (r.movieId ?? r.seriesId) === id);
       },
     ],
-    ['getQueue', async () => queue],
+    [
+      'getQueue',
+      async () => {
+        if (queueFails) throw new Error('Failed to retrieve queue');
+        return queue;
+      },
+    ],
     ['getCommands', async () => commands],
   ] as const) {
     // Instance arrow properties: the getter shadows them, the setter swallows the constructor's.
@@ -139,6 +147,7 @@ async function setup(overrides: Partial<Media> = {}) {
   const tracker = new ProgressTracker(new StepStats());
   history = [];
   queue = [];
+  queueFails = false;
   commands = [];
   hasFile = false;
   monitored = true;
@@ -1330,6 +1339,44 @@ describe('reconcileJellyfin', () => {
     assert.equal(awaitsJellyfin(tracker)(entry), false);
   });
 
+  it('fails a unit for the timeout only once Jellyfin answered without it', async () => {
+    const { media, tracker } = await setup({
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    tracker.start({ mediaId: media.id, is4k: false });
+    tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
+    tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
+
+    const down = mock.method(JellyfinAPI.prototype, 'getItemData', async () => {
+      throw new Error('unreachable');
+    });
+    await expireJellyfinWaits(tracker, -1);
+    down.mock.restore();
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
+
+    const item = jellyfinItem({ MediaSources: [] });
+    await expireJellyfinWaits(tracker, -1);
+    item.mock.restore();
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'failed');
+  });
+
+  it('makes a unit due for the timeout ready when Jellyfin lists it', async () => {
+    const { media, tracker } = await setup({
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    tracker.start({ mediaId: media.id, is4k: false });
+    tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
+    tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
+    const item = jellyfinItem(video);
+
+    await expireJellyfinWaits(tracker, -1);
+    item.mock.restore();
+
+    assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+  });
+
   it('reopens the Jellyfin step when the item left Jellyfin', async () => {
     const { media, tracker } = await setup();
     tracker.start({ mediaId: media.id, is4k: false });
@@ -1596,6 +1643,26 @@ describe('reconstructProgress', () => {
     assert.equal(statusOf(tracker, media.id, 'importing').status, 'done');
     assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
     assert.equal(record.mock.callCount(), 0);
+  });
+
+  it('still asks Jellyfin when reading Radarr fails', async () => {
+    const { media, tracker } = await setupRequest(MediaRequestStatus.APPROVED);
+    await getRepository(Media).update(media.id, {
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    queueFails = true;
+    const item = mock.method(
+      JellyfinAPI.prototype,
+      'getItemData',
+      async () => ({ MediaSources: [{ MediaStreams: [{ Type: 'Video' }] }] })
+    );
+
+    await reconstructProgress(undefined, tracker);
+    item.mock.restore();
+
+    assert.equal(item.mock.callCount(), 1);
+    assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
   });
 
   it('waits for a release when nothing was grabbed', async () => {
