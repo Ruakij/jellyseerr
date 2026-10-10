@@ -677,6 +677,8 @@
   "components.RequestProgressModal.waitingRelease": "Waiting for release",
   "components.RequestProgressModal.waitingRss": "Waiting for a release to show up",
   "components.RequestProgressModal.watch": "Watch",
+  "components.RequestProgressModal.watchQueued": "Opening when ready",
+  "components.RequestProgressModal.watchWhenReady": "Open in Jellyfin as soon as something can be played",
   "components.ResetPassword.confirmpassword": "Confirm Password",
   "components.ResetPassword.email": "Email Address",
   "components.ResetPassword.emailresetlink": "Email Recovery Link",

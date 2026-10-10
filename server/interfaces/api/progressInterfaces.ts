@@ -98,7 +98,7 @@ export interface ProgressDownload {
 export interface ProgressSeason {
   season: number;
   steps?: ProgressStep[]; // absent while nothing requested of the season aired; searching state is media-wide
-  playUrl?: string; // Jellyfin deep link of the season once all its aired units are playable
+  playUrl?: string; // Jellyfin deep link of the season once one of its units is playable
   unaired?: { episodes?: number; airsAt?: string }; // as RequestProgress.unaired, for this season
 }
 
@@ -111,7 +111,7 @@ export interface RequestProgress {
   totalEstimateMs?: number; // percentile of end-to-end runs from 20 of them, else the sum of the step estimates
   totalEstimateRangeMs?: [number, number]; // only when enabled and taken from end-to-end runs
   estimatePercentile: EstimatePercentile;
-  playUrl?: string; // Jellyfin deep link once playable
+  playUrl?: string; // Jellyfin deep link once one unit is playable: the movie, or the first season with a playable unit
   dormant?: boolean; // waits for a release with nothing running; its waiting time does not tick
   releaseDate?: string; // ISO; next Radarr digital/physical release, or Sonarr air date of a missing requested episode; future only
   unaired?: { season: number; episodes?: number; airsAt?: string }[]; // series: seasons with requested episodes not aired yet, outside the step counts once one requested episode aired; episodes absent while Sonarr lists none; airsAt is the earliest air date Sonarr knows

@@ -13,6 +13,7 @@ import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
 import {
+  ArrowPathIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
   PlayIcon,
@@ -53,6 +54,8 @@ const messages = defineMessages('components.RequestProgressModal', {
   awaitingApproval: 'Waiting for approval',
   total: 'Total',
   watch: 'Watch',
+  watchQueued: 'Opening when ready',
+  watchWhenReady: 'Open in Jellyfin as soon as something can be played',
   finished: 'Finished {date}',
   ended: 'Ended {date}',
   failed: 'Something went wrong at this step.',
@@ -219,6 +222,19 @@ const NotReleasedTitle = ({ children }: { children: React.ReactNode }) => (
   </div>
 );
 
+const VIOLET =
+  'bg-violet-600/80 border-violet-500 hover:bg-violet-600 hover:border-violet-400 focus:border-violet-700 active:bg-violet-600 active:border-violet-700';
+
+const VIOLET_OUTLINE =
+  'border-violet-500 text-violet-200 hover:border-violet-400 hover:bg-violet-600/20';
+
+// Opened without a click, a new tab is usually blocked; the page itself goes there then
+const openWatch = (url: string) => {
+  const tab = window.open(url, '_blank');
+  if (tab) tab.opener = null;
+  else window.location.assign(url);
+};
+
 interface RequestProgressModalProps {
   show: boolean;
   progress?: RequestProgress;
@@ -244,6 +260,8 @@ const RequestProgressModal = ({
     : undefined;
   const now = finishedAt ?? clock;
   const [searching, setSearching] = useState(false);
+  const [watchQueued, setWatchQueued] = useState(false);
+  useEffect(() => setWatchQueued(false), [show, progress?.mediaId]);
   const [expandedSeason, setExpandedSeason] = useState<number>();
   const seasonSections = progress?.seasons;
   const expanded =
@@ -450,13 +468,35 @@ const RequestProgressModal = ({
         ? step.error
         : intl.formatMessage(messages.failed)
       : undefined;
-  // Ready means Jellyfin has every unit, not only that a link exists
   const playableDone = step?.key === 'playable' && step.status === 'done';
-  const playUrl = seasonSections
-    ? expanded?.playUrl
-    : playableDone
-      ? progress?.playUrl
+  // The shown season once one of its units plays, else the first season that has one
+  const ownPlayUrl = seasonSections ? expanded?.playUrl : progress?.playUrl;
+  const playUrl = ownPlayUrl ?? progress?.playUrl;
+  const ownPlayable = (
+    seasonSections ? expanded?.steps : progress?.steps
+  )?.find((s) => s.key === 'playable');
+  // Ready means Jellyfin has every unit, not only that a link exists
+  const watchReady = !!ownPlayUrl && ownPlayable?.status === 'done';
+  const watchCounts =
+    ownPlayUrl && !watchReady && ownPlayable?.counts?.total
+      ? intl.formatMessage(messages.unitCounts, { ...ownPlayable.counts })
       : undefined;
+  // Nothing on its way right now, so a queued Watch could fire long after it was meant
+  const watchBlocked =
+    !progress ||
+    finishedAt !== undefined ||
+    progress.steps.some(
+      (s) =>
+        s.status === 'failed' || (s.key === 'requested' && s.status !== 'done')
+    ) ||
+    (!!searchStep &&
+      waitingForRelease(searchStep) &&
+      !progress.steps.some(
+        (s) =>
+          ['grabbed', 'importing', 'inJellyfin'].includes(s.key) &&
+          s.status === 'running' &&
+          !idle(s)
+      ));
   const canSearch =
     finishedAt === undefined &&
     !!progress?.search?.allowed &&
@@ -464,6 +504,16 @@ const RequestProgressModal = ({
     (step.status === 'running' || step.status === 'failed');
   const cooldownMs = retryAt !== undefined ? retryAt - now : 0;
   const searchRunning = !!progress?.search?.running;
+
+  useEffect(() => {
+    if (!watchQueued) return;
+    if (progress?.playUrl) {
+      setWatchQueued(false);
+      openWatch(progress.playUrl);
+    } else if (watchBlocked) {
+      setWatchQueued(false);
+    }
+  }, [watchQueued, progress?.playUrl, watchBlocked]);
 
   const searchAgain = async () => {
     if (!progress) return;
@@ -684,17 +734,55 @@ const RequestProgressModal = ({
         onCancel={onClose}
         cancelText={intl.formatMessage(globalMessages.close)}
         footerStart={
-          playUrl && (
+          playUrl ? (
             <Button
               as="a"
               href={playUrl}
               target="_blank"
               rel="noopener noreferrer"
               buttonType="success"
+              className={watchReady ? undefined : VIOLET}
             >
               <PlayIcon />
               <span>{intl.formatMessage(messages.watch)}</span>
+              {watchCounts && (
+                <span className="ml-2 tabular-nums opacity-75">
+                  {watchCounts}
+                </span>
+              )}
             </Button>
+          ) : watchQueued ? (
+            <Button
+              buttonType="ghost"
+              className={`${VIOLET_OUTLINE} bg-violet-600/20`}
+              onClick={() => setWatchQueued(false)}
+            >
+              <ArrowPathIcon className="animate-spin" />
+              <span>{intl.formatMessage(messages.watchQueued)}</span>
+            </Button>
+          ) : (
+            !!progress?.requests.length && (
+              <Tooltip
+                content={
+                  watchBlocked
+                    ? (error ?? (step && label(step)))
+                    : intl.formatMessage(messages.watchWhenReady)
+                }
+              >
+                {/* A disabled button gets no hover of its own */}
+                <span className="inline-flex">
+                  <Button
+                    buttonType={watchBlocked ? 'default' : 'ghost'}
+                    className={watchBlocked ? undefined : VIOLET_OUTLINE}
+                    disabled={watchBlocked}
+                    onClick={() => setWatchQueued(true)}
+                  >
+                    <PlayIcon />
+                    <span>{intl.formatMessage(messages.watch)}</span>
+                  </Button>
+                </span>
+              </Tooltip>
+            )
           )
         }
       >

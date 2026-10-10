@@ -160,9 +160,9 @@ export interface TrackedProgress {
   releases: Map<string, { title?: string; indexer?: string }>;
   /** Queue items by download, as last seen. */
   queue: Map<string, QueueItemState>;
-  /** The Watch link, shown once the run is ready. */
+  /** The Jellyfin link of the media, the Watch link of a movie. */
   playUrl?: string;
-  /** The Watch link per season, shown once the season is ready. */
+  /** The Jellyfin link per season, the Watch link of a series once one of its units is playable. */
   seasonUrls: Map<number, string>;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
   reconstructed?: boolean;
@@ -1322,8 +1322,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         (stepSum.length ? stepSum.reduce((a, b) => a + b, 0) : undefined),
       totalEstimateRangeMs: showConfidenceInterval ? total?.rangeMs : undefined,
       estimatePercentile: p,
-      playUrl:
-        entry.steps.playable.status === 'done' ? entry.playUrl : undefined,
+      playUrl: this.playUrl(entry),
       dormant: this.dormant(entry) || undefined,
       releaseDate: iso(entry.releaseDate),
       unaired: this.unairedSeasons(entry),
@@ -1335,6 +1334,21 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       timeline:
         entry.timeline.length > 0 ? this.timelineView(entry) : undefined,
     };
+  }
+
+  /** The first season with a playable unit, the media itself without seasons; none before. */
+  private playUrl(entry: TrackedProgress): string | undefined {
+    const playable = [...entry.units.values()].filter(
+      (u) => unitStage(u) === PLAYABLE
+    );
+    if (playable.length === 0 && entry.steps.playable.status !== 'done') {
+      return undefined;
+    }
+    const seasons = playable.flatMap((u) => u.seasonNumber ?? []);
+    return (
+      (seasons.length > 0 && entry.seasonUrls.get(Math.min(...seasons))) ||
+      entry.playUrl
+    );
   }
 
   /** One section per season of a series spanning several. */
@@ -1352,7 +1366,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           season,
           steps: states && this.stepViews(entry, states, units),
           playUrl:
-            states?.playable.status === 'done'
+            states?.playable.status === 'done' ||
+            units.some((u) => unitStage(u) === PLAYABLE)
               ? entry.seasonUrls.get(season)
               : undefined,
           unaired: unaired.get(season),

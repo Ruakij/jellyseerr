@@ -375,7 +375,8 @@ describe('ProgressTracker', () => {
         total: 2,
       });
       assert.equal(progress.steps[5].status, 'pending');
-      assert.equal(progress.playUrl, undefined);
+      // Season 3 has a playable episode already
+      assert.equal(progress.playUrl, 'http://jellyfin/s3');
       assert.deepEqual(progress.unaired, [
         { season: 4, episodes: 1, airsAt: undefined },
       ]);
@@ -508,7 +509,8 @@ describe('ProgressTracker', () => {
     });
     assert.equal(statuses().inJellyfin, 'running');
     assert.equal(statuses().playable, 'pending');
-    assert.equal(tracker.get(1, false)!.playUrl, undefined);
+    // One playable unit opens the media before Ready
+    assert.equal(tracker.get(1, false)!.playUrl, 'http://jf');
 
     tick(5_000);
     tracker.setJellyfin(1, false, { present: () => true });
@@ -518,6 +520,30 @@ describe('ProgressTracker', () => {
     assert.equal(step('playable').startedAt, step('inJellyfin').finishedAt);
     assert.equal(step('playable').finishedAt, step('inJellyfin').finishedAt);
     assert.equal(progress.playUrl, 'http://jf');
+  });
+
+  it('opens the first season with a playable unit', () => {
+    const { tracker } = setup();
+    tracker.start({ mediaId: 1, is4k: false, requestId: 1, seasons: [1, 2] });
+    tracker.setUnits(1, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+      { id: 201, seasonNumber: 2, episodeNumber: 1, hasFile: true },
+    ]);
+    tracker.syncFiles(1, false);
+    const seasonUrls = new Map([
+      [1, 'http://jf/s1'],
+      [2, 'http://jf/s2'],
+    ]);
+    tracker.setJellyfin(1, false, {
+      present: () => false,
+      playUrl: 'http://jf',
+      seasonUrls,
+    });
+    assert.equal(tracker.get(1, false)!.playUrl, undefined);
+    tracker.setJellyfin(1, false, { present: (u) => u.id === 201 });
+    assert.equal(tracker.get(1, false)!.playUrl, 'http://jf/s2');
+    tracker.setJellyfin(1, false, { present: () => true });
+    assert.equal(tracker.get(1, false)!.playUrl, 'http://jf/s1');
   });
 
   it('walks a movie through all steps and records their durations', () => {
