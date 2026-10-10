@@ -2051,8 +2051,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
 
   private changed(entry: TrackedProgress): void {
     const k = key(entry.mediaId, entry.is4k);
+    const finished = this.finished(entry);
     this.cancelEviction(k);
-    if (this.finished(entry)) {
+    if (finished) {
       this.evictions.set(
         k,
         setTimeout(() => {
@@ -2062,7 +2063,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       );
     }
     this.emit('change', this.snapshot(entry));
-    if (!this.finished(entry)) entry.finishedAt = undefined;
+    if (!finished) entry.finishedAt = undefined;
     else if (entry.finishedAt === undefined) this.reportFinished(entry);
   }
 
