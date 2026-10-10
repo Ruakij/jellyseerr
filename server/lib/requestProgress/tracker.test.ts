@@ -326,6 +326,67 @@ describe('ProgressTracker', () => {
       assert.equal(stats.total('sonarr-0').localCount, 1);
     });
 
+    it('stays open while a season waits to air although the other failed', () => {
+      const { tracker, tick } = setup();
+      const ended: RequestProgress[] = [];
+      tracker.on('finished', (p) => ended.push(p));
+      tracker.start({ mediaId: 1, is4k: false, requestId: 7, seasons: [3, 4] });
+      const s3 = [1, 2].map((n) => ({
+        id: 300 + n,
+        seasonNumber: 3,
+        episodeNumber: n,
+        hasFile: false,
+      }));
+      const s4 = (aired: boolean) =>
+        [1, 2].map((n) => ({
+          id: 400 + n,
+          seasonNumber: 4,
+          episodeNumber: n,
+          hasFile: false,
+          unaired: n === 1 && aired ? undefined : true,
+        }));
+      tracker.setUnits(1, false, [...s3, ...s4(false)]);
+      tracker.grab(1, false, { downloadId: 'D', unitIds: [301, 302] });
+      tracker.imported(1, false, { downloadId: 'D', unitIds: [301, 302] });
+      tracker.searchFinished(1, false, { commandId: 1 });
+      tick(JELLYFIN_TIMEOUT_MS);
+      tracker.expireJellyfinWaits();
+      const entry = tracker.entry(1, false)!;
+      assert.equal(
+        tracker.get(1, false)!.steps.find((s) => s.key === 'inJellyfin')!
+          .status,
+        'failed'
+      );
+      assert.equal(tracker.finished(entry), false);
+      assert.deepEqual(ended, []);
+
+      const s3Files = s3.map((u) => ({ ...u, hasFile: true }));
+      tracker.setUnits(1, false, [
+        ...s3Files,
+        ...s4(true).map((u) => ({ ...u, hasFile: u.id === 401 })),
+      ]);
+      tracker.grab(1, false, { downloadId: 'E', unitIds: [401] });
+      tracker.imported(1, false, { downloadId: 'E', unitIds: [401] });
+      tracker.setJellyfin(1, false, { present: (u) => u.id === 401 });
+      assert.equal(
+        tracker.get(1, false)!.steps.find((s) => s.key === 'playable')!.counts!
+          .done,
+        1
+      );
+      assert.equal(tracker.finished(entry), false);
+
+      // Season 3 stays failed; season 4 ends with its last episode.
+      tracker.setUnits(1, false, [
+        ...s3Files,
+        ...s4(true).map((u) => ({ ...u, hasFile: true, unaired: undefined })),
+      ]);
+      tracker.grab(1, false, { downloadId: 'F', unitIds: [402] });
+      tracker.imported(1, false, { downloadId: 'F', unitIds: [402] });
+      tracker.setJellyfin(1, false, { present: (u) => u.seasonNumber === 4 });
+      assert.equal(tracker.finished(entry), true);
+      assert.equal(ended.length, 1);
+    });
+
     it('replaces the placeholder of a season once its episodes are listed', () => {
       const { tracker } = setup();
       tracker.start({ mediaId: 1, is4k: false, requestId: 7, seasons: [3] });

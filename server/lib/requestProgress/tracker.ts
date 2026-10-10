@@ -242,6 +242,30 @@ const failedAt = (u: Unit): number | undefined => {
 const searchOpen = (entry: TrackedProgress) =>
   entry.searchCommands.size > 0 || entry.searchStartedAt !== undefined;
 
+/**
+ * Every counted unit failed with no search running. Radarr/Sonarr search again after a failed
+ * download, so only search and import failures count.
+ */
+const allFailed = (entry: TrackedProgress, units: Unit[]) =>
+  !searchOpen(entry) &&
+  units.every((u) => {
+    const failed = failedAt(u);
+    return failed !== undefined && failed !== GRABBED;
+  });
+
+/** The units of a series by season; undefined for a movie or a series not loaded yet. */
+const seasonUnits = (
+  entry: TrackedProgress
+): Map<number, Unit[]> | undefined => {
+  if (!entry.unitsKnown) return undefined;
+  const seasons = new Map<number, Unit[]>();
+  for (const u of entry.units.values()) {
+    if (u.seasonNumber === undefined) return undefined;
+    seasons.set(u.seasonNumber, [...(seasons.get(u.seasonNumber) ?? []), u]);
+  }
+  return seasons.size > 0 ? seasons : undefined;
+};
+
 const pad = (n: number) => String(n).padStart(2, '0');
 
 /** Episode labels with consecutive episodes of a season as ranges: S01E01-E03, S02E05. */
@@ -1096,12 +1120,26 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     });
   }
 
-  /** Failed, or Ready with nothing left to air: Ready for the released units keeps it open. */
+  /**
+   * Failed, or Ready with nothing left to air: Ready for the released units keeps it open. A series
+   * ends once each season does, so a failed season leaves the run open for one still to air.
+   */
   public finished(entry: TrackedProgress): boolean {
+    const seasons = seasonUnits(entry);
+    if (!seasons || entry.requestError) {
+      return (
+        (entry.steps.playable.status === 'done' &&
+          ![...entry.units.values()].some(waitsForRelease)) ||
+        STEP_KEYS.some((k) => entry.steps[k].status === 'failed')
+      );
+    }
     return (
-      (entry.steps.playable.status === 'done' &&
-        ![...entry.units.values()].some(waitsForRelease)) ||
-      STEP_KEYS.some((k) => entry.steps[k].status === 'failed')
+      !awaitingApproval(entry) &&
+      [...seasons.values()].every(
+        (units) =>
+          units.every((u) => unitStage(u) === PLAYABLE) ||
+          allFailed(entry, counted(units))
+      )
     );
   }
 
@@ -1695,13 +1733,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   private recompute(entry: TrackedProgress, at: number, cause: string): void {
     const units = counted(entry.units.values());
     const total = units.length;
-    // Radarr/Sonarr search again after a failed download, so only search and import failures fail.
-    const allFailed =
-      !searchOpen(entry) &&
-      units.every((u) => {
-        const failed = failedAt(u);
-        return failed !== undefined && failed !== GRABBED;
-      });
+    const failedAll = allFailed(entry, units);
     const counts = PROGRESS_STEPS.map(() => ({
       done: 0,
       active: 0,
@@ -1744,14 +1776,14 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       next[k] = {
         status: awaiting
           ? 'pending'
-          : allFailed && c.failed > 0
+          : failedAll && c.failed > 0
             ? 'failed'
             : c.done === total
               ? 'done'
               : k !== 'playable' && (c.active > 0 || c.done > 0)
                 ? 'running'
                 : 'pending',
-        error: allFailed && c.failed > 0 ? reasons[i] : undefined,
+        error: failedAll && c.failed > 0 ? reasons[i] : undefined,
         counts: c,
         // Grabbed with no size known yet has no share to show.
         progress:
