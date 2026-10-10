@@ -668,41 +668,43 @@ export async function refreshServer(
   const ascending = [...history].sort(
     (a, b) => Date.parse(a.date) - Date.parse(b.date)
   );
-  for (const record of ascending as HistoryRecord[]) {
-    const at = Date.parse(record.date);
-    const cause = `${key} history ${record.id} ${record.eventType}`;
-    for (const { mediaId, is4k, steps } of entriesOf(record)) {
-      // The item history holds the records of earlier requests too.
-      if (at < (steps.requested.startedAt ?? 0)) continue;
-      const unitIds = unitIdsOf(record);
-      if (record.eventType === 'grabbed') {
-        tracker.grab(mediaId, is4k, {
-          downloadId: record.downloadId ?? `history-${record.id}`,
-          unitIds,
-          title: record.sourceTitle,
-          indexer: record.data?.indexer,
-          at,
-          cause,
-        });
-      } else if (record.eventType === 'downloadFolderImported') {
-        tracker.imported(mediaId, is4k, {
-          downloadId: record.downloadId,
-          unitIds,
-          at,
-          cause,
-        });
-      } else if (record.eventType === 'downloadFailed' && record.downloadId) {
-        tracker.downloadFailed(mediaId, is4k, {
-          downloadId: record.downloadId,
-          unitIds,
-          reason: DOWNLOAD_FAILED,
-          detail: record.data?.message,
-          at,
-          cause,
-        });
+  tracker.batch(() => {
+    for (const record of ascending as HistoryRecord[]) {
+      const at = Date.parse(record.date);
+      const cause = `${key} history ${record.id} ${record.eventType}`;
+      for (const { mediaId, is4k, steps } of entriesOf(record)) {
+        // The item history holds the records of earlier requests too.
+        if (at < (steps.requested.startedAt ?? 0)) continue;
+        const unitIds = unitIdsOf(record);
+        if (record.eventType === 'grabbed') {
+          tracker.grab(mediaId, is4k, {
+            downloadId: record.downloadId ?? `history-${record.id}`,
+            unitIds,
+            title: record.sourceTitle,
+            indexer: record.data?.indexer,
+            at,
+            cause,
+          });
+        } else if (record.eventType === 'downloadFolderImported') {
+          tracker.imported(mediaId, is4k, {
+            downloadId: record.downloadId,
+            unitIds,
+            at,
+            cause,
+          });
+        } else if (record.eventType === 'downloadFailed' && record.downloadId) {
+          tracker.downloadFailed(mediaId, is4k, {
+            downloadId: record.downloadId,
+            unitIds,
+            reason: DOWNLOAD_FAILED,
+            detail: record.data?.message,
+            at,
+            cause,
+          });
+        }
       }
     }
-  }
+  });
 
   // Keyed by downloadId: Sonarr lists a season pack once per episode.
   const items = new Map<TrackedProgress, Map<string, QueueItemState>>();
