@@ -655,20 +655,21 @@ export async function refreshServer(
   const unitIdsOf = (item: ArrItem) =>
     type === 'radarr' ? [0] : item.episodeId ? [item.episodeId] : [];
 
-  // Units first: history and queue name episodes by id.
-  entries.forEach((entry, i) => {
-    const state = states[i];
-    if (state) {
-      tracker.setUnits(entry.mediaId, entry.is4k, state.units, {
-        cause: `${key} item`,
-      });
-    }
-  });
-
-  const ascending = [...history].sort(
-    (a, b) => Date.parse(a.date) - Date.parse(b.date)
-  );
+  // One change per run and refresh: comparing snapshots per mutation blocks the event loop.
   tracker.batch(() => {
+    // Units first: history and queue name episodes by id.
+    entries.forEach((entry, i) => {
+      const state = states[i];
+      if (state) {
+        tracker.setUnits(entry.mediaId, entry.is4k, state.units, {
+          cause: `${key} item`,
+        });
+      }
+    });
+
+    const ascending = [...history].sort(
+      (a, b) => Date.parse(a.date) - Date.parse(b.date)
+    );
     for (const record of ascending as HistoryRecord[]) {
       const at = Date.parse(record.date);
       const cause = `${key} history ${record.id} ${record.eventType}`;
@@ -704,69 +705,69 @@ export async function refreshServer(
         }
       }
     }
-  });
 
-  // Keyed by downloadId: Sonarr lists a season pack once per episode.
-  const items = new Map<TrackedProgress, Map<string, QueueItemState>>();
-  for (const item of queue) {
-    const state = item.trackedDownloadState;
-    const queueState: QueueItemState['state'] =
-      state === 'failedPending' || state === 'failed'
-        ? 'failed'
-        : (state === 'importBlocked' || state === 'importPending') &&
-            item.trackedDownloadStatus === 'warning'
-          ? 'blocked'
-          : [
-                'importBlocked',
-                'importPending',
-                'importing',
-                'imported',
-              ].includes(state)
-            ? 'downloaded'
-            : 'downloading';
-    for (const entry of entriesOf(item)) {
-      const own = items.get(entry) ?? new Map<string, QueueItemState>();
-      items.set(entry, own);
-      const known = own.get(item.downloadId);
-      if (known) {
-        known.unitIds.push(...unitIdsOf(item));
-        continue;
+    // Keyed by downloadId: Sonarr lists a season pack once per episode.
+    const items = new Map<TrackedProgress, Map<string, QueueItemState>>();
+    for (const item of queue) {
+      const state = item.trackedDownloadState;
+      const queueState: QueueItemState['state'] =
+        state === 'failedPending' || state === 'failed'
+          ? 'failed'
+          : (state === 'importBlocked' || state === 'importPending') &&
+              item.trackedDownloadStatus === 'warning'
+            ? 'blocked'
+            : [
+                  'importBlocked',
+                  'importPending',
+                  'importing',
+                  'imported',
+                ].includes(state)
+              ? 'downloaded'
+              : 'downloading';
+      for (const entry of entriesOf(item)) {
+        const own = items.get(entry) ?? new Map<string, QueueItemState>();
+        items.set(entry, own);
+        const known = own.get(item.downloadId);
+        if (known) {
+          known.unitIds.push(...unitIdsOf(item));
+          continue;
+        }
+        own.set(item.downloadId, {
+          downloadId: item.downloadId,
+          unitIds: unitIdsOf(item),
+          title: item.title,
+          indexer: item.indexer || undefined,
+          size: item.size,
+          sizeLeft: item.sizeleft,
+          etaMs: queueEtaMs(item),
+          state: queueState,
+          reason:
+            queueState === 'failed'
+              ? DOWNLOAD_FAILED
+              : queueState === 'blocked'
+                ? IMPORT_BLOCKED
+                : undefined,
+        });
       }
-      own.set(item.downloadId, {
-        downloadId: item.downloadId,
-        unitIds: unitIdsOf(item),
-        title: item.title,
-        indexer: item.indexer || undefined,
-        size: item.size,
-        sizeLeft: item.sizeleft,
-        etaMs: queueEtaMs(item),
-        state: queueState,
-        reason:
-          queueState === 'failed'
-            ? DOWNLOAD_FAILED
-            : queueState === 'blocked'
-              ? IMPORT_BLOCKED
-              : undefined,
-      });
     }
-  }
-  for (const entry of entries) {
-    tracker.setQueue(
-      entry.mediaId,
-      entry.is4k,
-      [...(items.get(entry)?.values() ?? [])],
-      { cause: `${key} queue` }
-    );
-  }
+    for (const entry of entries) {
+      tracker.setQueue(
+        entry.mediaId,
+        entry.is4k,
+        [...(items.get(entry)?.values() ?? [])],
+        { cause: `${key} queue` }
+      );
+    }
 
-  entries.forEach((entry, i) => {
-    const state = states[i];
-    if (!state) return;
-    applyArrState(entry, state, type, tracker, `${key} item`);
-    // The scanner decides what this means for the media and request status.
-    if (entry.arrError) {
-      syncItem({ type, serverId: Number(id) }, arrIdOf(entry) as number);
-    }
+    entries.forEach((entry, i) => {
+      const state = states[i];
+      if (!state) return;
+      applyArrState(entry, state, type, tracker, `${key} item`);
+      // The scanner decides what this means for the media and request status.
+      if (entry.arrError) {
+        syncItem({ type, serverId: Number(id) }, arrIdOf(entry) as number);
+      }
+    });
   });
 }
 
