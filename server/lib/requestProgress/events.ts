@@ -48,7 +48,9 @@ import type {
   TrackedRequest,
   Unit,
 } from '@server/lib/requestProgress/tracker';
-import progressTracker from '@server/lib/requestProgress/tracker';
+import progressTracker, {
+  seasonUnits,
+} from '@server/lib/requestProgress/tracker';
 import {
   jellyfinItemScanner,
   jellyfinRecentScanner,
@@ -872,19 +874,17 @@ async function providerItem(
   }
 }
 
-/** The Watch link of a series opens the lowest requested season; the series without one. */
+/** The Watch link of the season of a series; the series link when Jellyfin has no such season. */
 async function seasonUrl(
   client: JellyfinAPI | undefined,
-  entry: TrackedProgress,
   itemId: string,
+  seasonNumber: number,
   url?: string
 ): Promise<string | undefined> {
-  const seasons = [...entry.requests.values()].flatMap((r) => r.seasons ?? []);
-  if (!client || !url || seasons.length === 0) return url;
-  const lowest = Math.min(...seasons);
+  if (!client || !url) return url;
   try {
     const season = (await client.getSeasons(itemId)).find(
-      (s) => s.IndexNumber === lowest
+      (s) => s.IndexNumber === seasonNumber
     );
     return season ? url.replace(`id=${itemId}&`, `id=${season.Id}&`) : url;
   } catch {
@@ -946,17 +946,45 @@ export async function reconcileJellyfin(
           const item = listed?.get(key(u));
           return !!item && probed(item);
         };
-    let playUrl = (is4k ? m.mediaUrl4k : m.mediaUrl) ?? undefined;
-    if (tv && itemId && units.every(present)) {
-      // Looked up once, when the run becomes ready.
+    const seriesUrl = (is4k ? m.mediaUrl4k : m.mediaUrl) ?? undefined;
+    let playUrl = seriesUrl;
+    const requested = [...entry.requests.values()].flatMap(
+      (r) => r.seasons ?? []
+    );
+    // The run opens the lowest requested season; looked up once, when the run becomes ready.
+    if (tv && itemId && requested.length > 0 && units.every(present)) {
       playUrl =
         entry.steps.playable.status === 'done' && entry.playUrl
           ? entry.playUrl
-          : await seasonUrl(await client, entry, itemId, playUrl);
+          : await seasonUrl(
+              await client,
+              itemId,
+              Math.min(...requested),
+              playUrl
+            );
+    }
+    // Each season of a multi-season run opens itself once its aired units are all there.
+    const seasonUrls = new Map<number, string>();
+    const seasons = seasonUnits(entry);
+    for (const [season, seasonUnitList] of seasons && seasons.size > 1
+      ? seasons
+      : []) {
+      const aired = seasonUnitList.filter((u) => !u.unaired);
+      if (
+        !itemId ||
+        entry.seasonUrls.has(season) ||
+        aired.length === 0 ||
+        !aired.every(present)
+      ) {
+        continue;
+      }
+      const url = await seasonUrl(await client, itemId, season, seriesUrl);
+      if (url) seasonUrls.set(season, url);
     }
     tracker.setJellyfin(mediaId, is4k, {
       present,
       playUrl,
+      seasonUrls,
       at: addedAt,
       cause: 'Jellyfin',
     });

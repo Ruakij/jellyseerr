@@ -2,6 +2,8 @@ import type {
   ProgressCounts,
   ProgressDownload,
   ProgressRequest,
+  ProgressSeason,
+  ProgressStep,
   ProgressStepKey,
   ProgressStepStatus,
   ProgressTimelineEntry,
@@ -160,6 +162,8 @@ export interface TrackedProgress {
   queue: Map<string, QueueItemState>;
   /** The Watch link, shown once the run is ready. */
   playUrl?: string;
+  /** The Watch link per season, shown once the season is ready. */
+  seasonUrls: Map<number, string>;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
   reconstructed?: boolean;
   /** When this process started tracking it; a rebuilt run knows nothing of Jellyfin before. */
@@ -170,6 +174,8 @@ export interface TrackedProgress {
   /** When the run last became finished; cleared while it runs again. */
   finishedAt?: number;
   steps: Record<ProgressStepKey, StepState>;
+  /** The steps per season of a series spanning several, for its seasons with aired units. */
+  seasonSteps: Map<number, Record<ProgressStepKey, StepState>>;
 }
 
 const key = (mediaId: number, is4k: boolean) => `${mediaId}:${is4k}`;
@@ -254,7 +260,7 @@ const allFailed = (entry: TrackedProgress, units: Unit[]) =>
   });
 
 /** The units of a series by season; undefined for a movie or a series not loaded yet. */
-const seasonUnits = (
+export const seasonUnits = (
   entry: TrackedProgress
 ): Map<number, Unit[]> | undefined => {
   if (!entry.unitsKnown) return undefined;
@@ -264,6 +270,36 @@ const seasonUnits = (
     seasons.set(u.seasonNumber, [...(seasons.get(u.seasonNumber) ?? []), u]);
   }
   return seasons.size > 0 ? seasons : undefined;
+};
+
+const pendingSteps = () =>
+  Object.fromEntries(
+    STEP_KEYS.map((k) => [k, { status: 'pending' }])
+  ) as Record<ProgressStepKey, StepState>;
+
+/** `state` with the times of `prev` carried through the status change. */
+const timed = (
+  k: ProgressStepKey,
+  prev: StepState,
+  state: StepState,
+  at: number
+): StepState => {
+  let { startedAt, finishedAt } = prev;
+  if (state.status === 'pending') startedAt = undefined;
+  else startedAt ??= at;
+  finishedAt =
+    state.status === 'done' || state.status === 'failed'
+      ? prev.status === state.status
+        ? finishedAt
+        : at
+      : undefined;
+  // Searching has its own waiting, see searchTimes.
+  const idle =
+    k !== 'searching' &&
+    state.status === 'running' &&
+    state.counts?.active === 0;
+  const idleSince = idle ? (prev.idleSince ?? at) : undefined;
+  return { ...state, startedAt, finishedAt, idleSince };
 };
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -417,9 +453,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       queue: new Map(),
       timeline: [],
       seen: new Set(),
-      steps: Object.fromEntries(
-        STEP_KEYS.map((k) => [k, { status: 'pending' }])
-      ) as Record<ProgressStepKey, StepState>,
+      steps: pendingSteps(),
+      seasonSteps: new Map(),
+      seasonUrls: new Map(),
     };
     this.cancelEviction(key(mediaId, is4k));
     this.entries.set(key(mediaId, is4k), entry);
@@ -506,7 +542,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       (e) => !e.seasons || e.seasons.some(asked)
     );
     const since = Math.min(...requests.map((r) => r.at));
-    for (const state of Object.values(entry.steps)) {
+    for (const state of [entry.steps, ...entry.seasonSteps.values()].flatMap(
+      (steps) => Object.values(steps)
+    )) {
       if (state.startedAt !== undefined && state.startedAt < since) {
         state.startedAt = since;
       }
@@ -928,11 +966,13 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     {
       present,
       playUrl,
+      seasonUrls,
       at = this.now(),
       cause,
     }: {
       present: (unit: Unit) => boolean;
       playUrl?: string;
+      seasonUrls?: Map<number, string>;
     } & Change
   ): void {
     this.mutate(mediaId, is4k, at, cause ?? 'Jellyfin', (entry) => {
@@ -962,6 +1002,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         });
       }
       entry.playUrl = playUrl ?? entry.playUrl;
+      seasonUrls?.forEach((url, season) => entry.seasonUrls.set(season, url));
     });
   }
 
@@ -1183,14 +1224,19 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     );
   }
 
-  public snapshot(entry: TrackedProgress): RequestProgress {
+  /** The steps of these states, for the run or one season with its units. */
+  private stepViews(
+    entry: TrackedProgress,
+    states: Record<ProgressStepKey, StepState>,
+    units: Unit[]
+  ): ProgressStep[] {
     const { estimatePercentile: p, showConfidenceInterval } =
       getSettings().requestProgress;
     const estimates = entry.serverKey
       ? this.stats.get(entry.serverKey)
       : undefined;
-    const steps = STEP_KEYS.map((k) => {
-      const state = entry.steps[k];
+    return STEP_KEYS.map((k) => {
+      const state = states[k];
       // Ready is no phase of its own: it completes with the last unit in Jellyfin.
       const stats =
         k === 'requested' || k === 'playable' ? undefined : estimates?.[k];
@@ -1213,7 +1259,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
                 ? (entry.arrError ?? REQUEST_FAILED)
                 : state.error)),
         ...(k === 'searching'
-          ? this.searchTimes(entry)
+          ? this.searchTimes(entry, units, state)
           : {
               // While a search runs, the searching step says what the run does.
               waiting:
@@ -1226,14 +1272,20 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
             }),
         detail:
           k === 'searching' && state.status === 'running'
-            ? this.searchingDetail(entry)
+            ? this.searchingDetail(entry, units)
             : k === 'grabbed'
-              ? this.releaseTitles(entry)
+              ? this.releaseTitles(entry, units)
               : undefined,
         counts: state.counts,
         progress: state.progress,
       };
     });
+  }
+
+  public snapshot(entry: TrackedProgress): RequestProgress {
+    const { estimatePercentile: p, showConfidenceInterval } =
+      getSettings().requestProgress;
+    const steps = this.stepViews(entry, entry.steps, [...entry.units.values()]);
     const totals = entry.serverKey
       ? this.stats.total(entry.serverKey)
       : undefined;
@@ -1271,6 +1323,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       dormant: this.dormant(entry) || undefined,
       releaseDate: iso(entry.releaseDate),
       unaired: this.unairedSeasons(entry),
+      seasons: this.seasons(entry),
       downloads:
         entry.steps.playable.status === 'done' || downloads.length === 0
           ? undefined
@@ -1278,6 +1331,29 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       timeline:
         entry.timeline.length > 0 ? this.timelineView(entry) : undefined,
     };
+  }
+
+  /** One section per season of a series spanning several. */
+  private seasons(entry: TrackedProgress): ProgressSeason[] | undefined {
+    const seasons = seasonUnits(entry);
+    if (!seasons || seasons.size < 2) return undefined;
+    const unaired = new Map(
+      this.unairedSeasons(entry)?.map(({ season, ...rest }) => [season, rest])
+    );
+    return [...seasons]
+      .sort(([a], [b]) => a - b)
+      .map(([season, units]) => {
+        const states = entry.seasonSteps.get(season);
+        return {
+          season,
+          steps: states && this.stepViews(entry, states, units),
+          playUrl:
+            states?.playable.status === 'done'
+              ? entry.seasonUrls.get(season)
+              : undefined,
+          unaired: unaired.get(season),
+        };
+      });
   }
 
   /**
@@ -1308,27 +1384,33 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           }));
   }
 
-  /** What the searching step waits for while no search runs, if anything. */
-  private waiting(entry: TrackedProgress): 'release' | 'rss' | undefined {
+  /** What the searching step of these units waits for while no search runs, if anything. */
+  private waiting(
+    entry: TrackedProgress,
+    units: Unit[],
+    searching: StepState
+  ): 'release' | 'rss' | undefined {
     if (
       searchOpen(entry) ||
-      entry.steps.searching.status !== 'running' ||
-      ![...entry.units.values()].some((u) => unitStage(u) === SEARCHING)
+      searching.status !== 'running' ||
+      !units.some((u) => unitStage(u) === SEARCHING)
     ) {
       return undefined;
     }
-    return entry.unreleased || releasePending(entry.units.values())
-      ? 'release'
-      : 'rss';
+    return entry.unreleased || releasePending(units) ? 'release' : 'rss';
   }
 
-  /** Search time apart from waiting, for the searching step. */
-  private searchTimes(entry: TrackedProgress) {
-    const waiting = this.waiting(entry);
+  /** Search time apart from waiting, for the searching step; the searches cover the whole media. */
+  private searchTimes(
+    entry: TrackedProgress,
+    units: Unit[],
+    searching: StepState
+  ) {
+    const waiting = this.waiting(entry, units, searching);
     const since = Math.max(
       entry.lastSearch?.end ?? 0,
       entry.lastSearchedAt ?? 0,
-      entry.steps.searching.startedAt ?? 0
+      searching.startedAt ?? 0
     );
     return {
       searchMs: entry.searchMs || undefined,
@@ -1401,16 +1483,16 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       });
   }
 
-  private searchingDetail(entry: TrackedProgress): string {
+  private searchingDetail(entry: TrackedProgress, all: Unit[]): string {
     if (searchOpen(entry)) {
       return entry.searchIndexers
         ? `Searching (${entry.searchIndexers} indexers)`
         : 'Searching';
     }
-    if (entry.unreleased || releasePending(entry.units.values())) {
+    if (entry.unreleased || releasePending(all)) {
       return WAITING_FOR_RELEASE;
     }
-    const units = counted(entry.units.values());
+    const units = counted(all);
     const total = units.length;
     const missing = units.filter((u) => unitStage(u) === SEARCHING).length;
     return total > 1 && missing > 0
@@ -1470,9 +1552,12 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     });
   }
 
-  private releaseTitles(entry: TrackedProgress): string | undefined {
+  private releaseTitles(
+    entry: TrackedProgress,
+    units: Unit[]
+  ): string | undefined {
     const titles = new Set<string>();
-    for (const unit of entry.units.values()) {
+    for (const unit of units) {
       const title =
         unit.downloadId && entry.releases.get(unit.downloadId)?.title;
       if (title) titles.add(title);
@@ -1754,6 +1839,104 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
    */
   private recompute(entry: TrackedProgress, at: number, cause: string): void {
     const units = counted(entry.units.values());
+    const next = this.stepStates(entry, units);
+    for (const k of STEP_KEYS) {
+      const prev = entry.steps[k];
+      const state = timed(k, prev, next[k], at);
+      entry.steps[k] = state;
+      const { startedAt } = state;
+      if (prev.status === state.status) continue;
+      logger.debug(`Step ${k}: ${prev.status} -> ${state.status}`, {
+        label: 'Request Progress',
+        mediaId: entry.mediaId,
+        is4k: entry.is4k,
+        counts: state.counts,
+        cause,
+      });
+      if (k === 'playable' && state.status === 'done') {
+        this.note(entry, at, cause, {
+          step: 'playable',
+          kind: 'playable',
+          source: 'jellyfin',
+        });
+      }
+      if (
+        state.status !== 'done' ||
+        !entry.serverKey ||
+        entry.reconstructed ||
+        startedAt === undefined
+      ) {
+        continue;
+      }
+      // One sample per run, from the step start, as the pop-up shows the step time. A step never
+      // seen running, e.g. an import read from the history with its download, has no duration.
+      const sampleKey = `sample:${k}`;
+      if (
+        (k === 'grabbed' || k === 'importing' || k === 'inJellyfin') &&
+        prev.status !== 'pending' &&
+        !entry.seen.has(sampleKey)
+      ) {
+        entry.seen.add(sampleKey);
+        this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
+          at,
+          downloadId: units.find((u) => u.downloadId)?.downloadId,
+        });
+      }
+      const requestedAt = entry.steps.requested.startedAt ?? at;
+      const lastGrab = Math.max(
+        requestedAt,
+        ...units.map((u) => u.grabbedAt ?? requestedAt)
+      );
+      // A search ran from the request to the last grab, so the total holds no waiting. One per
+      // run: Ready reached again, e.g. after a season aired, holds the wait for its air date.
+      const waited = lastGrab - requestedAt - entry.searchMs;
+      if (
+        k === 'playable' &&
+        entry.seen.has(SEARCH_SAMPLE) &&
+        !entry.seen.has(sampleKey) &&
+        waited <= SEARCH_GAP_MS
+      ) {
+        entry.seen.add(sampleKey);
+        this.stats.recordTotal(
+          entry.serverKey,
+          Math.max(0, at - requestedAt),
+          at
+        );
+      }
+    }
+    this.recomputeSeasons(entry, at);
+  }
+
+  /**
+   * The steps of each season with aired units, for a series spanning several seasons; a season
+   * whose units all wait for their air date has none, and starts over once one airs.
+   */
+  private recomputeSeasons(entry: TrackedProgress, at: number): void {
+    const seasons = seasonUnits(entry);
+    const known = entry.seasonSteps;
+    entry.seasonSteps = new Map();
+    if (!seasons || seasons.size < 2) return;
+    for (const [season, units] of seasons) {
+      if (units.every(waitsForRelease)) continue;
+      const prev = known.get(season) ?? {
+        ...pendingSteps(),
+        requested: entry.steps.requested,
+      };
+      const next = this.stepStates(entry, counted(units));
+      entry.seasonSteps.set(
+        season,
+        Object.fromEntries(
+          STEP_KEYS.map((k) => [k, timed(k, prev[k], next[k], at)])
+        ) as Record<ProgressStepKey, StepState>
+      );
+    }
+  }
+
+  /** The step states of these counted units, without times. */
+  private stepStates(
+    entry: TrackedProgress,
+    units: Unit[]
+  ): Record<ProgressStepKey, StepState> {
     const total = units.length;
     const failedAll = allFailed(entry, units);
     const counts = PROGRESS_STEPS.map(() => ({
@@ -1826,84 +2009,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         };
     }
 
-    for (const k of STEP_KEYS) {
-      const prev = entry.steps[k];
-      const state = next[k];
-      let { startedAt, finishedAt } = prev;
-      if (state.status === 'pending') startedAt = undefined;
-      else startedAt ??= at;
-      finishedAt =
-        state.status === 'done' || state.status === 'failed'
-          ? prev.status === state.status
-            ? finishedAt
-            : at
-          : undefined;
-      // Searching has its own waiting, see searchTimes.
-      const idle =
-        k !== 'searching' &&
-        state.status === 'running' &&
-        state.counts?.active === 0;
-      const idleSince = idle ? (prev.idleSince ?? at) : undefined;
-      entry.steps[k] = { ...state, startedAt, finishedAt, idleSince };
-      if (prev.status === state.status) continue;
-      logger.debug(`Step ${k}: ${prev.status} -> ${state.status}`, {
-        label: 'Request Progress',
-        mediaId: entry.mediaId,
-        is4k: entry.is4k,
-        counts: state.counts,
-        cause,
-      });
-      if (k === 'playable' && state.status === 'done') {
-        this.note(entry, at, cause, {
-          step: 'playable',
-          kind: 'playable',
-          source: 'jellyfin',
-        });
-      }
-      if (
-        state.status !== 'done' ||
-        !entry.serverKey ||
-        entry.reconstructed ||
-        startedAt === undefined
-      ) {
-        continue;
-      }
-      // One sample per run, from the step start, as the pop-up shows the step time. A step never
-      // seen running, e.g. an import read from the history with its download, has no duration.
-      const sampleKey = `sample:${k}`;
-      if (
-        (k === 'grabbed' || k === 'importing' || k === 'inJellyfin') &&
-        prev.status !== 'pending' &&
-        !entry.seen.has(sampleKey)
-      ) {
-        entry.seen.add(sampleKey);
-        this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
-          at,
-          downloadId: units.find((u) => u.downloadId)?.downloadId,
-        });
-      }
-      const requestedAt = entry.steps.requested.startedAt ?? at;
-      const lastGrab = Math.max(
-        requestedAt,
-        ...units.map((u) => u.grabbedAt ?? requestedAt)
-      );
-      // A search ran from the request to the last grab, so the total holds no waiting. One per
-      // run: Ready reached again, e.g. after a season aired, holds the wait for its air date.
-      const waited = lastGrab - requestedAt - entry.searchMs;
-      if (
-        k === 'playable' &&
-        entry.seen.has(SEARCH_SAMPLE) &&
-        !entry.seen.has(sampleKey) &&
-        waited <= SEARCH_GAP_MS
-      ) {
-        entry.seen.add(sampleKey);
-        this.stats.recordTotal(
-          entry.serverKey,
-          Math.max(0, at - requestedAt),
-          at
-        );
-      }
-    }
+    return next as Record<ProgressStepKey, StepState>;
   }
 
   private changed(entry: TrackedProgress): void {

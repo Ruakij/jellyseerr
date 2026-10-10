@@ -94,6 +94,14 @@ export interface ProgressDownload {
   etaMs?: number; // from the download client, absent when unknown
 }
 
+// The requested units of one season; the run-level fields cover all seasons
+export interface ProgressSeason {
+  season: number;
+  steps?: ProgressStep[]; // absent while nothing requested of the season aired; searching state is media-wide
+  playUrl?: string; // Jellyfin deep link of the season once all its aired units are playable
+  unaired?: { episodes?: number; airsAt?: string }; // as RequestProgress.unaired, for this season
+}
+
 // Payload of the `progress` SSE event on GET /api/v1/media/:mediaId/progress
 export interface RequestProgress {
   mediaId: number;
@@ -107,6 +115,7 @@ export interface RequestProgress {
   dormant?: boolean; // waits for a release with nothing running; its waiting time does not tick
   releaseDate?: string; // ISO; next Radarr digital/physical release, or Sonarr air date of a missing requested episode; future only
   unaired?: { season: number; episodes?: number; airsAt?: string }[]; // series: seasons with requested episodes not aired yet, outside the step counts once one requested episode aired; episodes absent while Sonarr lists none; airsAt is the earliest air date Sonarr knows
+  seasons?: ProgressSeason[]; // series with known units in more than one season, by season
   downloads?: ProgressDownload[]; // queue items of units without a file
   timeline?: ProgressTimelineEntry[]; // last 100 events, oldest first; on the stream only when changed
   search?: ProgressSearch; // computed per viewer
