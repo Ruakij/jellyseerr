@@ -205,6 +205,26 @@ describe('refreshServer', () => {
     assert.equal(tracker.entry(media.id, false)!.units.get(0)?.downloadId, 'D');
   });
 
+  it('emits one change per refresh that moves the run, none for one that does not', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    await refreshServer('radarr-0', tracker);
+    let changes = 0;
+    tracker.on('change', () => changes++);
+    const at = (s: number) => new Date(Date.now() + s * 1000).toISOString();
+    history = [
+      { eventType: 'grabbed', date: at(1), movieId: 42, downloadId: 'D' },
+    ];
+    queue = [
+      { movieId: 42, downloadId: 'D', title: 'D', size: 1000, sizeleft: 400 },
+    ];
+
+    await refreshServer('radarr-0', tracker);
+    assert.equal(changes, 1);
+    await refreshServer('radarr-0', tracker);
+    assert.equal(changes, 1);
+  });
+
   it('ignores history from before the request', async () => {
     const { media, tracker } = await setup();
     const earlier = new Date(Date.now() - 60_000).toISOString();
