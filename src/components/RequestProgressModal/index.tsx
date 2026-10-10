@@ -12,8 +12,13 @@ import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
-import { MagnifyingGlassIcon, PlayIcon } from '@heroicons/react/24/solid';
+import {
+  ExclamationTriangleIcon,
+  MagnifyingGlassIcon,
+  PlayIcon,
+} from '@heroicons/react/24/solid';
 import type {
+  ProgressSeason,
   ProgressStep,
   ProgressTimelineEntry,
   RequestProgress,
@@ -72,6 +77,12 @@ const messages = defineMessages('components.RequestProgressModal', {
   unairedEpisodes:
     'Season {season}: {episodes, plural, one {# episode} other {# episodes}}, {when}',
   firstExpected: 'first expected {date}',
+  season: 'Season {season}',
+  seasonUnaired:
+    '{episodes, plural, one {# episode} other {# episodes}}, {when}',
+  seasonPartlyUnaired:
+    '{episodes, plural, one {# episode} other {# episodes}} not released yet, {when}',
+  nextExpected: 'next {date}',
   dateUnknown: 'date unknown',
   releasedNotFound:
     'Released, but no download found yet; it is grabbed automatically once one shows up.',
@@ -192,6 +203,22 @@ const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
   [...steps].reverse().find((s) => s.status === 'done') ??
   steps[0];
 
+// The step a season row names: the first not done, else Ready
+const seasonStep = (steps: ProgressStep[]): ProgressStep =>
+  steps.find((s) => s.status !== 'done') ?? steps[steps.length - 1];
+
+// Expanded by default: the first season with aired units still on its way, else the first
+const defaultSeason = (seasons: ProgressSeason[]): ProgressSeason =>
+  seasons.find((s) => s.steps && seasonStep(s.steps).status !== 'done') ??
+  seasons[0];
+
+const NotReleasedTitle = ({ children }: { children: React.ReactNode }) => (
+  <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-400">
+    <ExclamationTriangleIcon className="h-4 w-4 flex-shrink-0" />
+    {children}
+  </div>
+);
+
 interface RequestProgressModalProps {
   show: boolean;
   progress?: RequestProgress;
@@ -217,6 +244,12 @@ const RequestProgressModal = ({
     : undefined;
   const now = finishedAt ?? clock;
   const [searching, setSearching] = useState(false);
+  const [expandedSeason, setExpandedSeason] = useState<number>();
+  const seasonSections = progress?.seasons;
+  const expanded =
+    seasonSections &&
+    (seasonSections.find((s) => s.season === expandedSeason) ??
+      defaultSeason(seasonSections));
   // From a 429 Retry-After, until the next progress event carries retryAfter
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number>();
   const retryAt = progress?.search?.retryAfter
@@ -419,7 +452,11 @@ const RequestProgressModal = ({
       : undefined;
   // Ready means Jellyfin has every unit, not only that a link exists
   const playableDone = step?.key === 'playable' && step.status === 'done';
-  const playUrl = playableDone ? progress?.playUrl : undefined;
+  const playUrl = seasonSections
+    ? expanded?.playUrl
+    : playableDone
+      ? progress?.playUrl
+      : undefined;
   const canSearch =
     finishedAt === undefined &&
     !!progress?.search?.allowed &&
@@ -514,6 +551,85 @@ const RequestProgressModal = ({
     };
   };
 
+  const unairedWhen = (airsAt: string | undefined, first: boolean) =>
+    airsAt
+      ? intl.formatMessage(
+          first ? messages.firstExpected : messages.nextExpected,
+          {
+            date: intl.formatDate(airsAt, { dateStyle: 'medium' }),
+          }
+        )
+      : intl.formatMessage(messages.dateUnknown);
+
+  // One line per season; the expanded one shows its steps
+  const seasonRow = ({ season, steps, unaired: toAir }: ProgressSeason) => {
+    const current = steps && seasonStep(steps);
+    const isExpanded = season === expanded?.season;
+    return (
+      <div key={season}>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 text-left text-sm"
+          aria-expanded={isExpanded}
+          onClick={() => setExpandedSeason(season)}
+        >
+          <span className="font-semibold text-gray-200">
+            {intl.formatMessage(messages.season, { season })}
+          </span>
+          {current ? (
+            <>
+              <span
+                className={
+                  current.status === 'failed' ? 'text-red-400' : 'text-gray-400'
+                }
+              >
+                {label(current)}
+              </span>
+              {current.counts && (
+                <span className="ml-auto tabular-nums text-gray-500">
+                  {intl.formatMessage(messages.unitCounts, {
+                    ...current.counts,
+                  })}
+                </span>
+              )}
+            </>
+          ) : (
+            <NotReleasedTitle>
+              {intl.formatMessage(messages.notReleased)}
+            </NotReleasedTitle>
+          )}
+        </button>
+        {toAir && (
+          <div
+            className={`mt-1 flex items-center gap-1.5 text-xs ${
+              current ? 'text-amber-400' : 'text-gray-400'
+            }`}
+          >
+            {current && (
+              <ExclamationTriangleIcon className="h-4 w-4 flex-shrink-0" />
+            )}
+            {current
+              ? intl.formatMessage(messages.seasonPartlyUnaired, {
+                  episodes: toAir.episodes ?? 0,
+                  when: unairedWhen(toAir.airsAt, false),
+                })
+              : toAir.episodes
+                ? intl.formatMessage(messages.seasonUnaired, {
+                    episodes: toAir.episodes,
+                    when: unairedWhen(toAir.airsAt, true),
+                  })
+                : unairedWhen(toAir.airsAt, true)}
+          </div>
+        )}
+        {isExpanded && steps && (
+          <div className="mt-3">
+            <ProgressStepper steps={steps} label={label} stats={stats} />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // Absolute time, the date only for another day; the age on hover
   const timelineTime = (e: ProgressTimelineEntry) => {
     const at = new Date(e.at);
@@ -591,11 +707,17 @@ const RequestProgressModal = ({
         <div className="divide-y divide-gray-700 [&>*]:py-4 [&>:first-child]:pt-0 [&>:last-child]:pb-0">
           {progress && (
             <div>
-              <ProgressStepper
-                steps={progress.steps}
-                label={label}
-                stats={stats}
-              />
+              {seasonSections ? (
+                <div className="space-y-2">
+                  {seasonSections.map((section) => seasonRow(section))}
+                </div>
+              ) : (
+                <ProgressStepper
+                  steps={progress.steps}
+                  label={label}
+                  stats={stats}
+                />
+              )}
               {totalMs !== undefined && (
                 <div className="mt-3 text-xs tabular-nums text-gray-300">
                   {intl.formatMessage(messages.total)} {formatDuration(totalMs)}{' '}
@@ -618,11 +740,11 @@ const RequestProgressModal = ({
               )}
             </div>
           )}
-          {unairedLines.length > 0 && (
+          {!seasonSections && unairedLines.length > 0 && (
             <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+              <NotReleasedTitle>
                 {intl.formatMessage(messages.notReleased)}
-              </div>
+              </NotReleasedTitle>
               <ul className="mt-2 space-y-1 text-sm text-gray-300">
                 {unairedLines.map((line) => (
                   <li key={line}>{line}</li>

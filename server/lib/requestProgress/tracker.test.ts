@@ -285,6 +285,43 @@ describe('ProgressTracker', () => {
       assert.ok(Object.values(statuses()).every((s) => s === 'done'));
     });
 
+    it('shows one section per season, the unaired one without steps until it airs', () => {
+      const { tracker, airsAt } = seasonAiredAndNot();
+      tracker.setJellyfin(1, false, {
+        present: (u) => u.id === 301,
+        seasonUrls: new Map([[3, 'http://jellyfin/season3']]),
+      });
+      let [s3, s4] = tracker.get(1, false)!.seasons!;
+      assert.equal(s3.season, 3);
+      assert.ok(s3.steps!.every((s) => s.status === 'done'));
+      assert.equal(s3.playUrl, 'http://jellyfin/season3');
+      assert.equal(s3.unaired, undefined);
+      assert.deepEqual(s4, {
+        season: 4,
+        steps: undefined,
+        playUrl: undefined,
+        unaired: { episodes: 2, airsAt: new Date(airsAt).toISOString() },
+      });
+
+      tracker.setUnits(1, false, [
+        { id: 301, seasonNumber: 3, episodeNumber: 1, hasFile: true },
+        { id: 401, seasonNumber: 4, episodeNumber: 1, hasFile: false },
+        {
+          id: 402,
+          seasonNumber: 4,
+          episodeNumber: 2,
+          hasFile: false,
+          unaired: true,
+        },
+      ]);
+      [s3, s4] = tracker.get(1, false)!.seasons!;
+      assert.ok(s3.steps!.every((s) => s.status === 'done'));
+      assert.equal(s4.steps![1].status, 'running');
+      assert.equal(s4.steps![5].counts!.total, 1);
+      assert.deepEqual(s4.unaired, { episodes: 1, airsAt: undefined });
+      assert.equal(s4.playUrl, undefined);
+    });
+
     it('counts an episode once it aired and finishes with its season', () => {
       const { tracker, statuses, stats, finished } = seasonAiredAndNot();
       const units = (s4: { unaired?: boolean; hasFile?: boolean }) => [

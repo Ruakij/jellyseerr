@@ -1090,7 +1090,7 @@ describe('reconcileJellyfin', () => {
     assert.notEqual(statusOf(tracker, media.id, 'playable').status, 'done');
   });
 
-  it('counts probed episodes only and links the lowest requested season', async () => {
+  it('counts probed episodes only and links the lowest requested season and each season', async () => {
     const { media, tracker } = await setup({
       mediaType: MediaType.TV,
       status: MediaStatus.AVAILABLE,
@@ -1134,6 +1134,9 @@ describe('reconcileJellyfin', () => {
     // Listed but not probed: Adding to Jellyfin goes on, Ready has no phase of its own.
     assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'running');
     assert.equal(statusOf(tracker, media.id, 'playable').status, 'pending');
+    let [s2, s3] = tracker.get(media.id, false)!.seasons!;
+    assert.match(s2.playUrl ?? '', /id=season2&/);
+    assert.equal(s3.playUrl, undefined);
 
     episodes = episodes.map((e) => ({ ...e, ...video }));
     await reconcileJellyfin(undefined, tracker);
@@ -1143,6 +1146,9 @@ describe('reconcileJellyfin', () => {
 
     assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
     assert.match(tracker.get(media.id, false)!.playUrl ?? '', /id=season2&/);
+    [s2, s3] = tracker.get(media.id, false)!.seasons!;
+    assert.match(s2.playUrl ?? '', /id=season2&/);
+    assert.match(s3.playUrl ?? '', /id=season3&/);
   });
 
   it('counts probed episodes whatever the date of their item', async () => {
