@@ -953,34 +953,13 @@ export async function reconcileJellyfin(
           return !!item && probed(item);
         };
     const seriesUrl = (is4k ? m.mediaUrl4k : m.mediaUrl) ?? undefined;
-    let playUrl = seriesUrl;
-    const requested = [...entry.requests.values()].flatMap(
-      (r) => r.seasons ?? []
-    );
-    // The run opens the lowest requested season; looked up once, when the run becomes ready.
-    if (tv && itemId && requested.length > 0 && units.every(present)) {
-      playUrl =
-        entry.steps.playable.status === 'done' && entry.playUrl
-          ? entry.playUrl
-          : await seasonUrl(
-              await client,
-              itemId,
-              Math.min(...requested),
-              playUrl
-            );
-    }
-    // Each season of a multi-season run opens itself once its aired units are all there.
+    // Each season opens itself once one of its units is there; looked up once
     const seasonUrls = new Map<number, string>();
-    const seasons = seasonUnits(entry);
-    for (const [season, seasonUnitList] of seasons && seasons.size > 1
-      ? seasons
-      : []) {
-      const aired = seasonUnitList.filter((u) => !u.unaired);
+    for (const [season, seasonUnitList] of (tv && seasonUnits(entry)) || []) {
       if (
         !itemId ||
         entry.seasonUrls.has(season) ||
-        aired.length === 0 ||
-        !aired.every(present)
+        !seasonUnitList.some(present)
       ) {
         continue;
       }
@@ -989,7 +968,7 @@ export async function reconcileJellyfin(
     }
     tracker.setJellyfin(mediaId, is4k, {
       present,
-      playUrl,
+      playUrl: seriesUrl,
       seasonUrls,
       at: addedAt,
       cause: 'Jellyfin',
