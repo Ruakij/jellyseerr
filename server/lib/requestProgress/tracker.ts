@@ -853,7 +853,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         `imported:${downloadId ?? 'manual'}`,
         unitIds
       ).filter((u) => !u.hasFile);
-      if (units.length === 0) return;
+      if (units.length === 0) return false;
       for (const unit of units) {
         unit.hasFile = true;
         unit.importedAt = at;
@@ -1593,7 +1593,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     source: ProgressTimelineSource,
     cause: string | undefined,
     release: { title?: string; indexer?: string }
-  ): void {
+  ): boolean {
     const known = entry.releases.get(downloadId);
     entry.releases.set(downloadId, {
       title: known?.title ?? release.title,
@@ -1602,7 +1602,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     const units = this.fresh(entry, `grabbed:${downloadId}`, unitIds).filter(
       (u) => !u.hasFile && u.downloadId !== downloadId
     );
-    if (units.length === 0) return;
+    if (units.length === 0) return false;
     for (const unit of units) {
       Object.assign(unit, {
         downloadId,
@@ -1622,6 +1622,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       detail: title && (indexer ? `${title} (${indexer})` : title),
       source,
     });
+    return true;
   }
 
   private applyFailed(
@@ -1632,7 +1633,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     source: ProgressTimelineSource,
     cause: string | undefined,
     { reason, detail }: { reason: string; detail?: string }
-  ): void {
+  ): boolean {
     const ids =
       unitIds ??
       [...entry.units.values()]
@@ -1641,7 +1642,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     const units = this.fresh(entry, `failed:${downloadId}`, ids).filter(
       (u) => u.downloadId === downloadId && !u.hasFile
     );
-    if (units.length === 0) return;
+    if (units.length === 0) return false;
     for (const unit of units) {
       Object.assign(unit, {
         downloadId: undefined,
@@ -1670,7 +1671,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     ) {
       entry.searchStartedAt = Math.max(at, entry.lastSearch?.end ?? 0);
     }
-    if (!fresh) return;
+    if (!fresh) return true;
     entry.retryUntil = Math.max(entry.retryUntil ?? 0, at + RETRY_SEARCH_MS);
     const { mediaId, is4k } = entry;
     setTimeout(
@@ -1693,6 +1694,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         ),
       entry.retryUntil - this.now()
     ).unref();
+    return true;
   }
 
   /** A failed download still waits for the search Radarr/Sonarr start for it. */
@@ -1821,26 +1823,28 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     );
   }
 
-  /** Applies `fn`, recomputes the steps and emits a change when the snapshot differs. */
+  /**
+   * Applies `fn`, recomputes the steps and emits a change when the snapshot differs. `fn` returns
+   * false when it left everything the steps derive from as it was, which skips the recompute: a
+   * history replay applies thousands of records already seen.
+   */
   private mutate(
     mediaId: number,
     is4k: boolean,
     at: number,
     cause: string,
-    fn: (entry: TrackedProgress) => void
+    fn: (entry: TrackedProgress) => boolean | void
   ): void {
     const entry = this.entry(mediaId, is4k);
     if (!entry) return;
     if (this.batched) {
       if (!this.batched.has(entry))
         this.batched.set(entry, JSON.stringify(this.snapshot(entry)));
-      fn(entry);
-      this.recompute(entry, at, cause);
+      if (fn(entry) !== false) this.recompute(entry, at, cause);
       return;
     }
     const before = JSON.stringify(this.snapshot(entry));
-    fn(entry);
-    this.recompute(entry, at, cause);
+    if (fn(entry) !== false) this.recompute(entry, at, cause);
     if (JSON.stringify(this.snapshot(entry)) !== before) this.changed(entry);
   }
 
