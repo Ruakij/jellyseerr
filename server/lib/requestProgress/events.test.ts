@@ -24,6 +24,7 @@ import {
   FULL_SYNC_DEBOUNCE_MS,
   REMOVAL_DEBOUNCE_MS,
   SERVER_REFRESH_MAX_WAIT_MS,
+  awaitsJellyfin,
   handleCommand,
   loadUnits,
   onJellyfinRemoved,
@@ -1305,6 +1306,28 @@ describe('reconcileJellyfin', () => {
     } finally {
       calls.forEach((c) => c.mock.restore());
     }
+  });
+
+  it('recovers a run the Jellyfin timeout failed once a scan finds its units', async () => {
+    const { media, tracker } = await setup({
+      status: MediaStatus.AVAILABLE,
+      jellyfinMediaId: 'abc',
+    });
+    tracker.start({ mediaId: media.id, is4k: false });
+    tracker.grab(media.id, false, { downloadId: 'D', unitIds: [0] });
+    tracker.imported(media.id, false, { downloadId: 'D', unitIds: [0] });
+    tracker.expireJellyfinWaits(0, Date.now() + 1);
+    const entry = tracker.entry(media.id, false)!;
+    assert.equal(statusOf(tracker, media.id, 'inJellyfin').status, 'failed');
+    assert.equal(tracker.finished(entry), true);
+    assert.equal(awaitsJellyfin(tracker)(entry), true);
+    const item = jellyfinItem(video);
+
+    await reconcileJellyfin(undefined, tracker, awaitsJellyfin(tracker));
+    item.mock.restore();
+
+    assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+    assert.equal(awaitsJellyfin(tracker)(entry), false);
   });
 
   it('reopens the Jellyfin step when the item left Jellyfin', async () => {
