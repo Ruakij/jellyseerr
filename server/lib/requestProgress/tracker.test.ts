@@ -75,6 +75,38 @@ describe('ProgressTracker', () => {
     assert.equal(statuses().playable, 'done');
   });
 
+  it('replays a history in a batch with one change and the record times, then none', () => {
+    const { tracker, changes, tick } = setup();
+    const start = tick(0);
+    tracker.start({ mediaId: 1, is4k: false, requestId: 7, at: start });
+    const replay = () =>
+      tracker.batch(() => {
+        tracker.grab(1, false, {
+          downloadId: 'D',
+          unitIds: [0],
+          at: start + 1000,
+        });
+        tracker.imported(1, false, {
+          downloadId: 'D',
+          unitIds: [0],
+          at: start + 2000,
+        });
+      });
+    tick(5000);
+    changes.length = 0;
+    replay();
+    assert.equal(changes.length, 1);
+    const grabbed = tracker
+      .get(1, false)!
+      .steps.find((s) => s.key === 'grabbed')!;
+    assert.equal(grabbed.startedAt, new Date(start + 1000).toISOString());
+    assert.equal(grabbed.finishedAt, new Date(start + 2000).toISOString());
+
+    tick(5000);
+    replay();
+    assert.equal(changes.length, 1);
+  });
+
   it('times the Jellyfin wait of a rebuilt run from its rebuild, not its old import', () => {
     const { tracker, tick, statuses } = setup();
     const importedAt = tick(0) - 86_400_000;
