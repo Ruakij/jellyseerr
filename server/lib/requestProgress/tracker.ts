@@ -267,7 +267,9 @@ export const seasonUnits = (
   const seasons = new Map<number, Unit[]>();
   for (const u of entry.units.values()) {
     if (u.seasonNumber === undefined) return undefined;
-    seasons.set(u.seasonNumber, [...(seasons.get(u.seasonNumber) ?? []), u]);
+    const units = seasons.get(u.seasonNumber);
+    if (units) units.push(u);
+    else seasons.set(u.seasonNumber, [u]);
   }
   return seasons.size > 0 ? seasons : undefined;
 };
@@ -360,6 +362,8 @@ interface TrackerEvents {
 
 export class ProgressTracker extends EventEmitter<TrackerEvents> {
   private entries = new Map<string, TrackedProgress>();
+  /** Runs touched inside `batch`, with their snapshot before the batch. */
+  private batched?: Map<TrackedProgress, string>;
   private evictions = new Map<string, NodeJS.Timeout>();
   /** Open progress streams per run key. */
   private watchers = new Map<string, number>();
@@ -1827,10 +1831,39 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   ): void {
     const entry = this.entry(mediaId, is4k);
     if (!entry) return;
+    if (this.batched) {
+      if (!this.batched.has(entry))
+        this.batched.set(entry, JSON.stringify(this.snapshot(entry)));
+      fn(entry);
+      this.recompute(entry, at, cause);
+      return;
+    }
     const before = JSON.stringify(this.snapshot(entry));
     fn(entry);
     this.recompute(entry, at, cause);
     if (JSON.stringify(this.snapshot(entry)) !== before) this.changed(entry);
+  }
+
+  /**
+   * Runs `fn` and emits one change per run whose snapshot differs afterwards. A history replay
+   * touches a run once per record; comparing the snapshot every time blocks the event loop.
+   */
+  public batch(fn: () => void): void {
+    if (this.batched) return fn();
+    const batched = new Map<TrackedProgress, string>();
+    this.batched = batched;
+    try {
+      fn();
+    } finally {
+      this.batched = undefined;
+      for (const [entry, before] of batched) {
+        if (
+          this.entries.get(key(entry.mediaId, entry.is4k)) === entry &&
+          JSON.stringify(this.snapshot(entry)) !== before
+        )
+          this.changed(entry);
+      }
+    }
   }
 
   /**
