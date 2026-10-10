@@ -75,6 +75,32 @@ describe('ProgressTracker', () => {
     assert.equal(statuses().playable, 'done');
   });
 
+  it('times the Jellyfin wait of a rebuilt run from its rebuild, not its old import', () => {
+    const { tracker, tick, statuses } = setup();
+    const importedAt = tick(0) - 86_400_000;
+    tracker.start({
+      mediaId: 1,
+      is4k: false,
+      requestId: 7,
+      at: importedAt - 3600_000,
+      reconstructed: true,
+    });
+    tracker.grab(1, false, { downloadId: 'D', unitIds: [0], at: importedAt });
+    tracker.imported(1, false, {
+      downloadId: 'D',
+      unitIds: [0],
+      at: importedAt,
+    });
+    tracker.expireJellyfinWaits();
+    tick(JELLYFIN_TIMEOUT_MS - 1);
+    tracker.expireJellyfinWaits();
+    assert.equal(statuses().inJellyfin, 'running');
+
+    tick(1);
+    tracker.expireJellyfinWaits();
+    assert.equal(statuses().inJellyfin, 'failed');
+  });
+
   describe('several requests of one series', () => {
     const episodes = (season: number, count: number) =>
       Array.from({ length: count }, (_, i) => ({

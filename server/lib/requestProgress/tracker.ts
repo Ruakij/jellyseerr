@@ -162,6 +162,8 @@ export interface TrackedProgress {
   playUrl?: string;
   /** Rebuilt after the fact, so its step times are not durations worth measuring. */
   reconstructed?: boolean;
+  /** When this process started tracking it; a rebuilt run knows nothing of Jellyfin before. */
+  trackedAt: number;
   timeline: ProgressTimelineEntry[];
   /** Keys of the events applied, so replayed history changes nothing. */
   seen: Set<string>;
@@ -381,6 +383,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       requests: new Map(request ? [[request.id, request]] : []),
       serverKey,
       reconstructed,
+      trackedAt: this.now(),
       searchStartedAt: awaiting || reconstructed ? undefined : at,
       searchMs: 0,
       searchCommands: new Set(),
@@ -547,7 +550,10 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
     return this.watchers.has(key(entry.mediaId, entry.is4k));
   }
 
-  /** Fails the units Radarr/Sonarr imported that Jellyfin has not listed within the timeout. */
+  /**
+   * Fails the units Radarr/Sonarr imported that Jellyfin has not listed within the timeout. The wait
+   * starts no earlier than the tracking: the import of a rebuilt run can be days old.
+   */
   public expireJellyfinWaits(
     timeoutMs = JELLYFIN_TIMEOUT_MS,
     at = this.now()
@@ -556,7 +562,10 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       const expired = (u: Unit) =>
         !u.failure &&
         unitStage(u) === IN_JELLYFIN &&
-        (u.importedAt ?? entry.steps.inJellyfin.startedAt ?? at) <=
+        Math.max(
+          u.importedAt ?? entry.steps.inJellyfin.startedAt ?? at,
+          entry.trackedAt
+        ) <=
           at - timeoutMs;
       if (![...entry.units.values()].some(expired)) continue;
       this.mutate(entry.mediaId, entry.is4k, at, 'Jellyfin timeout', () => {

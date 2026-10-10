@@ -1137,15 +1137,21 @@ const polls = new KeyedDebouncer(async (key) => {
   );
 });
 
+// A unit the Jellyfin timeout failed recovers once Jellyfin lists it, even in a finished run.
+const jellyfinFailed = (entry: TrackedProgress) =>
+  (entry.steps.inJellyfin.counts?.failed ?? 0) > 0;
+
 // Added items cannot be matched to runs by id: Jellyfin reports episodes, the media holds series.
 // The importing step counts too, as Jellyfin can add a file before the refresh saw its import. A
 // dormant run has no unit between the search and Ready.
-const awaitsJellyfin = (entry: TrackedProgress) =>
-  !progressTracker.finished(entry) &&
-  !progressTracker.dormant(entry) &&
-  (['importing', 'inJellyfin'] as const).some(
-    (k) => entry.steps[k].status === 'running'
-  );
+export const awaitsJellyfin =
+  (tracker: ProgressTracker) => (entry: TrackedProgress) =>
+    jellyfinFailed(entry) ||
+    (!tracker.finished(entry) &&
+      !tracker.dormant(entry) &&
+      (['importing', 'inJellyfin'] as const).some(
+        (k) => entry.steps[k].status === 'running'
+      ));
 
 const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
   async (_key, batches) => {
@@ -1155,7 +1161,7 @@ const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
     await reconcileJellyfin(
       Math.min(...batches.map((b) => b.at)),
       progressTracker,
-      awaitsJellyfin
+      awaitsJellyfin(progressTracker)
     );
   }
 );
@@ -1164,9 +1170,10 @@ const jellyfinAdded = new KeyedDebouncer<{ ids: string[]; at: number }>(
 // e.g. for an RSS release, are not worth a check.
 const inJellyfinSteps =
   (tracker: ProgressTracker) => (entry: TrackedProgress) =>
-    !tracker.finished(entry) &&
     tracker.watched(entry) &&
-    (entry.steps.inJellyfin.counts?.active ?? 0) > 0;
+    (jellyfinFailed(entry) ||
+      (!tracker.finished(entry) &&
+        (entry.steps.inJellyfin.counts?.active ?? 0) > 0));
 
 /**
  * Asks Jellyfin about the watched runs waiting for it, as the socket gets no library events with
@@ -1217,7 +1224,7 @@ export function watchJellyfin(
 
 // Scheduled and webhook triggered scans link and update media the runs wait for.
 const jellyfinScanned = new KeyedDebouncer(() =>
-  reconcileJellyfin(undefined, progressTracker, awaitsJellyfin)
+  reconcileJellyfin(undefined, progressTracker, awaitsJellyfin(progressTracker))
 );
 
 // Long enough for Jellyfin to notice a deletion Radarr/Sonarr reported (its library monitor waits
