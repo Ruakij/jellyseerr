@@ -692,6 +692,60 @@ describe('ProgressTracker', () => {
     assert.equal(estimates.inJellyfin.percentiles[90]?.valueMs, 70_000);
   });
 
+  it('records the units and distinct downloads with each sample', () => {
+    const { tracker, stats, tick } = setup();
+    const record = mock.method(stats, 'record');
+    const recordTotal = mock.method(stats, 'recordTotal');
+    tracker.start({
+      mediaId: 1,
+      is4k: false,
+      serverKey: 'sonarr-0',
+      seasons: [1],
+    });
+    const units = (hasFile: boolean) =>
+      [101, 102, 103].map((id) => ({
+        id,
+        seasonNumber: 1,
+        episodeNumber: id - 100,
+        hasFile,
+      }));
+    tracker.setUnits(1, false, units(false));
+    const item = (downloadId: string, unitIds: number[]) => ({
+      downloadId,
+      unitIds,
+      title: downloadId,
+      size: 100,
+      sizeLeft: 0,
+      state: 'downloaded' as const,
+    });
+    tick(1_000);
+    tracker.grab(1, false, { downloadId: 'pack', unitIds: [101, 102] });
+    tracker.grab(1, false, { downloadId: 'single', unitIds: [103] });
+    tracker.setQueue(1, false, [
+      item('pack', [101, 102]),
+      item('single', [103]),
+    ]);
+    tracker.imported(1, false, { downloadId: 'pack', unitIds: [101, 102] });
+    tracker.imported(1, false, { downloadId: 'single', unitIds: [103] });
+    tracker.setUnits(1, false, units(true));
+    tracker.setJellyfin(1, false, { present: () => true });
+
+    assert.deepEqual(
+      record.mock.calls.map(({ arguments: [, step, , options] }) => [
+        step,
+        options?.unitCount,
+        options?.downloadCount,
+      ]),
+      ['searching', 'grabbed', 'importing', 'inJellyfin'].map((step) => [
+        step,
+        3,
+        2,
+      ])
+    );
+    const [, , , counts] = recordTotal.mock.calls[0].arguments;
+    assert.deepEqual(counts, { unitCount: 3, downloadCount: 2 });
+  });
+
   it('shows a step estimate from five samples on', () => {
     const { tracker, stats } = setup();
     for (let i = 0; i < MIN_STEP_SAMPLES - 1; i++) {

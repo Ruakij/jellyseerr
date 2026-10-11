@@ -32,4 +32,11 @@ export class StepSample {
 
   @Column({ type: 'varchar', nullable: true })
   public downloadId?: string | null;
+
+  // Units of the run and their distinct downloads when sampled, to fit a fixed + per-unit duration.
+  @Column({ type: 'integer', nullable: true })
+  public unitCount?: number | null;
+
+  @Column({ type: 'integer', nullable: true })
+  public downloadCount?: number | null;
 }
