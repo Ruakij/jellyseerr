@@ -679,6 +679,8 @@
   "components.RequestProgressModal.waitingRss": "Waiting for a release to show up",
   "components.RequestProgressModal.watch": "Watch",
   "components.RequestProgressModal.watchQueued": "Opening when ready",
+  "components.RequestProgressModal.watchSeason": "S{season}",
+  "components.RequestProgressModal.watchSeasonCounts": "S{season} {done}/{total}",
   "components.RequestProgressModal.watchWhenReady": "Open in Jellyfin as soon as something can be played",
   "components.ResetPassword.confirmpassword": "Confirm Password",
   "components.ResetPassword.email": "Email Address",

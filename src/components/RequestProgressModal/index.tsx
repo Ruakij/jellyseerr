@@ -59,6 +59,8 @@ const messages = defineMessages('components.RequestProgressModal', {
   awaitingApproval: 'Waiting for approval',
   total: 'Total',
   watch: 'Watch',
+  watchSeason: 'S{season}',
+  watchSeasonCounts: 'S{season} {done}/{total}',
   watchQueued: 'Opening when ready',
   watchWhenReady: 'Open in Jellyfin as soon as something can be played',
   finished: 'Finished {date}',
@@ -465,18 +467,25 @@ const RequestProgressModal = ({
         : intl.formatMessage(messages.failed)
       : undefined;
   const playableDone = step?.key === 'playable' && step.status === 'done';
-  // The shown season once one of its units plays, else the first season that has one
-  const ownPlayUrl = seasonSections ? expanded?.playUrl : progress?.playUrl;
-  const playUrl = ownPlayUrl ?? progress?.playUrl;
-  const ownPlayable = (
-    seasonSections ? expanded?.steps : progress?.steps
-  )?.find((s) => s.key === 'playable');
+  // The first season with something to play, whichever season is shown
+  const watchSeason = seasonSections?.find((s) => s.playUrl);
+  const playUrl = watchSeason?.playUrl ?? progress?.playUrl;
+  const watchPlayable = (watchSeason?.steps ?? progress?.steps)?.find(
+    (s) => s.key === 'playable'
+  );
   // Ready means Jellyfin has every unit, not only that a link exists
-  const watchReady = !!ownPlayUrl && ownPlayable?.status === 'done';
+  const watchReady = !!playUrl && watchPlayable?.status === 'done';
   const watchCounts =
-    ownPlayUrl && !watchReady && ownPlayable?.counts?.total
-      ? intl.formatMessage(messages.unitCounts, { ...ownPlayable.counts })
+    playUrl && !watchReady && watchPlayable?.counts?.total
+      ? watchPlayable.counts
       : undefined;
+  const watchTag = watchSeason
+    ? intl.formatMessage(
+        watchCounts ? messages.watchSeasonCounts : messages.watchSeason,
+        { season: String(watchSeason.season).padStart(2, '0'), ...watchCounts }
+      )
+    : watchCounts &&
+      intl.formatMessage(messages.unitCounts, { ...watchCounts });
   // Nothing on its way right now, so a queued Watch could fire long after it was meant
   const watchBlocked =
     !progress ||
@@ -746,10 +755,8 @@ const RequestProgressModal = ({
             >
               <PlayIcon />
               <span>{intl.formatMessage(messages.watch)}</span>
-              {watchCounts && (
-                <span className="ml-2 tabular-nums opacity-75">
-                  {watchCounts}
-                </span>
+              {watchTag && (
+                <span className="ml-2 tabular-nums opacity-75">{watchTag}</span>
               )}
             </Button>
           ) : watchQueued ? (
