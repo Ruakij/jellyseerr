@@ -29,7 +29,7 @@ export interface SampleWindow {
 
 const TOTAL = 'total';
 
-/** Below this many end-to-end samples, the total estimate is the sum of the step estimates. */
+/** Below this many end-to-end samples, the total estimate comes from the summed step durations. */
 export const MIN_TOTAL_SAMPLES = 20;
 
 /** Below this many samples of a step, it shows no estimate. */
@@ -95,6 +95,33 @@ export function quantileCiRanks(
     l++;
   }
   return [l, u];
+}
+
+// Points a distribution of summed durations keeps, so that the pairwise sums stay cheap.
+const SUM_POINTS = 200;
+
+const ascending = (a: number, b: number) => a - b;
+
+/** At most SUM_POINTS equally likely quantiles of the sorted values, the largest included. */
+function reduced(sorted: number[]): number[] {
+  if (sorted.length <= SUM_POINTS) return sorted;
+  return Array.from(
+    { length: SUM_POINTS },
+    (_, i) => sorted[Math.ceil(((i + 1) * sorted.length) / SUM_POINTS) - 1]
+  );
+}
+
+/**
+ * Sorted values of the sum of independent durations, each given by equally likely samples, so every
+ * combination of samples is equally likely. Each partial sum is reduced, which keeps its percentiles
+ * at multiples of 0.5 exact.
+ */
+export function sumDistribution(durations: number[][]): number[] {
+  return durations.reduce(
+    (sum, values) =>
+      reduced(sum.flatMap((a) => values.map((b) => a + b)).sort(ascending)),
+    [0]
+  );
 }
 
 function estimate(
@@ -241,6 +268,8 @@ interface ServerSamples {
   recorded: Record<ProgressStep, Sample[]>;
   /** Requested -> playable durations of tracked runs. */
   totals: Sample[];
+  /** Kept by stepSum until a sample changes. */
+  stepSum?: StepEstimate['percentiles'];
 }
 
 /**
@@ -295,10 +324,12 @@ export class StepStats {
             since ?? new Date(Math.min(...grabs.map((r) => Date.parse(r.date))))
           )
         : [];
-    this.server(serverKey).history = {
+    const server = this.server(serverKey);
+    server.history = {
       searching: windowed(pairRequestToGrab(requests, grabs), window),
       grabbed: windowed(pairGrabToImport([...grabs, ...imports]), window),
     };
+    server.stepSum = undefined;
   }
 
   /** Replaces the recorded samples with the persisted ones, pruned to the current window. */
@@ -308,6 +339,7 @@ export class StepStats {
     const rows = await repo.find();
     for (const server of this.servers.values()) {
       server.totals = [];
+      server.stepSum = undefined;
       for (const step of PROGRESS_STEPS) server.recorded[step] = [];
     }
     for (const row of rows) {
@@ -397,9 +429,13 @@ export class StepStats {
     durationMs: number,
     { at = Date.now(), downloadId }: { at?: number; downloadId?: string } = {}
   ): Promise<void> {
-    const recorded = this.server(serverKey).recorded;
+    const server = this.server(serverKey);
     const sample = { at, durationMs, downloadId };
-    recorded[step] = windowed([...recorded[step], sample], localWindow());
+    server.recorded[step] = windowed(
+      [...server.recorded[step], sample],
+      localWindow()
+    );
+    server.stepSum = undefined;
     return this.save(serverKey, step, sample);
   }
 
@@ -424,25 +460,55 @@ export class StepStats {
     );
   }
 
-  public get(serverKey: string): Record<ProgressStep, StepEstimate> {
+  /** The durations a step estimate is taken from: history, except tracked downloads, and recorded. */
+  private stepDurations(serverKey: string, step: ProgressStep) {
     const { history, recorded } = this.server(serverKey);
+    const own = recorded[step];
+    const tracked = new Set(own.map((s) => s.downloadId).filter(Boolean));
+    const fromHistory = (history[step] ?? []).filter(
+      (s) => !tracked.has(s.downloadId)
+    );
+    return {
+      values: [...fromHistory, ...own].map((s) => s.durationMs),
+      historyCount: fromHistory.length,
+      localCount: own.length,
+    };
+  }
+
+  public get(serverKey: string): Record<ProgressStep, StepEstimate> {
     return Object.fromEntries(
       PROGRESS_STEPS.map((step) => {
-        const own = recorded[step];
-        const tracked = new Set(own.map((s) => s.downloadId).filter(Boolean));
-        const fromHistory = (history[step] ?? []).filter(
-          (s) => !tracked.has(s.downloadId)
+        const { values, historyCount, localCount } = this.stepDurations(
+          serverKey,
+          step
         );
-        return [
-          step,
-          estimate(
-            [...fromHistory, ...own].map((s) => s.durationMs),
-            fromHistory.length,
-            own.length
-          ),
-        ];
+        return [step, estimate(values, historyCount, localCount)];
       })
     ) as Record<ProgressStep, StepEstimate>;
+  }
+
+  /**
+   * Percentiles of the sum of the step durations over the steps with an estimate, taking the steps
+   * as independent; adding the step percentiles would assume every step is slow at once. Without a
+   * range.
+   */
+  public stepSum(serverKey: string): StepEstimate['percentiles'] {
+    const server = this.server(serverKey);
+    if (!server.stepSum) {
+      const durations = PROGRESS_STEPS.map(
+        (step) => this.stepDurations(serverKey, step).values
+      ).filter((values) => values.length >= MIN_STEP_SAMPLES);
+      const sum = sumDistribution(durations);
+      server.stepSum = Object.fromEntries(
+        durations.length === 0
+          ? []
+          : ESTIMATE_PERCENTILES.map((p) => [
+              p,
+              { valueMs: percentile(sum, p) as number },
+            ])
+      );
+    }
+    return server.stepSum;
   }
 }
 

@@ -1064,6 +1064,19 @@ describe('ProgressTracker', () => {
     assert.equal(tracker.get(1, false)!.totalEstimateMs, 51_000);
   });
 
+  it('estimates the total below that as the percentile of the summed step durations', () => {
+    const { tracker, stats } = setup();
+    for (let i = 1; i <= MIN_STEP_SAMPLES; i++) {
+      stats.record('radarr-0', 'searching', i * 1_000);
+      stats.record('radarr-0', 'grabbed', i * 10_000);
+    }
+    tracker.start({ mediaId: 1, is4k: false, serverKey: 'radarr-0' });
+    const progress = tracker.get(1, false)!;
+    // The p90 steps alone add up to 55s.
+    assert.equal(progress.totalEstimateMs, 53_000);
+    assert.equal(progress.totalEstimateRangeMs, undefined);
+  });
+
   it('estimates at the configured percentile, with its interval when enabled', () => {
     const { tracker, stats } = setup();
     const settings = getSettings().requestProgress;

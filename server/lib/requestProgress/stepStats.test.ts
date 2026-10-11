@@ -6,11 +6,13 @@ import { getRepository } from '@server/datasource';
 import { StepSample } from '@server/entity/StepSample';
 import type { StepEstimate } from '@server/lib/requestProgress/stepStats';
 import {
+  MIN_STEP_SAMPLES,
   StepStats,
   pairGrabToImport,
   pairRequestToGrab,
   percentile,
   quantileCiRanks,
+  sumDistribution,
   windowed,
 } from '@server/lib/requestProgress/stepStats';
 import { getSettings } from '@server/lib/settings';
@@ -72,6 +74,43 @@ describe('percentile', () => {
   it('returns the single value for one sample', () => {
     assert.equal(percentile([7], 50), 7);
     assert.equal(percentile([7], 90), 7);
+  });
+});
+
+describe('sumDistribution', () => {
+  it('holds every combination of the samples, sorted', () => {
+    assert.deepEqual(
+      sumDistribution([
+        [2, 1],
+        [20, 10],
+      ]),
+      [11, 12, 21, 22]
+    );
+    assert.deepEqual(
+      sumDistribution([
+        [3, 1, 2],
+        [10, 20],
+        [100, 200],
+      ]),
+      [111, 112, 113, 121, 122, 123, 211, 212, 213, 221, 222, 223]
+    );
+  });
+
+  it('is the samples themselves for one step and zero for none', () => {
+    assert.deepEqual(sumDistribution([[3, 1, 2]]), [1, 2, 3]);
+    assert.deepEqual(sumDistribution([]), [0]);
+  });
+
+  it('reduces to 200 points that keep the largest and the percentiles', () => {
+    const a = Array.from({ length: 20 }, (_, i) => (i + 1) * 1_000);
+    const b = Array.from({ length: 20 }, (_, i) => (i + 1) ** 2 * 1_000);
+    const all = a.flatMap((x) => b.map((y) => x + y));
+    const sum = sumDistribution([a, b]);
+    assert.equal(sum.length, 200);
+    assert.equal(sum[199], Math.max(...all));
+    for (const p of [50, 90, 95, 99]) {
+      assert.equal(percentile(sum, p), percentile(all, p));
+    }
   });
 });
 
@@ -310,6 +349,40 @@ describe('StepStats', () => {
     stats.record('s', 'grabbed', 20_000);
     const { historyCount, localCount } = stats.get('s').grabbed;
     assert.deepEqual([historyCount, localCount], [1, 1]);
+  });
+
+  it('estimates the sum of the step durations from the steps with enough samples', () => {
+    const stats = new StepStats();
+    const sums = () =>
+      Object.fromEntries(
+        Object.entries(stats.stepSum('s')).map(([p, stat]) => [p, stat.valueMs])
+      );
+    assert.deepEqual(stats.stepSum('s'), {});
+    for (let i = 1; i <= MIN_STEP_SAMPLES; i++) {
+      stats.record('s', 'searching', i * 1_000);
+      stats.record('s', 'grabbed', i * 10_000);
+    }
+    // Too few samples: left out.
+    for (let i = 1; i < MIN_STEP_SAMPLES; i++) {
+      stats.record('s', 'importing', 1_000_000);
+    }
+    // 25 sums of 1..5s and 10..50s; the p90 steps alone add up to 55s.
+    assert.deepEqual(sums(), {
+      50: 33_000,
+      90: 53_000,
+      95: 54_000,
+      99: 55_000,
+    });
+    assert.equal(stats.stepSum('s')[90]?.rangeMs, undefined);
+
+    stats.record('s', 'searching', 100_000);
+    assert.deepEqual(sums(), {
+      50: 35_000,
+      90: 120_000,
+      95: 140_000,
+      99: 150_000,
+    });
+    assert.deepEqual(stats.stepSum('other'), {});
   });
 
   it('estimates the end-to-end durations with confidence intervals', () => {

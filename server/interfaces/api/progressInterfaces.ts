@@ -108,7 +108,7 @@ export interface RequestProgress {
   is4k: boolean;
   requests: ProgressRequest[]; // active ones by id; empty when no request is tracked
   steps: ProgressStep[];
-  totalEstimateMs?: number; // percentile of end-to-end runs from 20 of them, else the sum of the step estimates
+  totalEstimateMs?: number; // percentile of end-to-end runs from 20 of them, else the percentile of the summed step durations
   totalEstimateRangeMs?: [number, number]; // only when enabled and taken from end-to-end runs
   estimatePercentile: EstimatePercentile;
   playUrl?: string; // Jellyfin deep link once one unit is playable: the movie, or the first season with a playable unit
