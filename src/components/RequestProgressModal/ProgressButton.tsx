@@ -1,6 +1,9 @@
 import Button from '@app/components/Common/Button';
 import Tooltip from '@app/components/Common/Tooltip';
-import { RequestProgressTrigger } from '@app/components/RequestProgressModal';
+import {
+  RequestProgressTrigger,
+  VIOLET_OUTLINE,
+} from '@app/components/RequestProgressModal';
 import defineMessages from '@app/utils/defineMessages';
 import { ChartBarIcon } from '@heroicons/react/24/solid';
 import { MediaRequestStatus } from '@server/constants/media';
@@ -48,7 +51,7 @@ const ProgressButton = ({ media }: ProgressButtonProps) => {
               buttonType="ghost"
               aria-haspopup="dialog"
               onClick={open}
-              className="ml-2 first:ml-0"
+              className={`ml-2 first:ml-0 ${VIOLET_OUTLINE}`}
             >
               <ChartBarIcon />
               <span>
