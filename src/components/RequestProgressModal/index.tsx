@@ -225,7 +225,7 @@ const NotReleasedTitle = ({ children }: { children: React.ReactNode }) => (
 const VIOLET =
   'bg-violet-600/80 border-violet-500 hover:bg-violet-600 hover:border-violet-400 focus:border-violet-700 active:bg-violet-600 active:border-violet-700';
 
-const VIOLET_OUTLINE =
+export const VIOLET_OUTLINE =
   'border-violet-500 text-violet-200 hover:border-violet-400 hover:bg-violet-600/20';
 
 // Opened without a click, a new tab is usually blocked; the page itself goes there then
