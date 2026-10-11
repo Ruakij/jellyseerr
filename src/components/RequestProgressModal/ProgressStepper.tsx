@@ -92,7 +92,10 @@ const Connector = ({
 interface ProgressStepperProps {
   steps: ProgressStep[];
   label: (step: ProgressStep) => string;
-  stats: (step: ProgressStep) => {
+  stats: (
+    step: ProgressStep,
+    previous?: ProgressStep
+  ) => {
     percent?: number;
     time?: string;
     estimate?: string;
@@ -118,7 +121,7 @@ const ProgressStepper = ({ steps, label, stats }: ProgressStepperProps) => {
           counts,
           failed,
           waiting: waitingFor,
-        } = stats(step);
+        } = stats(step, steps[i - 1]);
         const running = step.status === 'running';
         const waiting = waitingForRelease(step);
         const fraction = running ? stepFraction(step) : undefined;

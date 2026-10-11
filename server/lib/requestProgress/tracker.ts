@@ -1920,7 +1920,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       ) {
         continue;
       }
-      // One sample per run, from the step start, as the pop-up shows the step time. A step never
+      // One sample per run, the time the step adds after the previous one finished (units of
+      // different episodes overlap the steps), as the pop-up shows the step time. A step never
       // seen running, e.g. an import read from the history with its download, has no duration.
       const sampleKey = `sample:${k}`;
       if (
@@ -1929,10 +1930,16 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         !entry.seen.has(sampleKey)
       ) {
         entry.seen.add(sampleKey);
-        this.stats.record(entry.serverKey, k, Math.max(0, at - startedAt), {
-          at,
-          downloadId: units.find((u) => u.downloadId)?.downloadId,
-        });
+        const after = entry.steps[STEP_KEYS[STEP_KEYS.indexOf(k) - 1]];
+        this.stats.record(
+          entry.serverKey,
+          k,
+          Math.max(0, at - Math.max(startedAt, after.finishedAt ?? startedAt)),
+          {
+            at,
+            downloadId: units.find((u) => u.downloadId)?.downloadId,
+          }
+        );
       }
       const requestedAt = entry.steps.requested.startedAt ?? at;
       const lastGrab = Math.max(

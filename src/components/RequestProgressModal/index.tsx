@@ -169,9 +169,18 @@ const searchTime = (step: ProgressStep, now: number): number | undefined =>
     : (step.searchMs ?? 0) +
       (step.searchStartedAt ? now - Date.parse(step.searchStartedAt) : 0);
 
-const stepElapsed = (step: ProgressStep, now: number): number | undefined => {
+// With `previous`, the time the step adds after it, as the estimates measure it
+const stepElapsed = (
+  step: ProgressStep,
+  now: number,
+  previous?: ProgressStep
+): number | undefined => {
   if (!step.startedAt) return undefined;
-  const start = Date.parse(step.startedAt);
+  let start = Date.parse(step.startedAt);
+  if (previous) {
+    if (!previous.finishedAt) return undefined;
+    start = Math.max(start, Date.parse(previous.finishedAt));
+  }
   // An idle step stopped when its last unit left it
   if (step.status === 'running') {
     return (idle(step) ? Date.parse(step.waitingSince as string) : now) - start;
@@ -585,11 +594,14 @@ const RequestProgressModal = ({
   const waitingStep = (s: ProgressStep) =>
     dormant && s.key === 'searching' && s.status === 'running';
 
-  const stats = (s: ProgressStep) => {
+  // `previous` is the step before it in the same list: the run's or a season's
+  const stats = (s: ProgressStep, previous?: ProgressStep) => {
     // Ready is the end state, reached with the last unit in Jellyfin: no time or count of its own
     if (!progress || s.key === 'playable') return {};
     const elapsed =
-      s.key === 'searching' ? searchTime(s, now) : stepElapsed(s, now);
+      s.key === 'searching'
+        ? searchTime(s, now)
+        : stepElapsed(s, now, previous);
     const est = estimateOf(progress, s);
     // Units downloaded, a running download by its bytes; elapsed time against the estimate repeats
     // the two times shown
