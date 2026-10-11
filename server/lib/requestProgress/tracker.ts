@@ -376,7 +376,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
   constructor(
     private readonly injectedStats?: Pick<
       StepStats,
-      'get' | 'record' | 'recordTotal' | 'total'
+      'get' | 'record' | 'recordTotal' | 'total' | 'stepSum'
     >,
     private readonly now: () => number = Date.now
   ) {
@@ -1297,7 +1297,9 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       totals && totals.localCount >= MIN_TOTAL_SAMPLES
         ? totals.percentiles[p]
         : undefined;
-    const stepSum = steps.flatMap((s) => s.estimateMs ?? []);
+    const summed = entry.serverKey
+      ? this.stats.stepSum(entry.serverKey)[p]
+      : undefined;
     const downloads: ProgressDownload[] = [...entry.queue.values()]
       // A failed download stays in the queue until removed; its units are searched for again.
       .filter((item) =>
@@ -1317,9 +1319,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       is4k: entry.is4k,
       requests: this.requestStates(entry),
       steps,
-      totalEstimateMs:
-        total?.valueMs ??
-        (stepSum.length ? stepSum.reduce((a, b) => a + b, 0) : undefined),
+      totalEstimateMs: total?.valueMs ?? summed?.valueMs,
       totalEstimateRangeMs: showConfidenceInterval ? total?.rangeMs : undefined,
       estimatePercentile: p,
       playUrl: this.playUrl(entry),
