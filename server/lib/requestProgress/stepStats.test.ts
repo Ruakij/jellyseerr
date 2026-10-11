@@ -486,6 +486,29 @@ describe('StepStats persistence', () => {
     );
   });
 
+  it('persists the unit and download counts of a sample, null without', async () => {
+    const stats = new StepStats(true);
+    await stats.record('s', 'grabbed', 5_000, {
+      unitCount: 3,
+      downloadCount: 2,
+    });
+    await stats.recordTotal('s', 60_000, Date.now(), {
+      unitCount: 3,
+      downloadCount: 2,
+    });
+    await stats.record('s', 'importing', 1_000);
+
+    const rows = await getRepository(StepSample).find({ order: { id: 'ASC' } });
+    assert.deepEqual(
+      rows.map((r) => [r.step, r.unitCount, r.downloadCount]),
+      [
+        ['grabbed', 3, 2],
+        ['total', 3, 2],
+        ['importing', null, null],
+      ]
+    );
+  });
+
   it('prunes persisted samples beyond the newest per step', async () => {
     settings.localMaxSamples = 2;
     const stats = new StepStats(true);

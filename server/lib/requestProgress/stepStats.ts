@@ -35,7 +35,13 @@ export const MIN_TOTAL_SAMPLES = 20;
 /** Below this many samples of a step, it shows no estimate. */
 export const MIN_STEP_SAMPLES = 5;
 
-export interface Sample {
+/** Units in the run's step and the distinct downloads delivering them. */
+export interface SampleCounts {
+  unitCount?: number;
+  downloadCount?: number;
+}
+
+export interface Sample extends SampleCounts {
   /** When the step finished, ms since epoch; orders the sample window. */
   at: number;
   durationMs: number;
@@ -412,6 +418,8 @@ export class StepStats {
           durationMs: sample.durationMs,
           finishedAt: new Date(sample.at),
           downloadId: sample.downloadId ?? null,
+          unitCount: sample.unitCount ?? null,
+          downloadCount: sample.downloadCount ?? null,
         })
       )
       .then(() => this.prune({ serverKey, step }))
@@ -427,10 +435,14 @@ export class StepStats {
     serverKey: string,
     step: ProgressStep,
     durationMs: number,
-    { at = Date.now(), downloadId }: { at?: number; downloadId?: string } = {}
+    {
+      at = Date.now(),
+      downloadId,
+      ...counts
+    }: { at?: number; downloadId?: string } & SampleCounts = {}
   ): Promise<void> {
     const server = this.server(serverKey);
-    const sample = { at, durationMs, downloadId };
+    const sample = { at, durationMs, downloadId, ...counts };
     server.recorded[step] = windowed(
       [...server.recorded[step], sample],
       localWindow()
@@ -442,10 +454,11 @@ export class StepStats {
   public recordTotal(
     serverKey: string,
     durationMs: number,
-    at = Date.now()
+    at = Date.now(),
+    counts: SampleCounts = {}
   ): Promise<void> {
     const server = this.server(serverKey);
-    const sample = { at, durationMs };
+    const sample = { at, durationMs, ...counts };
     server.totals = windowed([...server.totals, sample], localWindow());
     return this.save(serverKey, TOTAL, sample);
   }

@@ -227,6 +227,12 @@ const counted = (units: Iterable<Unit>): Unit[] => {
   return released.length > 0 ? released : all;
 };
 
+/** The counts a sample records for the units of its run. */
+const sampleCounts = (units: Unit[]) => ({
+  unitCount: units.length,
+  downloadCount: new Set(units.flatMap((u) => u.downloadId ?? [])).size,
+});
+
 /** Units are left to search for, and all of them wait for their air date. */
 const releasePending = (units: Iterable<Unit>) => {
   const searching = [...units].filter((u) => unitStage(u) === SEARCHING);
@@ -1568,6 +1574,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
       at,
       downloadId: [...entry.units.values()].find((u) => u.downloadId)
         ?.downloadId,
+      ...sampleCounts(counted(entry.units.values())),
     });
   }
 
@@ -1938,6 +1945,7 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
           {
             at,
             downloadId: units.find((u) => u.downloadId)?.downloadId,
+            ...sampleCounts(units),
           }
         );
       }
@@ -1959,7 +1967,8 @@ export class ProgressTracker extends EventEmitter<TrackerEvents> {
         this.stats.recordTotal(
           entry.serverKey,
           Math.max(0, at - requestedAt),
-          at
+          at,
+          sampleCounts(units)
         );
       }
     }
