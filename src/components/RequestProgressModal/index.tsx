@@ -6,6 +6,10 @@ import {
   waitingForRelease,
 } from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
+import {
+  defaultSeason,
+  seasonStep,
+} from '@app/components/RequestProgressModal/seasons';
 import useRequestProgress from '@app/hooks/useRequestProgress';
 import useToasts from '@app/hooks/useToasts';
 import { Permission, useUser } from '@app/hooks/useUser';
@@ -206,15 +210,6 @@ const currentStep = (steps: ProgressStep[]): ProgressStep | undefined =>
   steps.find((s) => s.status === 'running') ??
   [...steps].reverse().find((s) => s.status === 'done') ??
   steps[0];
-
-// The step a season row names: the first not done, else Ready
-const seasonStep = (steps: ProgressStep[]): ProgressStep =>
-  steps.find((s) => s.status !== 'done') ?? steps[steps.length - 1];
-
-// Expanded by default: the first season with aired units still on its way, else the first
-const defaultSeason = (seasons: ProgressSeason[]): ProgressSeason =>
-  seasons.find((s) => s.steps && seasonStep(s.steps).status !== 'done') ??
-  seasons[0];
 
 const NotReleasedTitle = ({ children }: { children: React.ReactNode }) => (
   <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-400">
