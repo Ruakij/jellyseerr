@@ -3,6 +3,7 @@ import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import {
   idle,
+  stepIcons,
   waitingForRelease,
 } from '@app/components/RequestProgressModal/ProgressScene';
 import ProgressStepper from '@app/components/RequestProgressModal/ProgressStepper';
@@ -18,10 +19,13 @@ import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
 import {
   ArrowPathIcon,
+  CalendarDaysIcon,
   ChevronRightIcon,
+  ClockIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
   PlayIcon,
+  XCircleIcon,
 } from '@heroicons/react/24/solid';
 import type {
   ProgressSeason,
@@ -219,6 +223,28 @@ const NotReleasedTitle = ({ children }: { children: React.ReactNode }) => (
     {children}
   </div>
 );
+
+// The icon and colour of a season row status, as the stepper circles
+const seasonStatus = (step: ProgressStep) => {
+  const waiting = waitingForRelease(step);
+  if (step.status === 'failed') {
+    return { Icon: XCircleIcon, color: 'text-red-400' };
+  }
+  const Icon = waiting
+    ? step.waiting === 'release'
+      ? CalendarDaysIcon
+      : ClockIcon
+    : stepIcons[step.key];
+  if (step.status === 'done') return { Icon, color: 'text-green-400' };
+  if (step.status === 'pending') return { Icon, color: 'text-gray-400' };
+  return {
+    Icon,
+    color:
+      waiting || step.key === 'requested'
+        ? 'text-amber-400'
+        : 'text-indigo-300',
+  };
+};
 
 const VIOLET =
   'bg-violet-600/80 border-violet-500 hover:bg-violet-600 hover:border-violet-400 focus:border-violet-700 active:bg-violet-600 active:border-violet-700';
@@ -619,6 +645,7 @@ const RequestProgressModal = ({
   // One line per season; the expanded one shows its steps
   const seasonRow = ({ season, steps, unaired: toAir }: ProgressSeason) => {
     const current = steps && seasonStep(steps);
+    const status = current && seasonStatus(current);
     const isExpanded = season === expanded?.season;
     return (
       <div key={season}>
@@ -636,14 +663,13 @@ const RequestProgressModal = ({
           <span className="font-semibold text-gray-200">
             {intl.formatMessage(messages.season, { season })}
           </span>
-          {current ? (
+          {current && status ? (
             <>
               <span
-                className={
-                  current.status === 'failed' ? 'text-red-400' : 'text-gray-400'
-                }
+                className={`flex min-w-0 items-center gap-1.5 ${status.color}`}
               >
-                {label(current)}
+                <status.Icon className="h-4 w-4 flex-shrink-0" />
+                <span className="truncate">{label(current)}</span>
               </span>
               {current.counts && (
                 <span className="ml-auto tabular-nums text-gray-500">
