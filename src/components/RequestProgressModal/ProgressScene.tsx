@@ -24,7 +24,7 @@ export const waitingForRelease = (step: ProgressStep) =>
   step.status === 'running' &&
   (step.waiting === 'release' || step.waiting === 'rss');
 
-const stepIcons: Record<ProgressStepKey, typeof CheckIcon> = {
+export const stepIcons: Record<ProgressStepKey, typeof CheckIcon> = {
   requested: CheckIcon,
   searching: MagnifyingGlassIcon,
   grabbed: ArrowDownIcon,
