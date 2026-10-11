@@ -880,6 +880,14 @@ async function providerItem(
   }
 }
 
+/** The link the media gets once the scanner saved the Jellyfin item. */
+function itemUrl(itemId: string, is4k: boolean): string | undefined {
+  const media = new Media();
+  media[is4k ? 'jellyfinMediaId4k' : 'jellyfinMediaId'] = itemId;
+  media.setPlexUrls();
+  return is4k ? media.mediaUrl4k : media.mediaUrl;
+}
+
 /** The Watch link of the season of a series; the series link when Jellyfin has no such season. */
 async function seasonUrl(
   client: JellyfinAPI | undefined,
@@ -952,7 +960,10 @@ export async function reconcileJellyfin(
           const item = listed?.get(key(u));
           return !!item && probed(item);
         };
-    const seriesUrl = (is4k ? m.mediaUrl4k : m.mediaUrl) ?? undefined;
+    // The scanner skips an item Jellyfin has not probed yet, so the media can lack the link of
+    // the item found here, and no later check of a Ready run fills it in
+    const seriesUrl =
+      (is4k ? m.mediaUrl4k : m.mediaUrl) ?? (itemId && itemUrl(itemId, is4k));
     // Each season opens itself once one of its units is there; looked up once
     const seasonUrls = new Map<number, string>();
     for (const [season, seasonUnitList] of (tv && seasonUnits(entry)) || []) {
