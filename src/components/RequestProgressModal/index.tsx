@@ -14,6 +14,7 @@ import defineMessages from '@app/utils/defineMessages';
 import { Transition } from '@headlessui/react';
 import {
   ArrowPathIcon,
+  ChevronRightIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
   PlayIcon,
@@ -623,6 +624,11 @@ const RequestProgressModal = ({
           aria-expanded={isExpanded}
           onClick={() => setExpandedSeason(season)}
         >
+          <ChevronRightIcon
+            className={`h-4 w-4 flex-shrink-0 text-gray-400 transition-transform ${
+              isExpanded ? 'rotate-90' : ''
+            }`}
+          />
           <span className="font-semibold text-gray-200">
             {intl.formatMessage(messages.season, { season })}
           </span>
@@ -651,7 +657,7 @@ const RequestProgressModal = ({
         </button>
         {toAir && (
           <div
-            className={`mt-1 flex items-center gap-1.5 text-xs ${
+            className={`ml-6 mt-1 flex items-center gap-1.5 text-xs ${
               current ? 'text-amber-400' : 'text-gray-400'
             }`}
           >
@@ -796,7 +802,7 @@ const RequestProgressModal = ({
           {progress && (
             <div>
               {seasonSections ? (
-                <div className="space-y-2">
+                <div className="divide-y divide-gray-700/50 [&>*]:py-2 [&>:first-child]:pt-0 [&>:last-child]:pb-0">
                   {seasonSections.map((section) => seasonRow(section))}
                 </div>
               ) : (
