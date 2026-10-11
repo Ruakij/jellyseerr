@@ -639,10 +639,57 @@ describe('ProgressTracker', () => {
       estimates[k].percentiles[90]?.valueMs,
     ];
     assert.deepEqual(sample('searching'), [1, 7_000]);
-    assert.deepEqual(sample('grabbed'), [1, 5_000]);
+    // Grabbed counts from the last grab, the end of searching; inJellyfin from the last import.
+    assert.deepEqual(sample('grabbed'), [1, 3_000]);
     assert.deepEqual(sample('importing'), [1, 3_000]);
-    assert.deepEqual(sample('inJellyfin'), [1, 12_000]);
+    assert.deepEqual(sample('inJellyfin'), [1, 10_000]);
     assert.equal(stats.total('sonarr-0').percentiles[90]?.valueMs, 23_000);
+  });
+
+  it('records the time a step adds after the previous one, not its span', () => {
+    const { tracker, stats, tick } = setup();
+    tracker.start({
+      mediaId: 1,
+      is4k: false,
+      serverKey: 'sonarr-0',
+      seasons: [1],
+    });
+    tracker.setUnits(1, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: false },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: false },
+    ]);
+    const item = (downloadId: string, unitId: number) => ({
+      downloadId,
+      unitIds: [unitId],
+      title: downloadId,
+      size: 100,
+      sizeLeft: 0,
+      state: 'downloaded' as const,
+    });
+    tick(10_000);
+    tracker.grab(1, false, { downloadId: 'D1', unitIds: [101] });
+    tick(5_000);
+    tracker.setQueue(1, false, [item('D1', 101)]);
+    tick(5_000);
+    tracker.imported(1, false, { downloadId: 'D1', unitIds: [101] });
+    // The second download failed and was searched again ten minutes later.
+    tick(600_000);
+    tracker.grab(1, false, { downloadId: 'D2', unitIds: [102] });
+    tick(30_000);
+    tracker.setQueue(1, false, [item('D2', 102)]);
+    tick(10_000);
+    tracker.imported(1, false, { downloadId: 'D2', unitIds: [102] });
+    tick(70_000);
+    tracker.setUnits(1, false, [
+      { id: 101, seasonNumber: 1, episodeNumber: 1, hasFile: true },
+      { id: 102, seasonNumber: 1, episodeNumber: 2, hasFile: true },
+    ]);
+    tracker.setJellyfin(1, false, { present: () => true });
+
+    const estimates = stats.get('sonarr-0');
+    assert.equal(estimates.grabbed.percentiles[90]?.valueMs, 30_000);
+    assert.equal(estimates.importing.percentiles[90]?.valueMs, 10_000);
+    assert.equal(estimates.inJellyfin.percentiles[90]?.valueMs, 70_000);
   });
 
   it('shows a step estimate from five samples on', () => {
