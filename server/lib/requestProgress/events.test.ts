@@ -1095,6 +1095,34 @@ describe('reconcileJellyfin', () => {
     assert.match(progress.playUrl ?? '', /id=abc/);
   });
 
+  it('links the item it found while the scanner has not saved it yet', async () => {
+    const { media, tracker } = await setup({ status: MediaStatus.AVAILABLE });
+    tracker.start({ mediaId: media.id, is4k: false });
+    const newest = mock.method(
+      JellyfinAPI.prototype,
+      'getNewestItems',
+      async () => [
+        {
+          Id: 'movie',
+          Type: 'Movie',
+          ProviderIds: { Tmdb: `${media.tmdbId}` },
+        },
+      ]
+    );
+    const scan = mock.method(jellyfinItemScanner, 'runItems', async () => {});
+    const item = jellyfinItem(video);
+    try {
+      await reconcileJellyfin(undefined, tracker);
+      const progress = tracker.get(media.id, false)!;
+      assert.equal(statusOf(tracker, media.id, 'playable').status, 'done');
+      assert.match(progress.playUrl ?? '', /id=movie&/);
+    } finally {
+      newest.mock.restore();
+      scan.mock.restore();
+      item.mock.restore();
+    }
+  });
+
   it('waits until Jellyfin probed the movie file', async () => {
     const { media, tracker } = await setup({
       status: MediaStatus.AVAILABLE,
