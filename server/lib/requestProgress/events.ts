@@ -39,6 +39,7 @@ import {
   storeRun,
   unfinishedCompletedRequests,
 } from '@server/lib/requestProgress/history';
+import { ItemHistoryReader } from '@server/lib/requestProgress/itemHistory';
 import type { RequestStart } from '@server/lib/requestProgress/stepStats';
 import stepStats from '@server/lib/requestProgress/stepStats';
 import type {
@@ -543,6 +544,8 @@ export interface RefreshScope {
   mediaIds?: number[];
 }
 
+const itemHistories = new WeakMap<ProgressTracker, ItemHistoryReader>();
+
 // Steps whose units Radarr/Sonarr moves on without an event naming the item.
 const ARR_STEPS = ['searching', 'grabbed', 'importing'] as const;
 
@@ -624,10 +627,30 @@ export async function refreshServer(
 
   // Per item: the history of a whole server since an old request can be too large to load.
   const arrIds = [...new Set(entries.map((e) => arrIdOf(e) as number))];
+  // Only for items an event named or whose queue entries changed, and from the last seen record on.
+  const reader = itemHistories.get(tracker) ?? new ItemHistoryReader();
+  itemHistories.set(tracker, reader);
+  const readHistory = (arrId: number) => {
+    const own = entries.filter((e) => arrIdOf(e) === arrId);
+    return reader.read(api, `${key}:${arrId}`, arrId, {
+      named: own.some(named),
+      queue: queue
+        .filter(
+          (item) => (type === 'radarr' ? item.movieId : item.seriesId) === arrId
+        )
+        .map(
+          (item) =>
+            `${item.downloadId}:${item.episodeId}:${item.trackedDownloadState}:${item.trackedDownloadStatus}`
+        )
+        .sort()
+        .join(' '),
+      earliest: Math.min(...own.map((e) => e.steps.requested.startedAt ?? 0)),
+    });
+  };
   const [histories, states] = await Promise.all([
     Promise.all(
       arrIds.map((arrId) =>
-        api.getItemHistory(arrId).catch((e: Error) => {
+        readHistory(arrId).catch((e: Error) => {
           logger.warn(`Loading item history failed: ${e.message}`, {
             label: 'Request Progress',
             server: key,

@@ -218,8 +218,43 @@ describe('ServarrBase getItemHistory', () => {
     assert.deepEqual(await radarr.getItemHistory(42), [{ id: 1 }]);
     assert.deepEqual(get.mock.calls[0].arguments, [
       '/history/movie',
-      { params: { movieId: 42, includeEpisode: true } },
+      { params: { movieId: 42, includeEpisode: true }, timeout: 60_000 },
     ]);
+  });
+
+  it('requests the pages of one movie since a date, newest first', async () => {
+    const radarr = buildRadarr();
+    const get = mock.method(getAxios(radarr), 'get', async () => ({
+      data: {
+        totalRecords: 3,
+        records: [
+          { id: 3, date: '2026-01-03T00:00:00Z' },
+          { id: 2, date: '2026-01-02T00:00:00Z' },
+          { id: 1, date: '2026-01-01T00:00:00Z' },
+        ],
+      },
+    }));
+
+    const records = await radarr.getItemHistorySince(
+      42,
+      new Date('2026-01-02T00:00:00Z')
+    );
+
+    assert.deepEqual(
+      records.map((r) => r.id),
+      [3, 2]
+    );
+    assert.equal(get.mock.callCount(), 1);
+    assert.equal(get.mock.calls[0].arguments[0], '/history');
+    assert.equal(
+      (get.mock.calls[0].arguments[1] as { params: { movieIds: number } })
+        .params.movieIds,
+      42
+    );
+    assert.equal(
+      (get.mock.calls[0].arguments[1] as { timeout: number }).timeout,
+      60_000
+    );
   });
 });
 
