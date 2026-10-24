@@ -99,6 +99,11 @@ const HISTORY_EVENT_TYPE_IDS = {
 } as const;
 
 const HISTORY_SINCE_PAGE_SIZE = 250;
+// Few records of one item are newer than the last read, and each carries its episode.
+const ITEM_HISTORY_SINCE_PAGE_SIZE = 25;
+
+// The history of a large series is several MB and takes the server seconds to build.
+const ITEM_HISTORY_TIMEOUT_MS = 60_000;
 
 export type HistoryEventTypeFilter = keyof typeof HISTORY_EVENT_TYPE_IDS;
 
@@ -237,18 +242,20 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
   /**
    * Newest records first. With `since`, pages are read until a record is older than that date or
    * `limit` records were read; the `/history/since` endpoint is unpaged and times out on large
-   * histories.
+   * histories. With `itemId`, only the records of that Radarr movie or Sonarr series.
    */
   public getHistory = async ({
     eventType,
     since,
     limit,
+    itemId,
     page = 1,
     pageSize = 200,
   }: {
     eventType?: HistoryEventTypeFilter;
     since?: Date;
     limit?: number;
+    itemId?: number;
     page?: number;
     pageSize?: number;
   } = {}): Promise<HistoryRecord[]> => {
@@ -262,7 +269,11 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
           sortDirection: 'descending',
           eventType: eventTypeId,
           includeEpisode: true,
+          ...(itemId !== undefined && {
+            [this.apiName === 'Radarr' ? 'movieIds' : 'seriesIds']: itemId,
+          }),
         },
+        ...(itemId !== undefined && { timeout: ITEM_HISTORY_TIMEOUT_MS }),
       });
       return response.data;
     };
@@ -270,15 +281,19 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
       if (!since) return (await getPage(page, pageSize)).records;
 
       const oldest = since.getTime();
+      const sincePageSize =
+        itemId === undefined
+          ? HISTORY_SINCE_PAGE_SIZE
+          : ITEM_HISTORY_SINCE_PAGE_SIZE;
       const records: HistoryRecord[] = [];
       for (let next = 1; ; next++) {
-        const data = await getPage(next, HISTORY_SINCE_PAGE_SIZE);
+        const data = await getPage(next, sincePageSize);
         for (const record of data.records) {
           if (Date.parse(record.date) < oldest) return records;
           records.push(record);
           if (limit && records.length >= limit) return records;
         }
-        if (next * HISTORY_SINCE_PAGE_SIZE >= data.totalRecords) return records;
+        if (next * sincePageSize >= data.totalRecords) return records;
       }
     } catch (e) {
       throw new Error(
@@ -297,6 +312,7 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
     try {
       const response = await this.axios.get<HistoryRecord[]>(path, {
         params: { [param]: id, includeEpisode: true },
+        timeout: ITEM_HISTORY_TIMEOUT_MS,
       });
       return response.data;
     } catch (e) {
@@ -306,6 +322,12 @@ class ServarrBase<QueueItemAppendT> extends ExternalAPI {
       );
     }
   };
+
+  /** The records of one Radarr movie or Sonarr series dated at or after `since`, newest first. */
+  public getItemHistorySince = (
+    id: number,
+    since: Date
+  ): Promise<HistoryRecord[]> => this.getHistory({ itemId: id, since });
 
   /** Recent commands as Radarr/Sonarr list them, running ones included. */
   public getCommands = async (): Promise<unknown[]> => {

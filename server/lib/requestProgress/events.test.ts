@@ -70,7 +70,11 @@ let removed = false;
 let isAvailable = true;
 let releases: { digitalRelease?: string; physicalRelease?: string } = {};
 // Radarr ids whose history and movie the fakes served, in order.
-const reads = { history: [] as number[], state: [] as number[] };
+const reads = {
+  history: [] as number[],
+  since: [] as { id: number; since: Date }[],
+  state: [] as number[],
+};
 Object.defineProperty(RadarrAPI.prototype, 'getMovie', {
   set() {},
   get:
@@ -107,6 +111,17 @@ for (const Api of [RadarrAPI, SonarrAPI]) {
       async (id: number) => {
         reads.history.push(id);
         return history.filter((r) => (r.movieId ?? r.seriesId) === id);
+      },
+    ],
+    [
+      'getItemHistorySince',
+      async (id: number, since: Date) => {
+        reads.since.push({ id, since });
+        return history.filter(
+          (r) =>
+            (r.movieId ?? r.seriesId) === id &&
+            Date.parse(r.date ?? '') >= +since
+        );
       },
     ],
     [
@@ -156,6 +171,7 @@ async function setup(overrides: Partial<Media> = {}) {
   isAvailable = true;
   releases = {};
   reads.history = [];
+  reads.since = [];
   reads.state = [];
   return { media, tracker };
 }
@@ -542,8 +558,77 @@ describe('refreshServer scope', () => {
     reads.state = [];
     queue = [];
     await refreshServer('radarr-0', tracker, { arrIds: [43] });
-    assert.deepEqual(reads.history.sort(), [42, 43]);
+    // 42 is moving, but its history was read a moment ago and nothing named it since.
+    assert.deepEqual(reads.history.sort(), [43]);
     assert.deepEqual(reads.state.sort(), [42, 43]);
+  });
+
+  it('reads the history of an item again when an event names it, and only since the last record', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    const at = (s: number) => new Date(Date.now() + s * 1000).toISOString();
+    history = [
+      { eventType: 'grabbed', date: at(1), movieId: 42, downloadId: 'D' },
+    ];
+
+    await refreshServer('radarr-0', tracker, {});
+    assert.deepEqual(reads.history, [42]);
+
+    await refreshServer('radarr-0', tracker, {});
+    await refreshServer('radarr-0', tracker, { arrIds: [7] });
+    assert.deepEqual(reads.history, [42]);
+    assert.equal(reads.since.length, 0);
+
+    const imported = at(8);
+    history.push({
+      eventType: 'downloadFolderImported',
+      date: imported,
+      movieId: 42,
+      downloadId: 'D',
+    });
+    await refreshServer('radarr-0', tracker, { arrIds: [42] });
+
+    assert.deepEqual(reads.history, [42]);
+    assert.deepEqual(
+      reads.since.map((r) => r.id),
+      [42]
+    );
+    assert.equal(statusOf(tracker, media.id, 'importing').finishedAt, imported);
+  });
+
+  it('reads the history of an item again when its queue entry changes', async () => {
+    const { media, tracker } = await setup();
+    tracker.start({ mediaId: media.id, is4k: false, serverKey: 'radarr-0' });
+    history = [
+      {
+        eventType: 'grabbed',
+        date: new Date(Date.now() + 1000).toISOString(),
+        movieId: 42,
+        downloadId: 'D',
+      },
+    ];
+    queue = [
+      {
+        movieId: 42,
+        downloadId: 'D',
+        title: 'D',
+        trackedDownloadState: 'downloading',
+      },
+    ];
+    await refreshServer('radarr-0', tracker, {});
+    await refreshServer('radarr-0', tracker, {});
+    assert.deepEqual(reads.history, [42]);
+
+    queue = [{ ...queue[0], trackedDownloadState: 'importPending' }];
+    await refreshServer('radarr-0', tracker, {});
+    queue = [];
+    await refreshServer('radarr-0', tracker, {});
+
+    assert.deepEqual(reads.history, [42]);
+    assert.deepEqual(
+      reads.since.map((r) => r.id),
+      [42, 42]
+    );
   });
 });
 
@@ -2214,6 +2299,8 @@ describe('onSignalRMessage refresh', () => {
           downloadId: 'D',
         },
       ];
+      // The grab puts the item in the queue, which is what the history read follows.
+      queue = [{ movieId: 42, downloadId: 'D', title: 'D', size: 100 }];
       // A download sends queue updates more often than the debounce delay.
       for (let t = 0; t < SERVER_REFRESH_MAX_WAIT_MS; t += 1000) {
         onSignalRMessage(radarr, { type: 'queue' });
