@@ -6,7 +6,10 @@ on:
   pull_request:
     branches: ['*']
     paths:
-      - '{src,server,config,cypress}/**'
+      - 'src/**'
+      - 'server/**'
+      - 'config/**'
+      - 'cypress/**'
       - 'cypress.config.ts'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -16,7 +19,10 @@ on:
   push:
     branches: [develop]
     paths:
-      - '{src,server,config,cypress}/**'
+      - 'src/**'
+      - 'server/**'
+      - 'config/**'
+      - 'cypress/**'
       - 'cypress.config.ts'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -67,7 +73,7 @@ jobs:
         run: pnpm exec cypress install
 
       - name: Cypress run
-        uses: cypress-io/github-action@v7.4.3
+        uses: cypress-io/github-action@v7.4.6
         with:
           install: false
           build: pnpm cypress:build
