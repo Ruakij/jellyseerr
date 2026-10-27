@@ -31,6 +31,10 @@ interface ScheduledJob {
 export const scheduledJobs: ScheduledJob[] = [];
 
 export const startJobs = (): void => {
+  // Reruns once a media server is set after boot
+  scheduledJobs.forEach((scheduledJob) => scheduledJob.job.cancel());
+  scheduledJobs.length = 0;
+
   const jobs = getSettings().jobs;
   const mediaServerType = getSettings().main.mediaServerType;
 
